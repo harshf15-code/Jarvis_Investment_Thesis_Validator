@@ -57,8 +57,22 @@ export type Json =
 // Row types (one per table, in `0001_init.sql` order)
 // ---------------------------------------------------------------------------
 
+// Note: these row types deliberately use `type X = {...}` rather than
+// `interface X {...}`. `@supabase/supabase-js`'s `SupabaseClient<Database>`
+// generic requires each table's `Row`/`Insert`/`Update` to satisfy
+// postgrest-js's `GenericTable` (`Row: Record<string, unknown>`, etc.), and
+// TypeScript only treats a plain object type — not a declared `interface`
+// (which never gets an implicit index signature) — as assignable to an
+// index-signature type like `Record<string, unknown>`. Using `interface`
+// here compiles fine on its own but silently breaks every `.insert()`/
+// `.update()`/`.select()` call's type inference against `Database` (they
+// collapse to `never` instead of erroring loudly), which is exactly the
+// generated-types shape `supabase gen types typescript` itself produces
+// (always `type`, never `interface`) — so this matches that convention
+// rather than deviating from it.
+
 /** `stocks` */
-export interface Stock {
+export type Stock = {
   id: string;
   ticker: string;
   yahoo_symbol: string;
@@ -71,19 +85,19 @@ export interface Stock {
   last_price_at: string | null;
   created_at: string;
   deleted_at: string | null;
-}
+};
 
 /** `holdings` (one-to-one with `stocks` via `stock_id`) */
-export interface Holding {
+export type Holding = {
   stock_id: string;
   shares: number;
   cost_basis: number;
   date_acquired: string;
   updated_at: string;
-}
+};
 
 /** `jarvis_analyses` */
-export interface JarvisAnalysis {
+export type JarvisAnalysis = {
   id: string;
   stock_id: string;
   version: number;
@@ -97,10 +111,10 @@ export interface JarvisAnalysis {
   model_id: string;
   input_context_json: Json;
   created_at: string;
-}
+};
 
 /** `alert_criteria` */
-export interface AlertCriteria {
+export type AlertCriteria = {
   id: string;
   stock_id: string;
   jarvis_analysis_id: string;
@@ -114,10 +128,10 @@ export interface AlertCriteria {
   earnings_date: string | null;
   invalidation_text: string | null;
   created_at: string;
-}
+};
 
 /** `price_cache` */
-export interface PriceCacheRow {
+export type PriceCacheRow = {
   id: number;
   stock_id: string;
   ts: string;
@@ -128,27 +142,27 @@ export interface PriceCacheRow {
   volume: number | null;
   interval: string;
   created_at: string;
-}
+};
 
 /** `fundamentals` */
-export interface FundamentalRow {
+export type FundamentalRow = {
   id: number;
   stock_id: string;
   metric_key: string;
   metric_value: string;
   source: string;
   updated_at: string;
-}
+};
 
 /** `alert_log` */
-export interface AlertLog {
+export type AlertLog = {
   id: string;
   stock_id: string;
   trigger_type: TriggerType;
   triggered_at: string;
   details: Json;
   emailed_at: string | null;
-}
+};
 
 // ---------------------------------------------------------------------------
 // Insert types: Row shape narrowed to what's required on `insert()`, i.e.
@@ -264,36 +278,52 @@ export interface Database {
         Row: Stock;
         Insert: StockInsert;
         Update: StockUpdate;
+        // `Relationships` is required by `@supabase/postgrest-js`'s
+        // `GenericTable` constraint (the shape `SupabaseClient<Database>`'s
+        // `.insert()`/`.update()`/`.select()` overloads are resolved
+        // against); without it here, those overloads silently collapse to
+        // `never` instead of `Row`/`Insert`/`Update`. Left empty rather than
+        // populated with real FK relationship metadata since every route in
+        // this plan joins `stocks`/`holdings` with a second query in
+        // application code (see `app/api/stocks/route.ts`'s `GET`) rather
+        // than a PostgREST embedded-resource `select("*, holdings(*)")`.
+        Relationships: [];
       };
       holdings: {
         Row: Holding;
         Insert: HoldingInsert;
         Update: HoldingUpdate;
+        Relationships: [];
       };
       jarvis_analyses: {
         Row: JarvisAnalysis;
         Insert: JarvisAnalysisInsert;
         Update: JarvisAnalysisUpdate;
+        Relationships: [];
       };
       alert_criteria: {
         Row: AlertCriteria;
         Insert: AlertCriteriaInsert;
         Update: AlertCriteriaUpdate;
+        Relationships: [];
       };
       price_cache: {
         Row: PriceCacheRow;
         Insert: PriceCacheInsert;
         Update: PriceCacheUpdate;
+        Relationships: [];
       };
       fundamentals: {
         Row: FundamentalRow;
         Insert: FundamentalInsert;
         Update: FundamentalUpdate;
+        Relationships: [];
       };
       alert_log: {
         Row: AlertLog;
         Insert: AlertLogInsert;
         Update: AlertLogUpdate;
+        Relationships: [];
       };
     };
     Views: Record<string, never>;
