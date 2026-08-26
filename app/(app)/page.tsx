@@ -1,40 +1,45 @@
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import Link from "next/link";
+
+import { WatchlistGrid } from "@/components/dashboard/watchlist-grid";
 
 /**
- * Placeholder home page — proves the Neon Velocity token wiring (Tailwind
- * config -> CSS custom properties -> rendered styles) works end to end.
- * Replaced by the real dashboard in Task 6.
+ * Forces this route to render per-request instead of being statically
+ * prerendered at build time. Without this, Next.js treats `/` as
+ * static-eligible (nothing here calls `cookies()`/`headers()`/etc.) and
+ * tries to prerender it during `next build`, which calls
+ * `WatchlistGrid` -> `createAdminClient()` at build time and throws on the
+ * missing `SUPABASE_SERVICE_ROLE_KEY`/`NEXT_PUBLIC_SUPABASE_URL` env vars
+ * (there's no live DB to build against — see the task brief's Verify
+ * section). A live watchlist is exactly the kind of per-request data this
+ * page should never freeze into a static build anyway.
+ */
+export const dynamic = "force-dynamic";
+
+/**
+ * The dashboard — the app's `/` route (inside the `(app)` route group, which
+ * `middleware.ts`/Task 2 guarantees is never reached without a valid
+ * session). Replaces Task 1's token-wiring placeholder.
+ *
+ * The logout control lives in `app/(app)/layout.tsx` (a fixed bottom-right
+ * button, unaffected by this page); this top bar only adds the "Add Stock"
+ * CTA the brief asks for.
  */
 export default function AppHomePage() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-8 px-6 py-24">
-      <h1 className="font-display text-6xl font-bold text-on-surface">
-        Jarvis Watchlist Tracker
-      </h1>
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-6 py-10">
+      <header className="flex items-center justify-between gap-4">
+        <h1 className="font-display text-2xl font-bold text-on-surface">
+          Watchlist
+        </h1>
+        <Link
+          href="/add"
+          className="inline-flex h-10 items-center rounded-xl bg-gradient-to-br from-primary to-primary-container px-4 text-sm font-medium text-on-primary transition-opacity hover:opacity-90"
+        >
+          Add Stock
+        </Link>
+      </header>
 
-      <Card className="w-full max-w-md rounded-xl bg-surface-container-low shadow-none">
-        <CardHeader>
-          <CardTitle className="text-on-surface">
-            Token wiring check
-          </CardTitle>
-          <CardDescription className="text-on-surface/70">
-            This card proves the design tokens render from CSS variables, not
-            hardcoded hex values.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2 text-sm text-on-surface">
-          <p>
-            Surface tiers, the primary gradient, and body text all resolve
-            through <code>styles/tokens.css</code>.
-          </p>
-        </CardContent>
-      </Card>
+      <WatchlistGrid />
     </main>
   );
 }
