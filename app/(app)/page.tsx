@@ -18,7 +18,7 @@ export default function AppHomePage() {
         Jarvis Watchlist Tracker
       </h1>
 
-      <Card className="w-full max-w-md rounded-xl bg-surface-container-low shadow-none ring-0">
+      <Card className="w-full max-w-md rounded-xl bg-surface-container-low shadow-none">
         <CardHeader>
           <CardTitle className="text-on-surface">
             Token wiring check
