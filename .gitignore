@@ -5,6 +5,7 @@ node_modules/
 .env.local
 .env*.local
 *.log
+*.tsbuildinfo
 .DS_Store
 .superpowers/
 supabase/.temp/

@@ -1,0 +1,10 @@
+create index idx_stocks_active on stocks (id) where deleted_at is null;
+create unique index uidx_alert_criteria_one_active_per_stock on alert_criteria (stock_id) where is_active = true;
+create index idx_alert_criteria_active on alert_criteria (stock_id) where is_active = true;
+create unique index uidx_jarvis_analyses_one_latest on jarvis_analyses (stock_id) where is_latest = true;
+create index idx_jarvis_analyses_latest on jarvis_analyses (stock_id) where is_latest = true;
+create index idx_price_cache_stock_ts on price_cache (stock_id, ts desc);
+create index idx_price_cache_stock_interval_ts on price_cache (stock_id, interval, ts desc);
+create index idx_alert_log_unemailed on alert_log (triggered_at) where emailed_at is null;
+create index idx_alert_log_stock_ts on alert_log (stock_id, triggered_at desc);
+create index idx_fundamentals_stock on fundamentals (stock_id);
