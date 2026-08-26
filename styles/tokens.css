@@ -1,0 +1,40 @@
+/**
+ * Design tokens for the "Neon Velocity" design system.
+ *
+ * Dark-only palette. Every color used in the app must resolve through one of
+ * these CSS custom properties — never hardcode a hex value outside this file.
+ *
+ * Tokens with an exact hex value specified by the design doc are marked
+ * accordingly; the rest are judgment calls picked as tonal steps between the
+ * base surface (#0a0e13) and on-surface (#f4f6fe), each with a one-line
+ * rationale.
+ */
+
+:root {
+  /* --- Surfaces (dark, tiered for depth via background-color only — see No-Line Rule) --- */
+  --color-surface: #0a0e13; /* exact: base canvas per design doc */
+  --color-surface-container-lowest: #060810; /* judgment: darkest tier, recessed below base surface (e.g. page gutters) */
+  --color-surface-container-low: #12161f; /* judgment: one step up from surface, default card body */
+  --color-surface-container-high: #1c212d; /* judgment: hover state for cards, and the separator "band" fill */
+  --color-surface-container-highest: #262c3a; /* judgment: input field body / secondary button fill, most elevated flat tier */
+  --color-surface-variant: #2f3646; /* judgment: base for glassmorphism (used at 0.8 opacity + blur per spec) */
+
+  /* --- Brand / primary gradient --- */
+  --color-primary: #5bff49; /* exact: gradient start, primary buttons + trend lines */
+  --color-primary-container: #07ca09; /* exact: gradient end at 135deg */
+  --color-on-primary: #07341a; /* judgment: deep green text on primary fill, per doc's "#07341a-ish" guidance — never white */
+
+  /* --- Text --- */
+  --color-on-surface: #f4f6fe; /* exact: primary text color, replaces pure white everywhere */
+
+  /* --- Secondary (used by the "Pulse" chip: secondary-container bg, secondary text) --- */
+  --color-secondary: #5bc8ff; /* judgment: neon cyan-blue accent, complements the green primary without competing with it */
+  --color-secondary-container: #12303f; /* judgment: muted dark-blue tonal container to sit behind the secondary text */
+
+  /* --- Error --- */
+  --color-error: #ff7351; /* exact: error text/icon color */
+  --color-error-container: #3d1a15; /* judgment: dark muted red container, meant to be used at 10% opacity per the input error-state spec */
+
+  /* --- Outline (ghost border, accessibility fallback only — never a default) --- */
+  --color-outline-variant: #5c6b7e; /* judgment: mid slate-blue, only ever applied at 10% opacity per the No-Line Rule's one exception */
+}
