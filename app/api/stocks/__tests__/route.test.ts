@@ -159,6 +159,37 @@ describe("POST /api/stocks", () => {
     expect(lastEqCall.args).toEqual(["id", STOCK_ROW.id]);
   });
 
+  it("returns a distinct, actionable error when the orphan-cleanup delete itself fails", async () => {
+    vi.mocked(getQuote).mockResolvedValueOnce({ price: 190.12, asOf: new Date("2026-08-27") });
+    const { client, calls } = createMockSupabase([
+      ok({ ...STOCK_ROW, type: "holding" }), // stocks insert succeeds
+      fail("holdings insert failed"), // holdings insert fails
+      fail("cleanup delete failed"), // stocks delete (cleanup) ALSO fails
+    ]);
+    vi.mocked(createAdminClient).mockReturnValue(client);
+
+    const response = await POST(
+      jsonRequest({
+        ticker: "aapl",
+        exchange: "US",
+        type: "holding",
+        shares: 10,
+        cost_basis: 150,
+        date_acquired: "2024-01-15",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    // The cleanup delete was still attempted (and its result checked)...
+    expect(callsFor(calls, "stocks", "delete")).toHaveLength(1);
+    // ...but since it failed too, the response must say so distinctly from
+    // the "cleanup succeeded" case, so this is diagnosable rather than
+    // silently swallowed.
+    expect(body.error).toMatch(/cleanup/i);
+    expect(body.error).not.toBe("holdings insert failed");
+  });
+
   it("maps a unique-violation stock insert failure to 409", async () => {
     vi.mocked(getQuote).mockResolvedValueOnce({ price: 190.12, asOf: new Date("2026-08-27") });
     const { client } = createMockSupabase([fail("duplicate key", "23505")]);

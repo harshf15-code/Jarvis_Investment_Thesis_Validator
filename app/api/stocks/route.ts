@@ -104,7 +104,26 @@ export async function POST(request: NextRequest) {
     // and has no other references yet, so a real delete (not soft-delete)
     // is correct — this undoes a failed multi-step insert rather than
     // removing a user-visible watchlist entry.
-    await supabase.from("stocks").delete().eq("id", stock.id);
+    const { error: cleanupError } = await supabase
+      .from("stocks")
+      .delete()
+      .eq("id", stock.id);
+
+    if (cleanupError) {
+      // The cleanup delete itself failed (e.g. a transient DB error — the
+      // admin client bypasses RLS, so this isn't a permissions issue): the
+      // orphaned `stocks` row is still sitting there. Say so explicitly
+      // rather than returning the same message as the "cleanup succeeded"
+      // case, so this rare failure mode is diagnosable instead of silently
+      // swallowed.
+      return NextResponse.json(
+        {
+          error:
+            "Failed to save holding details, and cleanup of the partial entry also failed — a stray watchlist entry for this ticker may need manual removal.",
+        },
+        { status: 500 },
+      );
+    }
 
     return NextResponse.json(
       {
