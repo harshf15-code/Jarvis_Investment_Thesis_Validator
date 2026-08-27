@@ -35,46 +35,46 @@ The spec (Section 6, "Known gaps") already anticipates Stitch's visuals divergin
 ## Task Index
 
 **Phase 0 — Foundation** (blocks everything below)
-1. Schema replacement migration + `lib/types.ts` rewrite
-2. Design tokens v2 (amber-gold) + DM Mono/Syne fonts
-3. Retire superseded code
-4. On-demand price refresh endpoint + client hook
-5. Update `poll-prices`/`daily-digest` Edge Functions for the new schema
-6. App shell: sidebar nav + New-Thesis drawer + shared empty/loading/error states
+✅ 1. Schema replacement migration + `lib/types.ts` rewrite
+✅ 2. Design tokens v2 (amber-gold) + DM Mono/Syne fonts
+✅ 3. Retire superseded code
+✅ 4. On-demand price refresh endpoint + client hook
+✅ 5. Update `poll-prices`/`daily-digest` Edge Functions for the new schema
+✅ 6. App shell: sidebar nav + New-Thesis drawer + shared empty/loading/error states
 
 **Phase 1 — P0**
-7. Jarvis thesis prompt v2 (3-mode)
-8. Jarvis thesis parser v2
-9. `POST /api/theses`
-10. Screen 1: Thesis Input
-11. `lib/weighted-average.ts`
-12. `POST /api/positions/[id]/entries`
-13. Screen HUB-2: Active Positions & Exit Discipline
-14. Screen 4: Manual Execution Trigger + `POST /api/positions`
-15. `lib/recommendation-status.ts`
-16. Screen NEW: Jarvis Recommendation Tracker
+✅ 7. Jarvis thesis prompt v2 (3-mode)
+✅ 8. Jarvis thesis parser v2
+✅ 9. `POST /api/theses`
+✅ 10. Screen 1: Thesis Input
+✅ 11. `lib/weighted-average.ts`
+✅ 12. `POST /api/positions/[id]/entries`
+✅ 13. Screen HUB-2: Active Positions & Exit Discipline
+✅ 14. Screen 4: Manual Execution Trigger + `POST /api/positions`
+✅ 15. `lib/recommendation-status.ts`
+✅ 16. Screen NEW: Jarvis Recommendation Tracker
 
 **Phase 2 — P1**
-17. Stress-test extension (bear cases) to prompt/parser
-18. `lib/risk-reward.ts`
-19. `PATCH /api/trade-plans/[id]`
-20. Screen 2–3: Validation & Plan wizard
-21. Screen HUB-3: Stress Test & Trade Plan (review mode)
-22. `POST /api/positions/[id]/exits`
-23. Screen 5–6: Exit & Monitoring
-24. Screen HUB-1: Velocity Cockpit dashboard
+✅ 17. Stress-test extension (bear cases) to prompt/parser
+✅ 18. `lib/risk-reward.ts`
+✅ 19. `PATCH /api/trade-plans/[id]`
+✅ 20. Screen 2–3: Validation & Plan wizard
+✅ 21. Screen HUB-3: Stress Test & Trade Plan (review mode)
+✅ 22. `POST /api/positions/[id]/exits`
+✅ 23. Screen 5–6: Exit & Monitoring
+✅ 24. Screen HUB-1: Velocity Cockpit dashboard
 
 **Phase 3 — P2**
-25. `POST /api/journal` + Jarvis-verdict generation
-26. Screen 7: Trade Journal & Review (form)
-27. Journal archive/browse screen
-28. Screen HUB-4: Intelligence Feed (manual signals)
+✅ 25. `POST /api/journal` + Jarvis-verdict generation
+✅ 26. Screen 7: Trade Journal & Review (form)
+✅ 27. Journal archive/browse screen
+✅ 28. Screen HUB-4: Intelligence Feed (manual signals)
 
 **Phase 4 — P3**
-29. Screen 8: Opportunity Discovery (manual watchlist)
+✅ 29. Screen 8: Opportunity Discovery (manual watchlist)
 
 **Final**
-30. Whole-plan verification pass
+✅ 30. Whole-plan verification pass
 
 ---
 
