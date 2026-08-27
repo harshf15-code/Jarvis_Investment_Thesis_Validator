@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { computeRecommendationStatus } from "@/lib/recommendation-status";
 import type { ConvictionTier } from "@/lib/types";
 
-type Row = {
+export type RecommendationStatsRow = {
   recommendation: {
     conviction_tier: ConvictionTier;
     recommended_stop: number | null;
@@ -20,9 +20,19 @@ type Row = {
  * US-02's cockpit widget and US-23's full stats strip share this exact
  * "unacted-on only" filter (spec: "to avoid double-counting" positions that
  * already have their own real P&L tracked elsewhere) — this component is
- * reused directly by Task 24's Cockpit summary widget, not reimplemented.
+ * reused directly by the Cockpit's summary widget, not reimplemented.
+ *
+ * `compact` is what the Cockpit passes: the same five headline stats over the
+ * same `stats` computation, minus the per-tier breakdown and the Hypothetical
+ * P&L toggle, which belong to the full tracker screen (US-23).
  */
-export function RecommendationStats({ rows }: { rows: Row[] }) {
+export function RecommendationStats({
+  rows,
+  compact = false,
+}: {
+  rows: RecommendationStatsRow[];
+  compact?: boolean;
+}) {
   const [hypothetical, setHypothetical] = useState(false);
 
   const stats = useMemo(() => {
@@ -71,23 +81,25 @@ export function RecommendationStats({ rows }: { rows: Row[] }) {
         ))}
       </div>
 
-      <div className="flex items-center gap-4 text-xs text-on-surface/60">
-        {(["I", "II", "III"] as ConvictionTier[]).map((tier) => {
-          const t = stats.byTier[tier];
-          const rate = t.wins + t.losses > 0 ? ((t.wins / (t.wins + t.losses)) * 100).toFixed(0) : "—";
-          return <span key={tier}>Tier {tier}: {rate}%</span>;
-        })}
-        <label className="ml-auto flex items-center gap-2">
-          <input type="checkbox" checked={hypothetical} onChange={(e) => setHypothetical(e.target.checked)} />
-          Hypothetical P&L
-        </label>
-        {hypothetical && (
-          <span className={stats.hypotheticalPnl >= 0 ? "text-status-green" : "text-status-red"}>
-            {stats.hypotheticalPnl >= 0 ? "+" : ""}
-            {stats.hypotheticalPnl.toFixed(2)}
-          </span>
-        )}
-      </div>
+      {!compact && (
+        <div className="flex items-center gap-4 text-xs text-on-surface/60">
+          {(["I", "II", "III"] as ConvictionTier[]).map((tier) => {
+            const t = stats.byTier[tier];
+            const rate = t.wins + t.losses > 0 ? ((t.wins / (t.wins + t.losses)) * 100).toFixed(0) : "—";
+            return <span key={tier}>Tier {tier}: {rate}%</span>;
+          })}
+          <label className="ml-auto flex items-center gap-2">
+            <input type="checkbox" checked={hypothetical} onChange={(e) => setHypothetical(e.target.checked)} />
+            Hypothetical P&L
+          </label>
+          {hypothetical && (
+            <span className={stats.hypotheticalPnl >= 0 ? "text-status-green" : "text-status-red"}>
+              {stats.hypotheticalPnl >= 0 ? "+" : ""}
+              {stats.hypotheticalPnl.toFixed(2)}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

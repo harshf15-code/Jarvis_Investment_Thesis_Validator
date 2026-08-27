@@ -10,7 +10,10 @@ import type { ConvictionTier, ExchangeCode } from "@/lib/types";
 
 export type PositionRow = {
   position: { id: string; ticker: string; status: string };
-  stock: { last_price: number | null; exchange: ExchangeCode } | undefined;
+  // `last_price_at` is what the Cockpit's <LastUpdated/> stamps (spec Section
+  // 5: every screen showing a price says when it was taken); it's optional
+  // here because this table itself never reads it.
+  stock: { last_price: number | null; last_price_at?: string | null; exchange: ExchangeCode } | undefined;
   tradePlan: {
     stop_loss: number | null;
     target_1: number | null;

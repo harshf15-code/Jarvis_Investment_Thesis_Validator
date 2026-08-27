@@ -24,3 +24,28 @@ export function computeDistanceToStop(input: {
   const percent = (rupees / input.currentPrice) * 100;
   return { rupees, percent };
 }
+
+/** Default "danger zone" width for HUB-1's near-stop alert (spec US-01: within 3% of the stop). */
+export const NEAR_STOP_PERCENT = 3;
+
+/**
+ * Whether a position is close enough to its stop to earn HUB-1's RED alert
+ * pill (US-01). A position already trading *through* its stop is a superset
+ * of "near" it, so a negative distance counts too — the Cockpit rail must not
+ * go quiet on the one position that most needs an exit decision.
+ *
+ * Returns false when there is no stop or no quote to measure against; an
+ * unmeasurable position is not an alert, it's a gap.
+ */
+export function isNearStop(input: {
+  currentPrice: number | null | undefined;
+  stopLoss: number | null | undefined;
+  thresholdPercent?: number;
+}): boolean {
+  if (input.currentPrice == null || input.stopLoss == null) return false;
+  const distance = computeDistanceToStop({
+    currentPrice: input.currentPrice,
+    stopLoss: input.stopLoss,
+  });
+  return distance !== null && distance.percent <= (input.thresholdPercent ?? NEAR_STOP_PERCENT);
+}
