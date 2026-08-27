@@ -30,24 +30,46 @@ export function JournalReviewForm({ positionId }: { positionId: string }) {
   const [editingVerdict, setEditingVerdict] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    fetch("/api/journal", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ position_id: positionId, generate_only: true }),
-    })
-      .then((res) => res.json())
-      .then((body) => {
-        setAutoFilled(body.autoFilled);
-        setVerdict(body.verdict ?? "");
-        setTags(body.suggestedTags ?? []);
-        setLoading(false);
-      });
-  }, [positionId]);
+    let cancelled = false;
+
+    async function load() {
+      setError(null);
+      try {
+        const res = await fetch("/api/journal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ position_id: positionId, generate_only: true }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? "Could not load the review form.");
+        if (!cancelled) {
+          setAutoFilled(body.autoFilled);
+          setVerdict(body.verdict ?? "");
+          setTags(body.suggestedTags ?? []);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Something went wrong.");
+          setLoading(false);
+        }
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [positionId, reloadKey]);
 
   async function handleSave() {
     setSubmitting(true);
+    setSaveError(null);
     try {
       const res = await fetch("/api/journal", {
         method: "POST",
@@ -64,9 +86,22 @@ export function JournalReviewForm({ positionId }: { positionId: string }) {
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Failed to save review");
       router.push("/journal");
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to save the review.");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl bg-status-red-container px-4 py-3 text-sm text-status-red">
+        {error}{" "}
+        <button type="button" onClick={() => setReloadKey((k) => k + 1)} className="underline">
+          Retry
+        </button>
+      </div>
+    );
   }
 
   if (loading || !autoFilled) return <SkeletonLoader lines={6} />;
@@ -138,6 +173,12 @@ export function JournalReviewForm({ positionId }: { positionId: string }) {
           <span key={tag} className="rounded-full bg-surface-container-highest px-3 py-1 text-xs text-on-surface/70">{tag}</span>
         ))}
       </div>
+
+      {saveError && (
+        <div className="rounded-xl bg-status-red-container px-4 py-3 text-sm text-status-red">
+          {saveError}
+        </div>
+      )}
 
       <button
         type="button"
