@@ -4545,3 +4545,4193 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 ```
 
 ---
+
+## Phase 2 — P1 (continued)
+
+### Task 20: Screen 2–3 — Validation & Plan wizard
+
+**Files:**
+- Modify: `app/api/theses/[id]/route.ts` (add `GET`, alongside Task 19's `PATCH`; extend `PATCH`'s schema to also accept `bear_cases` and `conviction_score`)
+- Create: `app/api/theses/[id]/stress-test/route.ts`
+- Create: `app/api/trade-plans/route.ts` (`POST` — this task's counterpart to Task 19's `PATCH /api/trade-plans/[id]`)
+- Create: `app/(app)/thesis/[id]/plan/page.tsx`
+- Create: `components/thesis/stress-test-panel.tsx`
+- Create: `components/thesis/trade-plan-grid.tsx`
+- Create: `components/shared/last-updated.tsx` (spec Section 5 Price Data's "Last updated: [timestamp]" rule — introduced here, the first task to fetch and display a live price, and reused by every later price-showing screen: Tasks 21, 23, 24, 29)
+- Test: `app/api/theses/[id]/stress-test/__tests__/route.test.ts`
+- Test: `app/api/trade-plans/__tests__/route.test.ts`
+
+**Interfaces:**
+- Consumes: `JARVIS_STRESS_TEST_SYSTEM_PROMPT`/`buildStressTestUserContext`/`parseStressTestResponse` (Task 17), `computeRiskReward`/`computeMaxDrawdownPct`/`computeCashAtRisk` (Task 18), `ConvictionBadge` (Task 10), `usePriceRefresh` (Task 4), `fetchInternalApi` (Global Constraint), `TradePlanInsert`/`JarvisRecommendationInsert`/`BearCase` (`@/lib/types`)
+- Produces: `GET /api/theses/:id` (`{ thesis: Thesis; tradePlan: TradePlan | null; stock: { exchange: ExchangeCode; last_price: number | null; last_price_at: string | null } | null }`) — the read path every later thesis-detail screen uses (Tasks 21, 28, 29); `stock` is `null` for a Macro Thesis with no linked ticker. `POST /api/theses/:id/stress-test` (`{}` → `{ thesis: Thesis }`, persists `bear_cases`). `POST /api/trade-plans` (body: the 9-cell grid fields + `thesis_id` → `201 { tradePlan: TradePlan; recommendation: JarvisRecommendation | null }`) — the only writer of `trade_plans`/`jarvis_recommendations` in the whole app; consumed by Task 21's "no existing plan" empty state and reused nowhere else (a locked plan is edited via Task 19's `PATCH`, never re-created).
+
+**Ruling — when a `JarvisRecommendation` is created (resolves plan Deferred Finding I1):** the spec is explicit here, not actually ambiguous — Screen NEW's own purpose statement says *"Every time Jarvis generates a BUY recommendation (i.e., a trade plan is saved with Tier I or II), a `JarvisRecommendation` record is created automatically."* So `POST /api/trade-plans` creates one `jarvis_recommendations` row if and only if the thesis's `conviction_tier` is `"I"` or `"II"`, at the moment the plan is locked, with `price_at_recommendation` = the stock's current `last_price` and `recommended_entry_low/high`/`recommended_stop`/`recommended_target_1/2` copied from the just-created trade plan. Tier III/IV theses can still have trade plans and positions — they just never appear in the Recommendation Tracker (matches US-23's "calibrate how much to trust each conviction tier" framing, which only makes sense if not every trade generates a tracked "recommendation").
+
+**Ruling — `thesis_conditions`:** US-06/US-15 both reference "measurable thesis conditions" shown on the trade plan / position screens. This plan adds that as a `trade_plans.thesis_conditions` column in **Task 23** (Screen 5–6), not here — Task 20's grid only builds the 9 numeric/date cells the spec's US-12 explicitly lists. See Task 23's ruling for why.
+
+**Ruling — Conviction Score during stress test:** the spec says the score bar "updates as user modifies counter-arguments" but defines no scoring algorithm anywhere (no rubric, no per-edit delta). Inventing one would be an unreviewed judgment call baked silently into the app's risk calibration. Instead, Step 2 makes `conviction_score` a directly user-editable slider (0–100, seeded from Task 9's AI-generated value) that auto-saves via the same extended `PATCH /api/theses/[id]` this task adds — the user, not a made-up formula, is the one who "updates" it after reviewing the bear cases, which is what the spec's underlying intent (challenge conviction before committing) actually requires.
+
+- [ ] **Step 1: Extend `app/api/theses/[id]/route.ts` — add `GET`, extend `PATCH`'s schema**
+
+Add above the existing `PATCH` export:
+
+```typescript
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const supabase = createAdminClient();
+
+  const { data: thesis, error } = await supabase.from("theses").select("*").eq("id", id).single();
+  if (error || !thesis) {
+    return NextResponse.json({ error: error?.message ?? "Thesis not found" }, { status: 404 });
+  }
+
+  const { data: tradePlan } = await supabase
+    .from("trade_plans")
+    .select("*")
+    .eq("thesis_id", id)
+    .maybeSingle();
+
+  const { data: stock } = thesis.stock_id
+    ? await supabase.from("stocks").select("exchange, last_price, last_price_at").eq("id", thesis.stock_id).single()
+    : { data: null };
+
+  return NextResponse.json({ thesis, tradePlan: tradePlan ?? null, stock: stock ?? null });
+}
+```
+
+Replace `UpdateThesisSchema` with:
+
+```typescript
+const UpdateThesisSchema = z.object({
+  status: z.enum(["draft", "active", "closed", "macro"]).optional(),
+  bear_cases: z
+    .array(z.object({ reason: z.string(), counter: z.string(), modified: z.boolean() }))
+    .optional(),
+  conviction_score: z.number().min(0).max(100).optional(),
+});
+```
+
+(`PATCH`'s body is unchanged below that — `.update(parsed.data)` already forwards whichever of the three optional fields are present.)
+
+- [ ] **Step 2: Write the stress-test route test**
+
+```typescript
+// app/api/theses/[id]/stress-test/__tests__/route.test.ts
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+vi.mock("ai", () => ({ generateText: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+
+import { generateText } from "ai";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { POST } from "../route";
+
+const RAW = `\`\`\`json
+{"bear_cases":[
+  {"reason":"r1","counter":"c1"},{"reason":"r2","counter":"c2"},
+  {"reason":"r3","counter":"c3"},{"reason":"r4","counter":"c4"}
+]}
+\`\`\``;
+
+function buildMock(thesis: Record<string, unknown> | null) {
+  const update = vi.fn().mockReturnValue({
+    select: vi.fn().mockReturnValue({
+      single: vi.fn().mockResolvedValue({ data: { ...thesis, bear_cases: JSON.parse(RAW.replace(/```json|```/g, "")).bear_cases.map((b: object) => ({ ...b, modified: false })) }, error: null }),
+    }),
+  });
+  return {
+    from: vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: thesis, error: null }) }),
+      }),
+      update,
+    }),
+    _update: update,
+  };
+}
+
+describe("POST /api/theses/[id]/stress-test", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("generates 4 bear cases and persists them onto the thesis", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      buildMock({ id: "t1", market_view: "v", mispricing: "m", catalyst: "c", invalidation_condition: "i" }) as never,
+    );
+    vi.mocked(generateText).mockResolvedValue({ text: RAW } as never);
+
+    const res = await POST(new Request("http://test") as never, { params: Promise.resolve({ id: "t1" }) });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.thesis.bear_cases).toHaveLength(4);
+    expect(body.thesis.bear_cases[0].modified).toBe(false);
+  });
+
+  it("returns 404 when the thesis doesn't exist", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(buildMock(null) as never);
+    const res = await POST(new Request("http://test") as never, { params: Promise.resolve({ id: "missing" }) });
+    expect(res.status).toBe(404);
+  });
+});
+```
+
+- [ ] **Step 3: Run to verify it fails** — Run: `npx vitest run app/api/theses/[id]/stress-test/__tests__/route.test.ts` — Expected: FAIL, module not found
+
+- [ ] **Step 4: Implement the stress-test route**
+
+```typescript
+// app/api/theses/[id]/stress-test/route.ts
+import { NextResponse } from "next/server";
+import { generateText } from "ai";
+
+import {
+  JARVIS_STRESS_TEST_SYSTEM_PROMPT,
+  buildStressTestUserContext,
+} from "@/lib/jarvis-thesis-prompt";
+import { parseStressTestResponse } from "@/lib/jarvis-thesis-parser";
+import { jarvisModel } from "@/lib/llm/openrouter";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+export const maxDuration = 60;
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Spec Screen 2-3 Step 2 (US-11). Re-runnable — each call overwrites `theses.bear_cases`. */
+export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const supabase = createAdminClient();
+
+  const { data: thesis, error: fetchError } = await supabase
+    .from("theses")
+    .select("market_view, mispricing, catalyst, invalidation_condition")
+    .eq("id", id)
+    .single();
+  if (fetchError || !thesis) {
+    return NextResponse.json({ error: fetchError?.message ?? "Thesis not found" }, { status: 404 });
+  }
+
+  let rawResponse: string;
+  try {
+    const result = await generateText({
+      model: jarvisModel,
+      system: JARVIS_STRESS_TEST_SYSTEM_PROMPT,
+      prompt: buildStressTestUserContext(thesis),
+    });
+    rawResponse = result.text;
+  } catch (err) {
+    return NextResponse.json({ error: `Jarvis model call failed: ${errorMessage(err)}` }, { status: 502 });
+  }
+
+  const parsed = parseStressTestResponse(rawResponse);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: `Stress test extraction failed: ${parsed.error}` }, { status: 502 });
+  }
+
+  const { data: updated, error: updateError } = await supabase
+    .from("theses")
+    .update({ bear_cases: parsed.data.bear_cases, raw_llm_response: rawResponse })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (updateError || !updated) {
+    return NextResponse.json({ error: updateError?.message ?? "Failed to save bear cases" }, { status: 500 });
+  }
+
+  return NextResponse.json({ thesis: updated });
+}
+```
+
+- [ ] **Step 5: Run to verify it passes** — Run: `npx vitest run app/api/theses/[id]/stress-test/__tests__/route.test.ts` — Expected: PASS (2/2)
+
+- [ ] **Step 6: Write the trade-plan creation route test**
+
+```typescript
+// app/api/trade-plans/__tests__/route.test.ts
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+import { createAdminClient } from "@/lib/supabase/admin";
+import { POST } from "../route";
+
+function buildMock(opts: { convictionTier: string; stockId?: string | null }) {
+  const tradePlanInsert = vi.fn().mockReturnValue({
+    select: vi.fn().mockReturnValue({
+      single: vi.fn().mockResolvedValue({ data: { id: "tp1", thesis_id: "t1" }, error: null }),
+    }),
+  });
+  const recInsert = vi.fn().mockReturnValue({
+    select: vi.fn().mockReturnValue({
+      single: vi.fn().mockResolvedValue({ data: { id: "rec1" }, error: null }),
+    }),
+  });
+  return {
+    from: vi.fn().mockImplementation((table: string) => {
+      if (table === "theses") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({
+                data: {
+                  id: "t1",
+                  stock_id: opts.stockId ?? "s1",
+                  ticker: "AAPL",
+                  conviction_tier: opts.convictionTier,
+                  market_view: "v",
+                },
+                error: null,
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === "stocks") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: { last_price: 150 }, error: null }),
+            }),
+          }),
+        };
+      }
+      if (table === "trade_plans") return { insert: tradePlanInsert };
+      if (table === "jarvis_recommendations") return { insert: recInsert };
+      throw new Error(`unexpected table ${table}`);
+    }),
+    _recInsert: recInsert,
+  };
+}
+
+const VALID_BODY = {
+  thesis_id: "t1",
+  entry_zone_low: 140,
+  entry_zone_high: 150,
+  stop_loss: 130,
+  target_1: 170,
+  target_2: 190,
+  position_size_pct: 5,
+};
+
+describe("POST /api/trade-plans", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("rejects a body missing stop_loss", async () => {
+    const req = new Request("http://test", { method: "POST", body: JSON.stringify({ thesis_id: "t1" }) });
+    const res = await POST(req as never);
+    expect(res.status).toBe(400);
+  });
+
+  it("creates a jarvis_recommendation for a Tier I thesis", async () => {
+    const mock = buildMock({ convictionTier: "I" });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    const req = new Request("http://test", { method: "POST", body: JSON.stringify(VALID_BODY) });
+    const res = await POST(req as never);
+    const body = await res.json();
+    expect(res.status).toBe(201);
+    expect(body.recommendation.id).toBe("rec1");
+    expect(mock._recInsert).toHaveBeenCalled();
+  });
+
+  it("skips jarvis_recommendation creation for a Tier III thesis", async () => {
+    const mock = buildMock({ convictionTier: "III" });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    const req = new Request("http://test", { method: "POST", body: JSON.stringify(VALID_BODY) });
+    const res = await POST(req as never);
+    const body = await res.json();
+    expect(res.status).toBe(201);
+    expect(body.recommendation).toBe(null);
+    expect(mock._recInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a macro thesis with no stock_id", async () => {
+    const mock = buildMock({ convictionTier: "I", stockId: null });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    const req = new Request("http://test", { method: "POST", body: JSON.stringify(VALID_BODY) });
+    const res = await POST(req as never);
+    expect(res.status).toBe(400);
+  });
+});
+```
+
+- [ ] **Step 7: Run to verify it fails** — Run: `npx vitest run app/api/trade-plans/__tests__/route.test.ts` — Expected: FAIL, module not found
+
+- [ ] **Step 8: Implement `POST /api/trade-plans`**
+
+```typescript
+// app/api/trade-plans/route.ts
+import { NextResponse } from "next/server";
+import { z } from "zod";
+
+import { createAdminClient } from "@/lib/supabase/admin";
+import type { TradePlanInsert, JarvisRecommendationInsert, ConvictionTier } from "@/lib/types";
+
+const CreateTradePlanSchema = z.object({
+  thesis_id: z.string().min(1),
+  entry_zone_low: z.number().nullable().optional(),
+  entry_zone_high: z.number().nullable().optional(),
+  add_tranche_low: z.number().nullable().optional(),
+  add_tranche_high: z.number().nullable().optional(),
+  stop_loss: z.number(),
+  target_1: z.number().nullable().optional(),
+  target_2: z.number().nullable().optional(),
+  position_size_pct: z.number().nullable().optional(),
+  max_portfolio_pct: z.number().nullable().optional(),
+  time_exit_date: z.iso.date().nullable().optional(),
+  time_exit_condition: z.string().nullable().optional(),
+});
+
+const RECOMMENDATION_TIERS: ConvictionTier[] = ["I", "II"];
+
+/** Spec US-12's last bullet — the only writer of `trade_plans` and (conditionally) `jarvis_recommendations` in the app. See this task's I1 ruling above for the Tier I/II gate. */
+export async function POST(request: Request) {
+  const json = await request.json().catch(() => null);
+  if (json === null) {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const parsed = CreateTradePlanSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const supabase = createAdminClient();
+  const { thesis_id, ...planFields } = parsed.data;
+
+  const { data: thesis, error: thesisError } = await supabase
+    .from("theses")
+    .select("id, stock_id, ticker, conviction_tier")
+    .eq("id", thesis_id)
+    .single();
+  if (thesisError || !thesis) {
+    return NextResponse.json({ error: thesisError?.message ?? "Thesis not found" }, { status: 404 });
+  }
+  if (!thesis.stock_id) {
+    return NextResponse.json(
+      { error: "Cannot build a trade plan for a Macro Thesis with no stock." },
+      { status: 400 },
+    );
+  }
+
+  const aiSuggested: Record<string, unknown> = { ...planFields };
+  const insert: TradePlanInsert = {
+    thesis_id,
+    ...planFields,
+    ai_suggested: aiSuggested,
+    edited_fields: [],
+  };
+
+  const { data: tradePlan, error: insertError } = await supabase
+    .from("trade_plans")
+    .insert(insert)
+    .select("*")
+    .single();
+  if (insertError || !tradePlan) {
+    return NextResponse.json({ error: insertError?.message ?? "Failed to create trade plan" }, { status: 500 });
+  }
+
+  let recommendation = null;
+  if (thesis.conviction_tier && RECOMMENDATION_TIERS.includes(thesis.conviction_tier)) {
+    const { data: stock } = await supabase
+      .from("stocks")
+      .select("last_price")
+      .eq("id", thesis.stock_id)
+      .single();
+
+    const recInsert: JarvisRecommendationInsert = {
+      thesis_id,
+      trade_plan_id: tradePlan.id,
+      stock_id: thesis.stock_id,
+      ticker: thesis.ticker ?? "",
+      conviction_tier: thesis.conviction_tier,
+      price_at_recommendation: stock?.last_price ?? 0,
+      thesis_summary: `${thesis.ticker ?? "Macro"} — Tier ${thesis.conviction_tier} trade plan locked.`,
+      recommended_entry_low: planFields.entry_zone_low ?? null,
+      recommended_entry_high: planFields.entry_zone_high ?? null,
+      recommended_stop: planFields.stop_loss,
+      recommended_target_1: planFields.target_1 ?? null,
+      recommended_target_2: planFields.target_2 ?? null,
+    };
+
+    const { data: rec, error: recError } = await supabase
+      .from("jarvis_recommendations")
+      .insert(recInsert)
+      .select("*")
+      .single();
+    if (recError) {
+      return NextResponse.json({ error: recError.message }, { status: 500 });
+    }
+    recommendation = rec;
+  }
+
+  return NextResponse.json({ tradePlan, recommendation }, { status: 201 });
+}
+```
+
+- [ ] **Step 9: Run to verify it passes** — Run: `npx vitest run app/api/trade-plans/__tests__/route.test.ts` — Expected: PASS (4/4)
+
+- [ ] **Step 10: Build the stress-test panel**
+
+```typescript
+// components/thesis/stress-test-panel.tsx
+"use client";
+
+import { useState } from "react";
+import type { BearCase } from "@/lib/types";
+
+/** Spec Screen 2-3 Step 2 (US-11): left column = bear cases, right column = counters, horizontally paired. */
+export function StressTestPanel({
+  thesisId,
+  bearCases,
+  convictionScore,
+  onApproved,
+}: {
+  thesisId: string;
+  bearCases: BearCase[];
+  convictionScore: number | null;
+  onApproved: () => void;
+}) {
+  const [cases, setCases] = useState(bearCases);
+  const [score, setScore] = useState(convictionScore ?? 50);
+  const [saving, setSaving] = useState(false);
+
+  function updateCounter(index: number, counter: string) {
+    setCases((prev) => prev.map((c, i) => (i === index ? { ...c, counter, modified: true } : c)));
+  }
+
+  async function handleScoreCommit() {
+    await fetch(`/api/theses/${thesisId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conviction_score: score }),
+    });
+  }
+
+  async function handleApprove() {
+    setSaving(true);
+    try {
+      await fetch(`/api/theses/${thesisId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bear_cases: cases, conviction_score: score }),
+      });
+      onApproved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <p className="font-display text-xs uppercase tracking-wide text-on-surface/50">Step 2 of 3</p>
+
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between text-xs text-on-surface/60">
+          <span>Conviction Score</span>
+          <span className="font-mono text-primary">{score}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={score}
+          onChange={(e) => setScore(Number(e.target.value))}
+          onMouseUp={handleScoreCommit}
+          onTouchEnd={handleScoreCommit}
+          className="w-full accent-[var(--color-primary)]"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {cases.map((bc, i) => (
+          <div key={i} className="contents">
+            <div className="rounded-xl bg-status-red-container p-4">
+              <p className="mb-1 font-display text-xs uppercase text-status-red">Bear Case {i + 1}</p>
+              <p className="text-sm text-on-surface">{bc.reason}</p>
+            </div>
+            <div className="rounded-xl bg-status-green-container p-4">
+              <div className="mb-1 flex items-center gap-2">
+                <p className="font-display text-xs uppercase text-status-green">Counter</p>
+                {bc.modified && (
+                  <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[10px] text-primary">Modified</span>
+                )}
+              </div>
+              <textarea
+                value={bc.counter}
+                onChange={(e) => updateCounter(i, e.target.value)}
+                rows={2}
+                className="w-full resize-none rounded-lg bg-surface-container-highest px-2 py-1 text-sm text-on-surface"
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={handleApprove}
+        disabled={saving}
+        className="self-start rounded-xl bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40"
+      >
+        Stress Test Approved → Build Trade Plan
+      </button>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 11: Build the trade-plan grid**
+
+```typescript
+// components/thesis/trade-plan-grid.tsx
+"use client";
+
+import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+
+import { computeRiskReward, computeMaxDrawdownPct, computeCashAtRisk } from "@/lib/risk-reward";
+import { PriceBadge } from "@/components/shared/price-badge";
+import type { ExchangeCode } from "@/lib/types";
+
+type GridState = {
+  entry_zone_low: string;
+  entry_zone_high: string;
+  add_tranche_low: string;
+  add_tranche_high: string;
+  stop_loss: string;
+  target_1: string;
+  target_2: string;
+  position_size_pct: string;
+  time_exit_date: string;
+  time_exit_condition: string;
+};
+
+const EMPTY_GRID: GridState = {
+  entry_zone_low: "",
+  entry_zone_high: "",
+  add_tranche_low: "",
+  add_tranche_high: "",
+  stop_loss: "",
+  target_1: "",
+  target_2: "",
+  position_size_pct: "",
+  time_exit_date: "",
+  time_exit_condition: "",
+};
+
+/** Spec Screen 2-3 Step 3 (US-12): 9-cell grid. CMP is read-only/fetched, not part of the editable grid state. */
+export function TradePlanGrid({
+  thesisId,
+  cmp,
+  exchange,
+  portfolioValue = 1_000_000,
+}: {
+  thesisId: string;
+  cmp: number | null;
+  exchange: ExchangeCode;
+  portfolioValue?: number;
+}) {
+  const router = useRouter();
+  const [grid, setGrid] = useState<GridState>(EMPTY_GRID);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const num = (v: string) => (v.trim() === "" ? null : Number(v));
+
+  const metrics = useMemo(() => {
+    const entry = num(grid.entry_zone_low) ?? cmp;
+    const stop = num(grid.stop_loss);
+    const target = num(grid.target_1);
+    if (entry === null || stop === null) return null;
+    return {
+      riskReward: target !== null ? computeRiskReward({ entry, stop, target }) : null,
+      maxDrawdownPct: computeMaxDrawdownPct({ entry, stop }),
+      cashAtRisk: computeCashAtRisk({
+        portfolioValue,
+        positionSizePct: num(grid.position_size_pct) ?? 0,
+        entry,
+        stop,
+      }),
+    };
+  }, [grid, cmp, portfolioValue]);
+
+  const canLock = grid.stop_loss.trim() !== "";
+
+  function set(field: keyof GridState, value: string) {
+    setGrid((prev) => ({ ...prev, [field]: value }));
+  }
+
+  async function handleLock() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/trade-plans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          thesis_id: thesisId,
+          entry_zone_low: num(grid.entry_zone_low),
+          entry_zone_high: num(grid.entry_zone_high),
+          add_tranche_low: num(grid.add_tranche_low),
+          add_tranche_high: num(grid.add_tranche_high),
+          stop_loss: num(grid.stop_loss),
+          target_1: num(grid.target_1),
+          target_2: num(grid.target_2),
+          position_size_pct: num(grid.position_size_pct),
+          time_exit_date: grid.time_exit_date || null,
+          time_exit_condition: grid.time_exit_condition || null,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Failed to lock plan");
+      router.push(`/thesis/${thesisId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const FIELDS: { key: keyof GridState; label: string; type: "number" | "date" | "text" }[] = [
+    { key: "entry_zone_low", label: "Entry Zone Low", type: "number" },
+    { key: "entry_zone_high", label: "Entry Zone High", type: "number" },
+    { key: "add_tranche_low", label: "Add Tranche Low", type: "number" },
+    { key: "add_tranche_high", label: "Add Tranche High", type: "number" },
+    { key: "stop_loss", label: "Stop Loss *", type: "number" },
+    { key: "target_1", label: "Target 1", type: "number" },
+    { key: "target_2", label: "Target 2", type: "number" },
+    { key: "position_size_pct", label: "Position Size %", type: "number" },
+    { key: "time_exit_date", label: "Time Exit Date", type: "date" },
+  ];
+
+  return (
+    <div className="flex flex-col gap-6">
+      <p className="font-display text-xs uppercase tracking-wide text-on-surface/50">Step 3 of 3</p>
+
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-on-surface/50">CMP:</span>
+        <PriceBadge price={cmp} exchange={exchange} />
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        {FIELDS.map(({ key, label, type }) => (
+          <label key={key} className="flex flex-col gap-1">
+            <span className="text-xs text-on-surface/50">{label}</span>
+            <input
+              type={type}
+              value={grid[key]}
+              onChange={(e) => set(key, e.target.value)}
+              className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm font-mono"
+            />
+          </label>
+        ))}
+      </div>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs text-on-surface/50">Time Exit Condition</span>
+        <input
+          type="text"
+          placeholder='e.g. "Chetak share < 15%"'
+          value={grid.time_exit_condition}
+          onChange={(e) => set("time_exit_condition", e.target.value)}
+          className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm"
+        />
+      </label>
+
+      {metrics && (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-xl bg-surface-container-low p-4">
+            <p className="text-xs text-on-surface/50">Risk/Reward</p>
+            <p className="font-mono text-lg text-on-surface">{metrics.riskReward !== null ? `${metrics.riskReward.toFixed(2)}:1` : "—"}</p>
+          </div>
+          <div className="rounded-xl bg-surface-container-low p-4">
+            <p className="text-xs text-on-surface/50">Max Drawdown</p>
+            <p className="font-mono text-lg text-on-surface">{metrics.maxDrawdownPct.toFixed(1)}%</p>
+          </div>
+          <div className="rounded-xl bg-surface-container-low p-4">
+            <p className="text-xs text-on-surface/50">Cash at Risk</p>
+            <p className="font-mono text-lg text-on-surface">{metrics.cashAtRisk.toFixed(0)}</p>
+          </div>
+        </div>
+      )}
+
+      {error && <p className="text-sm text-status-red">{error}</p>}
+
+      <button
+        type="button"
+        onClick={handleLock}
+        disabled={!canLock || submitting}
+        className="self-start rounded-xl bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40"
+      >
+        Lock & Save Plan
+      </button>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 12: Build the shared "Last updated" indicator**
+
+Spec Section 5 (Global / Cross-Screen Requirements → Price Data): *"'Last updated: [timestamp]' is visible on all screens that display prices."* This is the first task to fetch and render a live price, so it's introduced here rather than deferred — every later price-showing screen (Tasks 21, 23, 24, 29) imports this instead of rebuilding it.
+
+```typescript
+// components/shared/last-updated.tsx
+import { formatExchangeTime } from "@/lib/format";
+import type { ExchangeCode } from "@/lib/types";
+
+/** Spec Section 5 (Price Data): "Last updated: [timestamp]" on every screen showing prices. */
+export function LastUpdated({ at, exchange }: { at: string | null; exchange: ExchangeCode }) {
+  if (!at) return null;
+  return (
+    <span className="text-xs text-on-surface/40">
+      Last updated: {formatExchangeTime(new Date(at), exchange)}
+    </span>
+  );
+}
+```
+
+- [ ] **Step 13: Build the wizard page**
+
+```typescript
+// app/(app)/thesis/[id]/plan/page.tsx
+"use client";
+
+import { use, useEffect, useState } from "react";
+
+import { StressTestPanel } from "@/components/thesis/stress-test-panel";
+import { TradePlanGrid } from "@/components/thesis/trade-plan-grid";
+import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import { LastUpdated } from "@/components/shared/last-updated";
+import type { BearCase, ConvictionTier, ExchangeCode } from "@/lib/types";
+
+type ThesisDetail = {
+  id: string;
+  stock_id: string | null;
+  ticker: string | null;
+  conviction_tier: ConvictionTier | null;
+  conviction_score: number | null;
+  bear_cases: BearCase[];
+};
+
+/**
+ * CMP is fetched once, directly, via `POST /api/prices/refresh` (Task 4) —
+ * the app's on-demand refresh mechanism (Global Constraint: no client-side
+ * polling). There's no "Refresh Prices" button on this single-pass wizard,
+ * so `usePriceRefresh` (Task 4's wrapper hook, meant for a page the user
+ * stays on and can manually re-trigger) isn't needed here.
+ */
+export default function ThesisPlanPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const [thesis, setThesis] = useState<ThesisDetail | null>(null);
+  const [step, setStep] = useState<2 | 3>(2);
+  const [cmp, setCmp] = useState<number | null>(null);
+  const [priceAsOf, setPriceAsOf] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<ExchangeCode>("US");
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true);
+    const res = await fetch(`/api/theses/${id}`);
+    let body = await res.json();
+    let currentThesis: ThesisDetail = body.thesis;
+    if (currentThesis.bear_cases.length === 0) {
+      await fetch(`/api/theses/${id}/stress-test`, { method: "POST" });
+      const refetched = await fetch(`/api/theses/${id}`);
+      body = await refetched.json();
+      currentThesis = body.thesis;
+    }
+    setThesis(currentThesis);
+    if (body.stock?.exchange) setExchange(body.stock.exchange);
+
+    if (currentThesis.stock_id) {
+      const priceRes = await fetch("/api/prices/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stockIds: [currentThesis.stock_id] }),
+      });
+      const priceBody = await priceRes.json();
+      const quote = priceBody.prices[currentThesis.stock_id];
+      if (quote) {
+        setCmp(quote.price);
+        setPriceAsOf(quote.asOf);
+      }
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  if (loading || !thesis) {
+    return <SkeletonLoader lines={6} />;
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <div className="mb-6 flex items-center gap-3">
+        <h1 className="font-display text-2xl text-on-surface">
+          {thesis.ticker ?? "Macro Thesis"} — Validation & Plan
+        </h1>
+        <LastUpdated at={priceAsOf} exchange={exchange} />
+      </div>
+      {step === 2 ? (
+        <StressTestPanel
+          thesisId={id}
+          bearCases={thesis.bear_cases}
+          convictionScore={thesis.conviction_score}
+          onApproved={() => setStep(3)}
+        />
+      ) : (
+        <TradePlanGrid thesisId={id} cmp={cmp} exchange={exchange} />
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 14: Manual verification**
+
+Run: `npm run dev`, create a thesis via the drawer, click "Approve → Build Trade Plan", confirm it lands on `/thesis/:id/plan` Step 2 with 4 bear cases auto-generated, edit a counter (see "Modified" badge appear), advance to Step 3, confirm Risk/Reward recalculates as Stop/Target change, confirm "Lock & Save Plan" is disabled until Stop Loss has a value, lock it, confirm a `trade_plans` row and (for a Tier I/II thesis) a `jarvis_recommendations` row exist in Supabase.
+
+- [ ] **Step 15: Commit**
+
+```bash
+/usr/bin/git add app/api/theses "app/api/theses/[id]/stress-test" app/api/trade-plans "app/(app)/thesis/[id]/plan" components/thesis/stress-test-panel.tsx components/thesis/trade-plan-grid.tsx components/shared/last-updated.tsx
+/usr/bin/git commit -m "feat: Screen 2-3 — stress test review + 9-cell trade plan wizard (US-11, US-12)"
+```
+
+---
+
+### Task 21: Screen HUB-3 — Stress Test & Trade Plan (review mode)
+
+**Files:**
+- Modify: `app/api/theses/route.ts` (add `GET`, alongside Task 9's `POST`)
+- Modify: `lib/jarvis-thesis-parser.ts` (I7 fix — see ruling below)
+- Modify: `lib/__tests__/jarvis-thesis-parser.test.ts` (add the null-narrative-field case)
+- Create: `app/(app)/thesis/page.tsx`
+- Create: `app/(app)/thesis/[id]/page.tsx`
+- Create: `components/thesis/thesis-list.tsx`
+
+**Interfaces:**
+- Consumes: `GET /api/theses/:id` (Task 20), `PATCH /api/trade-plans/:id` (Task 19), `PATCH /api/theses/:id` (Task 19, extended by Task 20), `computeRiskReward`/`computeMaxDrawdownPct` (Task 18), `ConvictionBadge` (Task 10), `LastUpdated` (Task 20), `fetchInternalApi` (Global Constraint)
+- Produces: `GET /api/theses` (`{ theses: Thesis[] }`), `/thesis` and `/thesis/:id` pages — the canonical "view any thesis" destination reused by Task 24 (Cockpit position-card click-through), Task 28 (Intelligence Feed's "Link to Thesis"), and Task 29 (Discovery's "HELD"/"DRAFT" badge links).
+
+**Ruling — I7 fix (thesis-prompt/parser nullable-field contradiction):** `JARVIS_THESIS_SYSTEM_PROMPT` (Task 7) explicitly tells the model to "use null for any field you cannot responsibly determine" for every field in its JSON block, but `ThesisExtractSchema` (Task 8) only marked `ticker` as `.nullable()` — the five narrative fields (`market_view`, `mispricing`, `catalyst`, `time_horizon`, `invalidation_condition`) are plain `z.string()`. A model that follows its own system prompt and emits `null` for one of those on a genuinely thin thesis fails schema validation entirely (`extraction.ok: false`), discarding a response that was otherwise usable. This screen is the first one that displays those fields for extended review, so it's the right place to fix the root cause rather than paper over it with more null-coalescing at render time. Fix: relax the five narrative fields to `.nullable()` in `ThesisExtractSchema`, matching the prompt's own contract. `POST /api/theses`'s insert logic (Task 9) already assigns these straight from `parsed.extraction.data.*` into `ThesisInsert` fields that are already `string | null` in the DB — no caller-side changes needed.
+
+- [ ] **Step 1: Apply the I7 fix to `lib/jarvis-thesis-parser.ts`**
+
+Replace `ThesisExtractSchema`'s five narrative fields:
+
+```typescript
+export const ThesisExtractSchema = z.object({
+  mode: z.enum(["stock_only", "thesis_only", "stock_plus_thesis"]),
+  ticker: z.string().nullable(),
+  market_view: z.string().nullable(),
+  mispricing: z.string().nullable(),
+  catalyst: z.string().nullable(),
+  time_horizon: z.string().nullable(),
+  invalidation_condition: z.string().nullable(),
+  conviction_tier: z.enum(["I", "II", "III", "IV"]),
+  conviction_score: z.number().min(0).max(100),
+  stock_suggestions: z.array(
+    z.object({ ticker: z.string(), rationale: z.string() }),
+  ),
+});
+```
+
+- [ ] **Step 2: Add the regression test to `lib/__tests__/jarvis-thesis-parser.test.ts`**
+
+Append inside the existing `describe("parseThesisResponse", ...)` block:
+
+```typescript
+  it("accepts a null narrative field per the prompt's own contract (I7 fix)", () => {
+    const raw = VALID_RESPONSE.replace('"catalyst": "Z will close the gap.",', '"catalyst": null,');
+    const result = parseThesisResponse(raw);
+    expect(result.extraction.ok).toBe(true);
+    if (result.extraction.ok) {
+      expect(result.extraction.data.catalyst).toBe(null);
+    }
+  });
+```
+
+- [ ] **Step 3: Run to verify it passes** — Run: `npx vitest run lib/__tests__/jarvis-thesis-parser.test.ts` — Expected: PASS (6/6)
+
+- [ ] **Step 4: Add `GET` to `app/api/theses/route.ts`**
+
+Append below the existing `POST` export:
+
+```typescript
+export async function GET() {
+  const supabase = createAdminClient();
+  const { data: theses, error } = await supabase
+    .from("theses")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  return NextResponse.json({ theses: theses ?? [] });
+}
+```
+
+- [ ] **Step 5: Build the thesis list**
+
+```typescript
+// components/thesis/thesis-list.tsx
+"use client";
+
+import Link from "next/link";
+import { ConvictionBadge } from "./conviction-badge";
+import type { ConvictionTier, ThesisStatus } from "@/lib/types";
+
+type Row = {
+  id: string;
+  ticker: string | null;
+  status: ThesisStatus;
+  conviction_tier: ConvictionTier | null;
+  market_view: string | null;
+  created_at: string;
+};
+
+const STATUS_LABEL: Record<ThesisStatus, string> = {
+  draft: "Draft",
+  active: "Active",
+  closed: "Closed",
+  macro: "Macro",
+};
+
+export function ThesisList({ rows }: { rows: Row[] }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {rows.map((t) => (
+        <Link
+          key={t.id}
+          href={`/thesis/${t.id}`}
+          className="flex items-center justify-between rounded-xl bg-surface-container-low p-4 hover:bg-surface-container-high"
+        >
+          <div>
+            <p className="font-display text-sm text-on-surface">{t.ticker ?? "Macro Thesis"}</p>
+            <p className="mt-1 line-clamp-1 text-xs text-on-surface/60">{t.market_view ?? "—"}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-on-surface/50">{STATUS_LABEL[t.status]}</span>
+            {t.conviction_tier && <ConvictionBadge tier={t.conviction_tier} />}
+          </div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 6: Build the list page**
+
+```typescript
+// app/(app)/thesis/page.tsx
+import { EmptyState } from "@/components/shared/empty-state";
+import { ThesisList } from "@/components/thesis/thesis-list";
+import { fetchInternalApi } from "@/lib/server-fetch";
+
+export default async function ThesisListPage() {
+  const res = await fetchInternalApi("/api/theses");
+  const body = await res.json();
+  const rows = body.theses ?? [];
+
+  return (
+    <div>
+      <h1 className="mb-6 font-display text-2xl text-on-surface">Stress Test & Trade Plan</h1>
+      {rows.length === 0 ? (
+        <EmptyState title="No theses yet." description="Start with a thesis →" />
+      ) : (
+        <ThesisList rows={rows} />
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 7: Build the HUB-3 review screen**
+
+```typescript
+// app/(app)/thesis/[id]/page.tsx
+"use client";
+
+import { use, useEffect, useState } from "react";
+import Link from "next/link";
+
+import { computeRiskReward, computeMaxDrawdownPct } from "@/lib/risk-reward";
+import { ConvictionBadge } from "@/components/thesis/conviction-badge";
+import { PriceBadge } from "@/components/shared/price-badge";
+import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import { LastUpdated } from "@/components/shared/last-updated";
+import type { BearCase, ConvictionTier, ExchangeCode, TradePlan } from "@/lib/types";
+
+type ThesisDetail = {
+  id: string;
+  stock_id: string | null;
+  ticker: string | null;
+  market_view: string | null;
+  mispricing: string | null;
+  catalyst: string | null;
+  time_horizon: string | null;
+  invalidation_condition: string | null;
+  conviction_tier: ConvictionTier | null;
+  conviction_score: number | null;
+  bear_cases: BearCase[];
+  created_at: string;
+};
+
+const NARRATIVE_FIELDS: { key: keyof ThesisDetail; label: string }[] = [
+  { key: "market_view", label: "Market View" },
+  { key: "mispricing", label: "Mispricing" },
+  { key: "catalyst", label: "Catalyst" },
+  { key: "time_horizon", label: "Time Horizon" },
+  { key: "invalidation_condition", label: "Invalidation" },
+];
+
+const PLAN_FIELDS: { key: keyof TradePlan; label: string }[] = [
+  { key: "entry_zone_low", label: "Entry Low" },
+  { key: "entry_zone_high", label: "Entry High" },
+  { key: "add_tranche_low", label: "Add Low" },
+  { key: "add_tranche_high", label: "Add High" },
+  { key: "stop_loss", label: "Stop Loss" },
+  { key: "target_1", label: "Target 1" },
+  { key: "target_2", label: "Target 2" },
+  { key: "position_size_pct", label: "Size %" },
+  { key: "time_exit_date", label: "Time Exit" },
+];
+
+export default function ThesisReviewPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const [thesis, setThesis] = useState<ThesisDetail | null>(null);
+  const [tradePlan, setTradePlan] = useState<TradePlan | null>(null);
+  const [cmp, setCmp] = useState<number | null>(null);
+  const [priceAsOf, setPriceAsOf] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<ExchangeCode>("US");
+  const [loading, setLoading] = useState(true);
+  const [rerunning, setRerunning] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    const res = await fetch(`/api/theses/${id}`);
+    const body = await res.json();
+    setThesis(body.thesis);
+    setTradePlan(body.tradePlan);
+    if (body.stock?.exchange) setExchange(body.stock.exchange);
+    if (body.thesis.stock_id) {
+      const priceRes = await fetch("/api/prices/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stockIds: [body.thesis.stock_id] }),
+      });
+      const priceBody = await priceRes.json();
+      const quote = priceBody.prices[body.thesis.stock_id];
+      if (quote) {
+        setCmp(quote.price);
+        setPriceAsOf(quote.asOf);
+      }
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  async function handleFieldEdit(field: keyof TradePlan, value: string) {
+    if (!tradePlan) return;
+    const numeric = value.trim() === "" ? null : Number(value);
+    await fetch(`/api/trade-plans/${tradePlan.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [field]: numeric }),
+    });
+    await load();
+  }
+
+  /** Ruling: re-runs the stress test only (Task 20's route) — thesis structuring already happened in Screen 1 and locked trade-plan numbers are user-owned once set. No separate "last regenerated" timestamp column exists (Task 1's schema is already live); `thesis.created_at` is shown as the closest available proxy rather than adding a migration for this cosmetic timestamp. */
+  async function handleRerun() {
+    setRerunning(true);
+    try {
+      await fetch(`/api/theses/${id}/stress-test`, { method: "POST" });
+      await load();
+    } finally {
+      setRerunning(false);
+    }
+  }
+
+  if (loading || !thesis) return <SkeletonLoader lines={8} />;
+
+  const riskReward =
+    tradePlan?.stop_loss != null && tradePlan?.entry_zone_low != null && tradePlan?.target_1 != null
+      ? computeRiskReward({ entry: tradePlan.entry_zone_low, stop: tradePlan.stop_loss, target: tradePlan.target_1 })
+      : null;
+  const maxDrawdown =
+    tradePlan?.stop_loss != null && tradePlan?.entry_zone_low != null
+      ? computeMaxDrawdownPct({ entry: tradePlan.entry_zone_low, stop: tradePlan.stop_loss })
+      : null;
+
+  return (
+    <div>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="font-display text-2xl text-on-surface">{thesis.ticker ?? "Macro Thesis"}</h1>
+          <p className="mt-1 text-xs text-on-surface/50">Last analysed {new Date(thesis.created_at).toLocaleDateString()}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {thesis.conviction_tier && <ConvictionBadge tier={thesis.conviction_tier} />}
+          <PriceBadge price={cmp} exchange={exchange} />
+          <LastUpdated at={priceAsOf} exchange={exchange} />
+        </div>
+      </div>
+
+      {thesis.conviction_score !== null && (
+        <div className="mb-6 h-2 w-full overflow-hidden rounded-full bg-surface-container-highest">
+          <div
+            className="h-full bg-primary transition-all"
+            style={{ width: `${thesis.conviction_score}%` }}
+          />
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="flex flex-col gap-4">
+          <h2 className="font-display text-sm uppercase text-on-surface/50">Thesis</h2>
+          {NARRATIVE_FIELDS.map(({ key, label }) => (
+            <div key={key} className="rounded-xl bg-surface-container-low p-4">
+              <p className="mb-1 text-xs uppercase text-on-surface/50">{label}</p>
+              <p className="text-sm text-on-surface">{(thesis[key] as string | null) ?? "—"}</p>
+            </div>
+          ))}
+          <div className="flex flex-col gap-3">
+            <h3 className="font-display text-sm uppercase text-on-surface/50">Bear Cases</h3>
+            {thesis.bear_cases.map((bc, i) => (
+              <div key={i} className="rounded-xl bg-surface-container-low p-3 text-sm">
+                <p className="text-status-red">{bc.reason}</p>
+                <p className="mt-1 text-status-green">{bc.counter}</p>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={handleRerun}
+            disabled={rerunning}
+            className="self-start rounded-xl bg-surface-container-highest px-4 py-2 text-xs text-on-surface/70 hover:text-on-surface disabled:opacity-40"
+          >
+            {rerunning ? "Re-running..." : "Re-run AI Analysis"}
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-4">
+          <h2 className="font-display text-sm uppercase text-on-surface/50">Trade Plan</h2>
+          {tradePlan ? (
+            <>
+              <div className="grid grid-cols-3 gap-3">
+                {PLAN_FIELDS.map(({ key, label }) => (
+                  <label key={key} className="flex flex-col gap-1">
+                    <span className="text-xs text-on-surface/50">{label}</span>
+                    <input
+                      defaultValue={tradePlan[key] as string | number | null ?? ""}
+                      onBlur={(e) => handleFieldEdit(key, e.target.value)}
+                      className={`rounded-lg px-3 py-2 text-sm font-mono ${
+                        tradePlan.edited_fields.includes(key)
+                          ? "bg-surface-container-highest text-primary underline decoration-primary decoration-2 underline-offset-4"
+                          : "bg-surface-container-highest text-on-surface"
+                      }`}
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl bg-surface-container-low p-4">
+                  <p className="text-xs text-on-surface/50">Risk/Reward</p>
+                  <p className="font-mono text-lg text-on-surface">{riskReward !== null ? `${riskReward.toFixed(2)}:1` : "—"}</p>
+                </div>
+                <div className="rounded-xl bg-surface-container-low p-4">
+                  <p className="text-xs text-on-surface/50">Max Drawdown</p>
+                  <p className="font-mono text-lg text-on-surface">{maxDrawdown !== null ? `${maxDrawdown.toFixed(1)}%` : "—"}</p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <Link
+              href={`/thesis/${id}/plan`}
+              className="rounded-xl bg-primary px-4 py-2 text-center text-sm font-medium text-on-primary"
+            >
+              Build Trade Plan
+            </Link>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 8: Manual verification**
+
+Run: `npm run dev`, visit `/thesis` — confirm the list renders and links to `/thesis/:id`; on a thesis with a locked plan, edit a numeric field and confirm it gets the amber-underline treatment (US-07) and auto-saves on blur (no explicit Save button).
+
+- [ ] **Step 9: Commit**
+
+```bash
+/usr/bin/git add app/api/theses lib/jarvis-thesis-parser.ts lib/__tests__/jarvis-thesis-parser.test.ts "app/(app)/thesis" components/thesis/thesis-list.tsx
+/usr/bin/git commit -m "feat: Screen HUB-3 — thesis list + stress test/trade plan review (US-06, US-07 UI)"
+```
+
+---
+
+### Task 22: `POST /api/positions/[id]/exits`
+
+**Files:**
+- Create: `app/api/positions/[id]/exits/route.ts`
+- Test: `app/api/positions/[id]/exits/__tests__/route.test.ts`
+- Modify: `app/api/positions/route.ts` (`GET` — broaden the status filter; see I3 ruling)
+
+**Interfaces:**
+- Consumes: `computeWeightedAverageEntry` (Task 11), `createAdminClient`
+- Produces: `POST /api/positions/:id/exits` (body `{ date, quantity, price, type, reason?, override?, override_reason? }` → `201 { exit: Exit; remainingQuantity: number; positionStatus: PositionStatus; promptJournal: boolean }`) — consumed by Task 23's Log Trim / Exit — Stop Hit modals.
+
+**Ruling (resolves plan Deferred Finding I3):** `positions.status` becomes `'partial_exit'` here — the moment any exit leaves quantity remaining — and `'closed'` when quantity reaches zero. It was never queried anywhere because `GET /api/positions` (Task 13) filtered `.eq("status", "active")`, silently excluding partially-exited positions from the Active Positions screen even though they're still open and still need monitoring. Fixed below.
+
+- [ ] **Step 1: Broaden `GET /api/positions`'s status filter**
+
+In `app/api/positions/route.ts`, change:
+
+```typescript
+    .eq("status", "active");
+```
+
+to:
+
+```typescript
+    .in("status", ["active", "partial_exit"]);
+```
+
+- [ ] **Step 2: Write the exits route test**
+
+```typescript
+// app/api/positions/[id]/exits/__tests__/route.test.ts
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+import { createAdminClient } from "@/lib/supabase/admin";
+import { POST } from "../route";
+
+function buildMock(opts: { entries: { quantity: number }[]; existingExits: { quantity: number }[] }) {
+  const positionUpdate = vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) });
+  return {
+    from: vi.fn().mockImplementation((table: string) => {
+      if (table === "exits") {
+        return {
+          insert: vi.fn().mockReturnValue({
+            select: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({
+                data: { id: "ex1", position_id: "p1", quantity: 30, price: 180, type: "trim_t1" },
+                error: null,
+              }),
+            }),
+          }),
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ data: opts.existingExits, error: null }),
+          }),
+        };
+      }
+      if (table === "entries") {
+        return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ data: opts.entries, error: null }) }) };
+      }
+      if (table === "positions") {
+        return { update: positionUpdate };
+      }
+      throw new Error(`unexpected table ${table}`);
+    }),
+    _positionUpdate: positionUpdate,
+  };
+}
+
+describe("POST /api/positions/[id]/exits", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("sets position status to partial_exit when quantity remains", async () => {
+    const mock = buildMock({ entries: [{ quantity: 100 }], existingExits: [] });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    const req = new Request("http://test", {
+      method: "POST",
+      body: JSON.stringify({ date: "2026-08-27", quantity: 30, price: 180, type: "trim_t1" }),
+    });
+    const res = await POST(req as never, { params: Promise.resolve({ id: "p1" }) });
+    const body = await res.json();
+
+    expect(res.status).toBe(201);
+    expect(body.remainingQuantity).toBe(70);
+    expect(body.positionStatus).toBe("partial_exit");
+    expect(body.promptJournal).toBe(false);
+    expect(mock._positionUpdate).toHaveBeenCalledWith({ status: "partial_exit" });
+  });
+
+  it("sets position status to closed and prompts a journal entry when quantity reaches zero", async () => {
+    const mock = buildMock({ entries: [{ quantity: 100 }], existingExits: [{ quantity: 30 }] });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    const req = new Request("http://test", {
+      method: "POST",
+      body: JSON.stringify({ date: "2026-08-27", quantity: 70, price: 210, type: "trim_t2" }),
+    });
+    const res = await POST(req as never, { params: Promise.resolve({ id: "p1" }) });
+    const body = await res.json();
+
+    expect(body.remainingQuantity).toBe(0);
+    expect(body.positionStatus).toBe("closed");
+    expect(body.promptJournal).toBe(true);
+    expect(mock._positionUpdate).toHaveBeenCalledWith({ status: "closed" });
+  });
+
+  it("rejects an override without a reason of at least 40 characters", async () => {
+    const mock = buildMock({ entries: [{ quantity: 100 }], existingExits: [] });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    const req = new Request("http://test", {
+      method: "POST",
+      body: JSON.stringify({ date: "2026-08-27", quantity: 100, price: 80, type: "stop_hit", override: true, override_reason: "too short" }),
+    });
+    const res = await POST(req as never, { params: Promise.resolve({ id: "p1" }) });
+    expect(res.status).toBe(400);
+  });
+});
+```
+
+- [ ] **Step 3: Run to verify it fails** — Run: `npx vitest run app/api/positions/[id]/exits/__tests__/route.test.ts` — Expected: FAIL, module not found
+
+- [ ] **Step 4: Implement**
+
+```typescript
+// app/api/positions/[id]/exits/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+
+import { createAdminClient } from "@/lib/supabase/admin";
+
+const AddExitSchema = z
+  .object({
+    date: z.iso.date(),
+    quantity: z.coerce.number().positive(),
+    price: z.coerce.number().positive(),
+    type: z.enum(["trim_t1", "trim_t2", "stop_hit", "time_exit", "manual"]),
+    reason: z.string().trim().optional(),
+    override: z.boolean().optional(),
+    override_reason: z.string().trim().optional(),
+  })
+  /** Spec US-17: an override reason, when provided, must be at least 40 characters — the deliberate friction that makes a discipline break require actually explaining itself. */
+  .refine((data) => !data.override || (data.override_reason?.length ?? 0) >= 40, {
+    message: "override_reason must be at least 40 characters when override is true",
+    path: ["override_reason"],
+  });
+
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id: positionId } = await params;
+  const json = await request.json().catch(() => null);
+  if (json === null) {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const parsed = AddExitSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const supabase = createAdminClient();
+
+  const { data: exit, error: insertError } = await supabase
+    .from("exits")
+    .insert({ position_id: positionId, ...parsed.data })
+    .select("*")
+    .single();
+  if (insertError || !exit) {
+    return NextResponse.json({ error: insertError?.message ?? "Failed to insert exit" }, { status: 500 });
+  }
+
+  const [{ data: entries, error: entriesError }, { data: exits, error: exitsError }] = await Promise.all([
+    supabase.from("entries").select("quantity").eq("position_id", positionId),
+    supabase.from("exits").select("quantity").eq("position_id", positionId),
+  ]);
+  if (entriesError) return NextResponse.json({ error: entriesError.message }, { status: 500 });
+  if (exitsError) return NextResponse.json({ error: exitsError.message }, { status: 500 });
+
+  const totalEntered = (entries ?? []).reduce((sum, e) => sum + e.quantity, 0);
+  const totalExited = (exits ?? []).reduce((sum, e) => sum + e.quantity, 0);
+  const remainingQuantity = totalEntered - totalExited;
+  const positionStatus = remainingQuantity <= 0 ? "closed" : "partial_exit";
+
+  const { error: updateError } = await supabase
+    .from("positions")
+    .update({ status: positionStatus })
+    .eq("id", positionId);
+  if (updateError) {
+    return NextResponse.json({ error: updateError.message }, { status: 500 });
+  }
+
+  return NextResponse.json(
+    { exit, remainingQuantity, positionStatus, promptJournal: remainingQuantity <= 0 },
+    { status: 201 },
+  );
+}
+```
+
+- [ ] **Step 5: Run to verify it passes** — Run: `npx vitest run app/api/positions/[id]/exits/__tests__/route.test.ts` — Expected: PASS (3/3)
+
+- [ ] **Step 6: Commit**
+
+```bash
+/usr/bin/git add app/api/positions
+/usr/bin/git commit -m "feat: POST /api/positions/:id/exits — trim/stop/time exits, position status (US-16, US-17)"
+```
+
+---
+
+### Task 23: Screen 5–6 — Exit & Monitoring
+
+**Files:**
+- Create: `supabase/migrations/0010_trade_plan_thesis_conditions.sql`
+- Modify: `lib/types.ts` (add `ThesisCondition` type; add `thesis_conditions` to `TradePlan`/`TradePlanInsert`)
+- Modify: `app/api/trade-plans/[id]/route.ts` (accept `thesis_conditions` outside the `edited_fields` diff loop)
+- Modify: `app/api/trade-plans/[id]/__tests__/route.test.ts` (add the `thesis_conditions` case)
+- Create: `app/api/positions/[id]/route.ts` (`GET`, joined)
+- Create: `app/(app)/positions/[id]/page.tsx`
+- Create: `components/positions/exit-ladder.tsx`
+- Create: `components/positions/log-trim-modal.tsx`
+- Create: `components/positions/stop-exit-modal.tsx`
+- Create: `components/positions/thesis-metrics-panel.tsx`
+- Create: `components/positions/discipline-banner.tsx`
+- Create: `components/positions/positions-page-client.tsx`
+- Modify: `app/(app)/positions/page.tsx` (split into a server-fetch shell + `PositionsPageClient`, which renders `DisciplineBanner` for the most urgent position — US-04)
+
+**Interfaces:**
+- Consumes: `POST /api/positions/:id/exits` (Task 22), `computeWeightedAverageEntry` (Task 11), `computePositionPnl`/`computeDistanceToStop` (Task 13), `PATCH /api/trade-plans/:id` (Task 19), `LastUpdated` (Task 20), `fetchInternalApi`
+- Produces: `GET /api/positions/:id` (`{ position; tradePlan; entries; exits; thesis; stock }`), `<DisciplineBanner />` reused by Task 24's Cockpit alert rail.
+
+**Ruling — `thesis_conditions` (resolves the "3-4 key measurable thesis conditions" requirement from US-15):** the spec names this field but Task 1's already-migrated, already-live schema has nowhere to store it — `trade_plans` has no such column, and no other table fits. Since Task 1's schema is a done, deployed migration (not something this plan revises after the fact), this task adds one small forward migration rather than inventing an unpersisted client-only workaround for a real financial-tracking field. `thesis_conditions` is a `jsonb` array of `{ label, target, currentValue }`, editable from this screen and (optionally, left empty at creation) from Task 20's wizard.
+
+- [ ] **Step 1: Write the migration**
+
+```sql
+-- 0010_trade_plan_thesis_conditions.sql
+-- US-15's "3-4 key measurable thesis conditions" — has no column anywhere in the
+-- Task 1 schema. Added here, where it's first surfaced to the user, rather than
+-- retrofitted into an already-applied migration.
+alter table trade_plans add column thesis_conditions jsonb not null default '[]';
+```
+
+Run: `mcp__claude_ai_Supabase__apply_migration` for this file. Verify with `mcp__claude_ai_Supabase__list_tables` that `trade_plans.thesis_conditions` exists.
+
+- [ ] **Step 2: Add `ThesisCondition` to `lib/types.ts`**
+
+```typescript
+/** One measurable thesis condition tracked on a locked trade plan (spec US-15). */
+export type ThesisCondition = {
+  label: string;
+  target: string;
+  currentValue: string;
+};
+```
+
+Add `thesis_conditions: ThesisCondition[];` to the `TradePlan` type, and add `"thesis_conditions"` to `TradePlanInsert`'s `Partial<Pick<TradePlan, ...>>` field list.
+
+- [ ] **Step 3: Extend `app/api/trade-plans/[id]/route.ts` to accept `thesis_conditions`**
+
+Replace `UpdateTradePlanSchema` with:
+
+```typescript
+const UpdateTradePlanSchema = z
+  .object({
+    ...Object.fromEntries(EDITABLE_FIELDS.map((f) => [f, z.union([z.number(), z.string()]).nullable().optional()])),
+    thesis_conditions: z
+      .array(z.object({ label: z.string(), target: z.string(), currentValue: z.string() }))
+      .optional(),
+  })
+  .strict();
+```
+
+Then, in the `PATCH` handler, destructure `thesis_conditions` out of `parsed.data` **before** the `edited_fields` diff loop, so it's applied to the update but never treated as an AI-suggested field to diff against:
+
+```typescript
+  const { thesis_conditions, ...editableData } = parsed.data;
+
+  const aiSuggested = (existing.ai_suggested ?? {}) as Record<string, unknown>;
+  const existingEditedFields = new Set<string>(existing.edited_fields ?? []);
+  for (const [field, value] of Object.entries(editableData)) {
+    if (value === undefined) continue;
+    if (field in aiSuggested && aiSuggested[field] === value) {
+      existingEditedFields.delete(field);
+    } else {
+      existingEditedFields.add(field);
+    }
+  }
+
+  const { data: tradePlan, error: updateError } = await supabase
+    .from("trade_plans")
+    .update({
+      ...editableData,
+      ...(thesis_conditions !== undefined ? { thesis_conditions } : {}),
+      edited_fields: [...existingEditedFields],
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("*")
+    .single();
+```
+
+- [ ] **Step 4: Add the regression test**
+
+Append to `app/api/trade-plans/[id]/__tests__/route.test.ts`:
+
+```typescript
+  it("updates thesis_conditions without adding it to edited_fields", async () => {
+    const req = new Request("http://test", {
+      method: "PATCH",
+      body: JSON.stringify({ thesis_conditions: [{ label: "Chetak share", target: ">=18%", currentValue: "16%" }] }),
+    });
+    const res = await PATCH(req as never, { params: Promise.resolve({ id: "tp1" }) });
+    expect(res.status).toBe(200);
+    const updateArg = vi.mocked(createAdminClient).mock.results[0].value.from().update.mock.calls[0][0];
+    expect(updateArg.thesis_conditions).toHaveLength(1);
+    expect(updateArg.edited_fields ?? []).not.toContain("thesis_conditions");
+  });
+```
+
+- [ ] **Step 5: Run to verify it passes** — Run: `npx vitest run app/api/trade-plans/[id]/__tests__/route.test.ts` — Expected: PASS (2/2)
+
+- [ ] **Step 6: Build `GET /api/positions/[id]`**
+
+```typescript
+// app/api/positions/[id]/route.ts
+import { NextResponse } from "next/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const supabase = createAdminClient();
+
+  const { data: position, error: positionError } = await supabase
+    .from("positions")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (positionError || !position) {
+    return NextResponse.json({ error: positionError?.message ?? "Position not found" }, { status: 404 });
+  }
+
+  const [{ data: entries }, { data: exits }, { data: tradePlan }, { data: thesis }, { data: stock }] = await Promise.all([
+    supabase.from("entries").select("*").eq("position_id", id).order("date", { ascending: true }),
+    supabase.from("exits").select("*").eq("position_id", id).order("date", { ascending: true }),
+    supabase.from("trade_plans").select("*").eq("id", position.trade_plan_id).single(),
+    supabase.from("theses").select("*").eq("id", position.thesis_id).single(),
+    supabase.from("stocks").select("*").eq("id", position.stock_id).single(),
+  ]);
+
+  return NextResponse.json({
+    position,
+    entries: entries ?? [],
+    exits: exits ?? [],
+    tradePlan: tradePlan ?? null,
+    thesis: thesis ?? null,
+    stock: stock ?? null,
+  });
+}
+```
+
+- [ ] **Step 7: Build the exit ladder**
+
+```typescript
+// components/positions/exit-ladder.tsx
+"use client";
+
+import type { Exit, TradePlan } from "@/lib/types";
+
+type LadderRow = { key: string; label: string; status: "PENDING" | "HIT" | "DONE" };
+
+/** Spec US-15: 5-row exit ladder — T1 Trim (40%) / T2 Trim (40%) / Runner Hold (20%) / Stop Exit / Time Exit. */
+export function ExitLadder({
+  tradePlan,
+  exits,
+  currentPrice,
+  onLogTrim,
+  onLogStop,
+}: {
+  tradePlan: TradePlan;
+  exits: Exit[];
+  currentPrice: number | null;
+  onLogTrim: (tier: "trim_t1" | "trim_t2") => void;
+  onLogStop: () => void;
+}) {
+  const hasExit = (type: Exit["type"]) => exits.some((e) => e.type === type);
+
+  const rows: LadderRow[] = [
+    {
+      key: "trim_t1",
+      label: "T1 Trim (40%)",
+      status: hasExit("trim_t1") ? "DONE" : currentPrice !== null && tradePlan.target_1 !== null && currentPrice >= tradePlan.target_1 ? "HIT" : "PENDING",
+    },
+    {
+      key: "trim_t2",
+      label: "T2 Trim (40%)",
+      status: hasExit("trim_t2") ? "DONE" : currentPrice !== null && tradePlan.target_2 !== null && currentPrice >= tradePlan.target_2 ? "HIT" : "PENDING",
+    },
+    { key: "runner", label: "Runner Hold (20%)", status: hasExit("trim_t1") && hasExit("trim_t2") ? "DONE" : "PENDING" },
+    {
+      key: "stop_hit",
+      label: "Stop Exit",
+      status: hasExit("stop_hit") ? "DONE" : currentPrice !== null && tradePlan.stop_loss !== null && currentPrice <= tradePlan.stop_loss ? "HIT" : "PENDING",
+    },
+    { key: "time_exit", label: "Time Exit", status: hasExit("time_exit") ? "DONE" : "PENDING" },
+  ];
+
+  const STATUS_STYLE: Record<LadderRow["status"], string> = {
+    PENDING: "text-on-surface/40",
+    HIT: "text-primary",
+    DONE: "text-status-green",
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-xl bg-surface-container-low p-4">
+      {rows.map((row) => (
+        <div key={row.key} className="flex items-center justify-between py-2">
+          <span className="text-sm text-on-surface">{row.label}</span>
+          <div className="flex items-center gap-3">
+            <span className={`text-xs font-medium ${STATUS_STYLE[row.status]}`}>{row.status}</span>
+            {row.key === "trim_t1" && row.status !== "DONE" && (
+              <button type="button" onClick={() => onLogTrim("trim_t1")} className="text-xs text-primary underline">
+                Log Trim
+              </button>
+            )}
+            {row.key === "trim_t2" && row.status !== "DONE" && (
+              <button type="button" onClick={() => onLogTrim("trim_t2")} className="text-xs text-primary underline">
+                Log Trim
+              </button>
+            )}
+            {row.key === "stop_hit" && row.status !== "DONE" && (
+              <button type="button" onClick={onLogStop} className="text-xs text-status-red underline">
+                Exit — Stop Hit
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 8: Build the trim/stop modals**
+
+```typescript
+// components/positions/log-trim-modal.tsx
+"use client";
+
+import { useState } from "react";
+
+/** Spec US-16. On save, `promptJournal` in the response (Task 22) drives navigation to Screen 7 if this was the final exit. */
+export function LogTrimModal({
+  positionId,
+  tier,
+  onClose,
+  onSaved,
+}: {
+  positionId: string;
+  tier: "trim_t1" | "trim_t2" | "manual";
+  onClose: () => void;
+  onSaved: (promptJournal: boolean) => void;
+}) {
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [quantity, setQuantity] = useState("");
+  const [price, setPrice] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/positions/${positionId}/exits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, quantity: Number(quantity), price: Number(price), type: tier }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Failed to log trim");
+      onSaved(body.promptJournal);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-xl bg-surface-container-low p-6 shadow-ambient">
+        <h2 className="mb-4 font-display text-lg text-on-surface">Log Trim</h2>
+        <div className="mb-4 flex flex-col gap-3">
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+          <input type="number" placeholder="Quantity Sold" value={quantity} onChange={(e) => setQuantity(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+          <input type="number" placeholder="Price Sold At" value={price} onChange={(e) => setPrice(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+        </div>
+        <div className="flex justify-end gap-3">
+          <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm text-on-surface/60">Cancel</button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting || !quantity || !price}
+            className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+```typescript
+// components/positions/stop-exit-modal.tsx
+"use client";
+
+import { useState } from "react";
+
+/** Spec US-17. Override reason must be ≥40 chars — enforced client-side for immediate feedback and again server-side (Task 22) as the source of truth. */
+export function StopExitModal({
+  positionId,
+  remainingQuantity,
+  onClose,
+  onSaved,
+}: {
+  positionId: string;
+  remainingQuantity: number;
+  onClose: () => void;
+  onSaved: (promptJournal: boolean) => void;
+}) {
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [price, setPrice] = useState("");
+  const [overrideReason, setOverrideReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isOverride = overrideReason.trim().length > 0;
+  const overrideTooShort = isOverride && overrideReason.trim().length < 40;
+
+  async function handleSubmit() {
+    if (overrideTooShort) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/positions/${positionId}/exits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date,
+          quantity: remainingQuantity,
+          price: Number(price),
+          type: "stop_hit",
+          override: isOverride,
+          override_reason: isOverride ? overrideReason : undefined,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Failed to log exit");
+      onSaved(body.promptJournal);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-xl bg-surface-container-low p-6 shadow-ambient">
+        <h2 className="mb-4 font-display text-lg text-on-surface">Exit — Stop Hit</h2>
+        <div className="mb-4 flex flex-col gap-3">
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+          <p className="text-xs text-on-surface/50">Quantity (full remaining): {remainingQuantity}</p>
+          <input type="number" placeholder="Price Sold At" value={price} onChange={(e) => setPrice(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+          <textarea
+            placeholder="Override reason (optional — leave blank to exit per plan)"
+            value={overrideReason}
+            onChange={(e) => setOverrideReason(e.target.value)}
+            rows={3}
+            className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm"
+          />
+          {overrideTooShort && (
+            <p className="text-xs text-status-red">Override reason must be at least 40 characters ({overrideReason.trim().length}/40).</p>
+          )}
+        </div>
+        {error && <p className="mb-3 text-sm text-status-red">{error}</p>}
+        <div className="flex justify-end gap-3">
+          <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm text-on-surface/60">Cancel</button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting || !price || overrideTooShort}
+            className="rounded-xl bg-status-red px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40"
+          >
+            {isOverride ? "Override & Exit" : "Exit Now"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 9: Build the thesis-metrics panel**
+
+```typescript
+// components/positions/thesis-metrics-panel.tsx
+"use client";
+
+import { useState } from "react";
+import type { ThesisCondition } from "@/lib/types";
+
+/** Spec US-15: 3-4 measurable thesis conditions with editable current values — see this task's ruling for `thesis_conditions`'s migration. */
+export function ThesisMetricsPanel({
+  tradePlanId,
+  conditions,
+  warningText,
+}: {
+  tradePlanId: string;
+  conditions: ThesisCondition[];
+  warningText: string | null;
+}) {
+  const [rows, setRows] = useState(conditions);
+
+  async function handleBlur(index: number, value: string) {
+    const next = rows.map((r, i) => (i === index ? { ...r, currentValue: value } : r));
+    setRows(next);
+    await fetch(`/api/trade-plans/${tradePlanId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thesis_conditions: next }),
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <h3 className="font-display text-sm uppercase text-on-surface/50">Thesis Metrics</h3>
+      {rows.length === 0 ? (
+        <p className="text-sm text-on-surface/50">No thesis conditions tracked for this plan.</p>
+      ) : (
+        rows.map((c, i) => (
+          <div key={c.label} className="flex items-center justify-between rounded-xl bg-surface-container-low p-3">
+            <div>
+              <p className="text-sm text-on-surface">{c.label}</p>
+              <p className="text-xs text-on-surface/50">needs {c.target}</p>
+            </div>
+            <input
+              defaultValue={c.currentValue}
+              onBlur={(e) => handleBlur(i, e.target.value)}
+              className="w-24 rounded-lg bg-surface-container-highest px-2 py-1 text-right text-sm font-mono"
+            />
+          </div>
+        ))
+      )}
+      {warningText && (
+        <div className="rounded-xl bg-primary-container px-4 py-3 text-sm text-primary">{warningText}</div>
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 10: Build the discipline banner (US-04)**
+
+```typescript
+// components/positions/discipline-banner.tsx
+"use client";
+
+/** Spec US-04. Blocking red banner when at/through stop; non-blocking amber toast-style bar when a target has been reached but not yet trimmed. Reused by Task 24's Cockpit alert rail (rendered smaller there). */
+export function DisciplineBanner({
+  ticker,
+  currentPrice,
+  stopLoss,
+  target1,
+  t1Trimmed,
+  onExitNow,
+  onLogTrim,
+}: {
+  ticker: string;
+  currentPrice: number | null;
+  stopLoss: number | null;
+  target1: number | null;
+  t1Trimmed: boolean;
+  onExitNow: () => void;
+  onLogTrim: () => void;
+}) {
+  if (currentPrice === null) return null;
+
+  if (stopLoss !== null && currentPrice <= stopLoss) {
+    return (
+      <div className="mb-4 flex items-center justify-between rounded-xl bg-status-red-container px-4 py-3">
+        <span className="text-sm font-medium text-status-red">
+          Stop Hit — {ticker} at {currentPrice}. Exit required.
+        </span>
+        <button type="button" onClick={onExitNow} className="rounded-lg bg-status-red px-3 py-1.5 text-xs font-medium text-on-primary">
+          Exit Now
+        </button>
+      </div>
+    );
+  }
+
+  if (!t1Trimmed && target1 !== null && currentPrice >= target1) {
+    return (
+      <div className="mb-4 flex items-center justify-between rounded-xl bg-primary-container px-4 py-3">
+        <span className="text-sm font-medium text-primary">T1 Hit — {ticker}. Trim 40%?</span>
+        <div className="flex gap-2">
+          <button type="button" onClick={onLogTrim} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary">
+            Confirm
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+```
+
+- [ ] **Step 11: Build the Screen 5–6 page**
+
+```typescript
+// app/(app)/positions/[id]/page.tsx
+"use client";
+
+import { use, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+
+import { computePositionPnl, computeDistanceToStop } from "@/lib/position-metrics";
+import { computeWeightedAverageEntry } from "@/lib/weighted-average";
+import { ExitLadder } from "@/components/positions/exit-ladder";
+import { LogTrimModal } from "@/components/positions/log-trim-modal";
+import { StopExitModal } from "@/components/positions/stop-exit-modal";
+import { ThesisMetricsPanel } from "@/components/positions/thesis-metrics-panel";
+import { DisciplineBanner } from "@/components/positions/discipline-banner";
+import { PriceBadge } from "@/components/shared/price-badge";
+import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import { LastUpdated } from "@/components/shared/last-updated";
+import type { Entry, Exit, Position, Thesis, TradePlan, Stock } from "@/lib/types";
+
+type Detail = {
+  position: Position;
+  entries: Entry[];
+  exits: Exit[];
+  tradePlan: TradePlan | null;
+  thesis: Thesis | null;
+  stock: Stock | null;
+};
+
+export default function PositionDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const router = useRouter();
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [trimTier, setTrimTier] = useState<"trim_t1" | "trim_t2" | null>(null);
+  const [stopModalOpen, setStopModalOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true);
+    const res = await fetch(`/api/positions/${id}`);
+    const body = await res.json();
+    setDetail(body);
+    if (body.stock?.id) {
+      await fetch("/api/prices/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stockIds: [body.stock.id] }),
+      });
+      const refreshed = await fetch(`/api/positions/${id}`);
+      setDetail(await refreshed.json());
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  function handleSaved(promptJournal: boolean) {
+    setTrimTier(null);
+    setStopModalOpen(false);
+    if (promptJournal) {
+      router.push(`/journal/new?positionId=${id}`);
+    } else {
+      load();
+    }
+  }
+
+  if (loading || !detail || !detail.tradePlan) return <SkeletonLoader lines={8} />;
+
+  const { position, entries, exits, tradePlan, thesis, stock } = detail;
+  const weightedAverage = computeWeightedAverageEntry(entries);
+  const currentPrice = stock?.last_price ?? null;
+  const remaining = weightedAverage.totalQuantity - exits.reduce((s, e) => s + e.quantity, 0);
+  const pnl = currentPrice !== null ? computePositionPnl({ currentPrice, avgEntry: weightedAverage.averagePrice, quantity: remaining }) : null;
+  const distToStop = currentPrice !== null ? computeDistanceToStop({ currentPrice, stopLoss: tradePlan.stop_loss }) : null;
+  const distToT1 = currentPrice !== null && tradePlan.target_1 !== null ? tradePlan.target_1 - currentPrice : null;
+  const distToT2 = currentPrice !== null && tradePlan.target_2 !== null ? tradePlan.target_2 - currentPrice : null;
+
+  return (
+    <div>
+      <DisciplineBanner
+        ticker={position.ticker}
+        currentPrice={currentPrice}
+        stopLoss={tradePlan.stop_loss}
+        target1={tradePlan.target_1}
+        t1Trimmed={exits.some((e) => e.type === "trim_t1")}
+        onExitNow={() => setStopModalOpen(true)}
+        onLogTrim={() => setTrimTier("trim_t1")}
+      />
+
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="font-display text-2xl text-on-surface">{position.ticker}</h1>
+        <div className="flex items-center gap-3">
+          <PriceBadge price={currentPrice} exchange={stock?.exchange ?? "US"} />
+          <LastUpdated at={stock?.last_price_at ?? null} exchange={stock?.exchange ?? "US"} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="flex flex-col gap-4">
+          <div className="rounded-xl bg-surface-container-low p-4">
+            <p className="text-xs text-on-surface/50">Avg Entry</p>
+            <p className="font-mono text-lg text-on-surface">{weightedAverage.averagePrice.toFixed(2)}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl bg-surface-container-low p-4">
+              <p className="text-xs text-on-surface/50">Return</p>
+              <p className={`font-mono text-lg ${pnl && pnl.percent >= 0 ? "text-status-green" : "text-status-red"}`}>
+                {pnl ? `${pnl.percent >= 0 ? "+" : ""}${pnl.percent.toFixed(2)}%` : "—"}
+              </p>
+            </div>
+            <div className="rounded-xl bg-surface-container-low p-4">
+              <p className="text-xs text-on-surface/50">Dist. to Stop</p>
+              <p className="font-mono text-lg text-on-surface">{distToStop ? distToStop.rupees.toFixed(2) : "—"}</p>
+            </div>
+            <div className="rounded-xl bg-surface-container-low p-4">
+              <p className="text-xs text-on-surface/50">Dist. to T1</p>
+              <p className="font-mono text-lg text-on-surface">{distToT1 !== null ? distToT1.toFixed(2) : "—"}</p>
+            </div>
+            <div className="rounded-xl bg-surface-container-low p-4">
+              <p className="text-xs text-on-surface/50">Dist. to T2</p>
+              <p className="font-mono text-lg text-on-surface">{distToT2 !== null ? distToT2.toFixed(2) : "—"}</p>
+            </div>
+          </div>
+          <ThesisMetricsPanel
+            tradePlanId={tradePlan.id}
+            conditions={tradePlan.thesis_conditions}
+            warningText={thesis?.invalidation_condition ?? null}
+          />
+        </div>
+
+        <ExitLadder
+          tradePlan={tradePlan}
+          exits={exits}
+          currentPrice={currentPrice}
+          onLogTrim={setTrimTier}
+          onLogStop={() => setStopModalOpen(true)}
+        />
+      </div>
+
+      {trimTier && (
+        <LogTrimModal positionId={position.id} tier={trimTier} onClose={() => setTrimTier(null)} onSaved={handleSaved} />
+      )}
+      {stopModalOpen && (
+        <StopExitModal positionId={position.id} remainingQuantity={remaining} onClose={() => setStopModalOpen(false)} onSaved={handleSaved} />
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 12: Wire the banner into the Positions list (US-04's HUB-2 half)**
+
+`DisciplineBanner` needs `router.push` for its button handlers, which a server component can't hold — so `app/(app)/positions/page.tsx` (currently a server component, Task 13) splits into a server component that does the `fetchInternalApi` call and a new client component that renders the banner + table. `t1Trimmed` is hardcoded `false` below deliberately: the list view's `GET /api/positions` join (Task 13) doesn't include each row's `exits`, only Task 23's own `GET /api/positions/:id` does — the banner re-evaluates with real exit data once the user is on that position's own detail page, so a stale `false` here just means this list-level banner never shows "already trimmed" and always offers the trim action, which is the safe direction to be wrong in (a redundant offer, not a missed alert).
+
+Create `components/positions/positions-page-client.tsx`:
+
+```typescript
+// components/positions/positions-page-client.tsx
+"use client";
+
+import { useRouter } from "next/navigation";
+
+import { computeDistanceToStop } from "@/lib/position-metrics";
+import { DisciplineBanner } from "./discipline-banner";
+import { PositionsTable, type PositionRow } from "./positions-table";
+
+export function PositionsPageClient({ rows }: { rows: PositionRow[] }) {
+  const router = useRouter();
+
+  const withDistance = rows
+    .filter((r) => r.stock?.last_price != null)
+    .map((r) => ({
+      row: r,
+      distance: computeDistanceToStop({ currentPrice: r.stock!.last_price!, stopLoss: r.tradePlan?.stop_loss ?? null }),
+    }))
+    .filter((x): x is { row: PositionRow; distance: NonNullable<ReturnType<typeof computeDistanceToStop>> } => x.distance !== null)
+    .sort((a, b) => a.distance.rupees - b.distance.rupees);
+  const mostUrgent = withDistance[0]?.row;
+
+  return (
+    <>
+      {mostUrgent && (
+        <DisciplineBanner
+          ticker={mostUrgent.position.ticker}
+          currentPrice={mostUrgent.stock?.last_price ?? null}
+          stopLoss={mostUrgent.tradePlan?.stop_loss ?? null}
+          target1={mostUrgent.tradePlan?.target_1 ?? null}
+          t1Trimmed={false}
+          onExitNow={() => router.push(`/positions/${mostUrgent.position.id}`)}
+          onLogTrim={() => router.push(`/positions/${mostUrgent.position.id}`)}
+        />
+      )}
+      <PositionsTable rows={rows} />
+    </>
+  );
+}
+```
+
+Replace `app/(app)/positions/page.tsx` in full:
+
+```typescript
+// app/(app)/positions/page.tsx
+import { EmptyState } from "@/components/shared/empty-state";
+import { PositionsPageClient } from "@/components/positions/positions-page-client";
+import type { PositionRow } from "@/components/positions/positions-table";
+import { fetchInternalApi } from "@/lib/server-fetch";
+
+async function fetchPositions(): Promise<PositionRow[]> {
+  const res = await fetchInternalApi("/api/positions");
+  const body = await res.json();
+  return body.positions ?? [];
+}
+
+export default async function PositionsPage() {
+  const rows = await fetchPositions();
+
+  return (
+    <div>
+      <h1 className="mb-6 font-display text-2xl text-on-surface">Active Positions & Exit Discipline</h1>
+      {rows.length === 0 ? (
+        <EmptyState title="No active positions." description="Start with a thesis →" />
+      ) : (
+        <PositionsPageClient rows={rows} />
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 13: Manual verification**
+
+Run: `npm run dev`, open a position with a trade plan, log a trim on T1, confirm the exit ladder row flips to DONE and the position's remaining quantity/P&L update; log a full stop exit, confirm you're redirected to `/journal/new?positionId=...`.
+
+- [ ] **Step 14: Commit**
+
+```bash
+/usr/bin/git add supabase/migrations/0010_trade_plan_thesis_conditions.sql lib/types.ts app/api/trade-plans app/api/positions "app/(app)/positions" components/positions
+/usr/bin/git commit -m "feat: Screen 5-6 — Exit & Monitoring, exit ladder, discipline banner (US-04, US-15, US-16, US-17)"
+```
+
+---
+
+### Task 24: Screen HUB-1 — Velocity Cockpit dashboard
+
+**Files:**
+- Create: `app/api/cockpit/route.ts`
+- Modify: `app/(app)/page.tsx` (replace the Task 19 fix-wave stopgap redirect with the real dashboard)
+- Create: `components/cockpit/portfolio-summary.tsx`
+- Create: `components/cockpit/alert-rail.tsx`
+- Test: `app/api/cockpit/__tests__/route.test.ts`
+
+**Interfaces:**
+- Consumes: `computeWeightedAverageEntry` (Task 11), `computePositionPnl`/`computeDistanceToStop` (Task 13), `RecommendationStats` (Task 16, with its new `compact` prop — see Step 4), `useNewThesisDrawer` (Task 6), `LastUpdated` (Task 20), `fetchInternalApi`
+- Produces: `GET /api/cockpit` (`{ positions: PositionRow[]; recommendations: RecommendationRow[]; totalOpenPnl: { absolute: number; percent: number }; overdueTickers: string[] }`) — the dashboard's single aggregated read.
+
+**Ruling — "today / week / MTD" P&L (spec US-01):** the v2 schema deliberately dropped `price_cache` (plan Decision #2 — full schema replace) and nothing in Task 1's live schema stores a time series of portfolio value. Computing a genuine day-over-day or week-over-week P&L delta requires a snapshot table populated on a schedule (a new migration plus a new cron-invoked Edge Function), which is out of scope for what is otherwise a UI-assembly task over data this plan already has. Rather than fabricate a "today %" number from data that can't support it, this task ships the one P&L figure the schema **can** compute correctly — total unrealized P&L across all open positions, since entry — labeled honestly as "Total Open P&L," not "Today." The day/week/MTD breakdown is a real, named gap for a future task (a `portfolio_snapshots` table + a new scheduled Edge Function), not a silent omission.
+
+- [ ] **Step 1: Write the cockpit route test**
+
+```typescript
+// app/api/cockpit/__tests__/route.test.ts
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+import { createAdminClient } from "@/lib/supabase/admin";
+import { GET } from "../route";
+
+function buildMock() {
+  const today = new Date().toISOString().slice(0, 10);
+  const overdue = "2020-01-01";
+  return {
+    from: vi.fn().mockImplementation((table: string) => {
+      if (table === "positions") {
+        return { select: vi.fn().mockReturnValue({ in: vi.fn().mockResolvedValue({ data: [{ id: "p1", ticker: "AAPL", stock_id: "s1", trade_plan_id: "tp1", thesis_id: "t1", status: "active" }], error: null }) }) };
+      }
+      if (table === "entries") {
+        return { select: vi.fn().mockReturnValue({ in: vi.fn().mockResolvedValue({ data: [{ position_id: "p1", quantity: 10, price: 100 }], error: null }) }) };
+      }
+      if (table === "exits") {
+        return { select: vi.fn().mockReturnValue({ in: vi.fn().mockResolvedValue({ data: [], error: null }) }) };
+      }
+      if (table === "stocks") {
+        return { select: vi.fn().mockReturnValue({ in: vi.fn().mockResolvedValue({ data: [{ id: "s1", last_price: 120, exchange: "US" }], error: null }) }) };
+      }
+      if (table === "trade_plans") {
+        return { select: vi.fn().mockReturnValue({ in: vi.fn().mockResolvedValue({ data: [{ id: "tp1", stop_loss: 90, target_1: 130, target_2: 150, time_exit_date: overdue }], error: null }) }) };
+      }
+      if (table === "theses") {
+        return { select: vi.fn().mockReturnValue({ in: vi.fn().mockResolvedValue({ data: [{ id: "t1", conviction_tier: "I" }], error: null }) }) };
+      }
+      if (table === "jarvis_recommendations") {
+        return { select: vi.fn().mockReturnValue({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) };
+      }
+      throw new Error(`unexpected table ${table}`);
+    }),
+  };
+}
+
+describe("GET /api/cockpit", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("aggregates positions, total open P&L, and overdue theses", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(buildMock() as never);
+    const res = await GET();
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.totalOpenPnl.absolute).toBe(200); // (120-100)*10
+    expect(body.overdueTickers).toContain("AAPL");
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails** — Run: `npx vitest run app/api/cockpit/__tests__/route.test.ts` — Expected: FAIL, module not found
+
+- [ ] **Step 3: Implement the route**
+
+```typescript
+// app/api/cockpit/route.ts
+import { NextResponse } from "next/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { computeWeightedAverageEntry } from "@/lib/weighted-average";
+import { computePositionPnl } from "@/lib/position-metrics";
+
+export async function GET() {
+  const supabase = createAdminClient();
+
+  const { data: positions, error: positionsError } = await supabase
+    .from("positions")
+    .select("*")
+    .in("status", ["active", "partial_exit"]);
+  if (positionsError) return NextResponse.json({ error: positionsError.message }, { status: 500 });
+
+  const positionRows = positions ?? [];
+  const positionIds = positionRows.map((p) => p.id);
+  const stockIds = [...new Set(positionRows.map((p) => p.stock_id))];
+  const tradePlanIds = [...new Set(positionRows.map((p) => p.trade_plan_id))];
+  const thesisIds = [...new Set(positionRows.map((p) => p.thesis_id))];
+
+  const [{ data: entries }, { data: exits }, { data: stocks }, { data: tradePlans }, { data: theses }, { data: recs }] =
+    await Promise.all([
+      positionIds.length ? supabase.from("entries").select("*").in("position_id", positionIds) : Promise.resolve({ data: [] }),
+      positionIds.length ? supabase.from("exits").select("*").in("position_id", positionIds) : Promise.resolve({ data: [] }),
+      stockIds.length ? supabase.from("stocks").select("*").in("id", stockIds) : Promise.resolve({ data: [] }),
+      tradePlanIds.length ? supabase.from("trade_plans").select("*").in("id", tradePlanIds) : Promise.resolve({ data: [] }),
+      thesisIds.length ? supabase.from("theses").select("id, conviction_tier").in("id", thesisIds) : Promise.resolve({ data: [] }),
+      supabase.from("jarvis_recommendations").select("*").order("recommended_at", { ascending: false }),
+    ]);
+
+  const entriesByPosition = new Map<string, { quantity: number; price: number }[]>();
+  for (const e of entries ?? []) {
+    const list = entriesByPosition.get(e.position_id) ?? [];
+    list.push({ quantity: e.quantity, price: e.price });
+    entriesByPosition.set(e.position_id, list);
+  }
+  const exitedByPosition = new Map<string, number>();
+  for (const ex of exits ?? []) {
+    exitedByPosition.set(ex.position_id, (exitedByPosition.get(ex.position_id) ?? 0) + ex.quantity);
+  }
+  const stockById = new Map((stocks ?? []).map((s) => [s.id, s]));
+  const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
+  const thesisById = new Map((theses ?? []).map((t) => [t.id, t]));
+
+  let totalAbsolute = 0;
+  const positionResult = positionRows.map((p) => {
+    const stock = stockById.get(p.stock_id);
+    const tradePlan = tradePlanById.get(p.trade_plan_id);
+    const weightedAverage = computeWeightedAverageEntry(entriesByPosition.get(p.id) ?? []);
+    const remaining = weightedAverage.totalQuantity - (exitedByPosition.get(p.id) ?? 0);
+    if (stock?.last_price != null && remaining > 0) {
+      totalAbsolute += computePositionPnl({ currentPrice: stock.last_price, avgEntry: weightedAverage.averagePrice, quantity: remaining }).absolute;
+    }
+    return {
+      position: p,
+      stock,
+      tradePlan,
+      weightedAverage,
+      convictionTier: thesisById.get(p.thesis_id)?.conviction_tier ?? undefined,
+    };
+  });
+
+  const totalCost = positionResult.reduce((sum, r) => sum + r.weightedAverage.averagePrice * r.weightedAverage.totalQuantity, 0);
+  const totalOpenPnl = { absolute: totalAbsolute, percent: totalCost > 0 ? (totalAbsolute / totalCost) * 100 : 0 };
+
+  const today = new Date().toISOString().slice(0, 10);
+  const overdueTickers = positionRows
+    .filter((p) => {
+      const tp = tradePlanById.get(p.trade_plan_id);
+      return tp?.time_exit_date != null && tp.time_exit_date < today;
+    })
+    .map((p) => p.ticker);
+
+  const recStockIds = [...new Set((recs ?? []).map((r) => r.stock_id))];
+  const { data: recStocks } = recStockIds.length
+    ? await supabase.from("stocks").select("id, last_price, exchange").in("id", recStockIds)
+    : { data: [] };
+  const recStockById = new Map((recStocks ?? []).map((s) => [s.id, s]));
+  const recommendations = (recs ?? []).map((r) => ({ recommendation: r, stock: recStockById.get(r.stock_id) }));
+
+  return NextResponse.json({ positions: positionResult, recommendations, totalOpenPnl, overdueTickers });
+}
+```
+
+- [ ] **Step 4: Run to verify it passes** — Run: `npx vitest run app/api/cockpit/__tests__/route.test.ts` — Expected: PASS (1/1)
+
+- [ ] **Step 5: Add a `compact` prop to `components/recommendations/recommendation-stats.tsx`**
+
+Add `compact?: boolean` to its props and, when true, render only the 5-stat grid (skip the per-tier row and the Hypothetical P&L toggle) — reuses the same `stats` computation, no duplicated logic (spec US-02, this component's own Task 16 comment already anticipated this reuse):
+
+```typescript
+export function RecommendationStats({ rows, compact = false }: { rows: Row[]; compact?: boolean }) {
+  // ...existing `stats` useMemo unchanged...
+
+  return (
+    <div className="mb-6 flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {/* ...unchanged 5-stat grid... */}
+      </div>
+      {!compact && (
+        <div className="flex items-center gap-4 text-xs text-on-surface/60">
+          {/* ...unchanged tier breakdown + hypothetical toggle... */}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 6: Build the portfolio summary + alert rail**
+
+```typescript
+// components/cockpit/portfolio-summary.tsx
+export function PortfolioSummary({
+  totalOpenPnl,
+  positionCount,
+  pendingRecCount,
+}: {
+  totalOpenPnl: { absolute: number; percent: number };
+  positionCount: number;
+  pendingRecCount: number;
+}) {
+  return (
+    <div className="grid grid-cols-3 gap-3">
+      <div className="rounded-xl bg-surface-container-low p-4">
+        <p className="text-xs uppercase text-on-surface/50">Total Open P&L</p>
+        <p className={`mt-1 font-mono text-xl ${totalOpenPnl.absolute >= 0 ? "text-status-green" : "text-status-red"}`}>
+          {totalOpenPnl.absolute >= 0 ? "+" : ""}
+          {totalOpenPnl.absolute.toFixed(2)} ({totalOpenPnl.percent.toFixed(2)}%)
+        </p>
+      </div>
+      <div className="rounded-xl bg-surface-container-low p-4">
+        <p className="text-xs uppercase text-on-surface/50">Active Positions</p>
+        <p className="mt-1 font-mono text-xl text-on-surface">{positionCount}</p>
+      </div>
+      <div className="rounded-xl bg-surface-container-low p-4">
+        <p className="text-xs uppercase text-on-surface/50">Pending Recommendations</p>
+        <p className="mt-1 font-mono text-xl text-on-surface">{pendingRecCount}</p>
+      </div>
+    </div>
+  );
+}
+```
+
+```typescript
+// components/cockpit/alert-rail.tsx
+import Link from "next/link";
+import { computeDistanceToStop } from "@/lib/position-metrics";
+import type { PositionRow } from "@/components/positions/positions-table";
+
+/** Spec US-01: RED pill within 3% of stop, AMBER chip for an overdue thesis-test date. */
+export function AlertRail({ positions, overdueTickers }: { positions: PositionRow[]; overdueTickers: string[] }) {
+  const nearStop = positions.filter((r) => {
+    if (r.stock?.last_price == null || r.tradePlan?.stop_loss == null) return false;
+    const dist = computeDistanceToStop({ currentPrice: r.stock.last_price, stopLoss: r.tradePlan.stop_loss });
+    return dist !== null && dist.percent <= 3;
+  });
+
+  if (nearStop.length === 0 && overdueTickers.length === 0) return null;
+
+  return (
+    <div className="mb-6 flex flex-wrap gap-2">
+      {nearStop.map((r) => (
+        <Link
+          key={r.position.id}
+          href={`/positions/${r.position.id}`}
+          className="rounded-full bg-status-red-container px-3 py-1 text-xs font-medium text-status-red"
+        >
+          {r.position.ticker} near stop
+        </Link>
+      ))}
+      {overdueTickers.map((ticker) => (
+        <span key={ticker} className="rounded-full bg-primary-container px-3 py-1 text-xs font-medium text-primary">
+          ⏱ Thesis Test Overdue — {ticker}
+        </span>
+      ))}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 7: Replace the stopgap `app/(app)/page.tsx`**
+
+```typescript
+// app/(app)/page.tsx
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
+
+import { PortfolioSummary } from "@/components/cockpit/portfolio-summary";
+import { AlertRail } from "@/components/cockpit/alert-rail";
+import { PositionsTable, type PositionRow } from "@/components/positions/positions-table";
+import { RecommendationStats } from "@/components/recommendations/recommendation-stats";
+import { EmptyState } from "@/components/shared/empty-state";
+import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import { useNewThesisDrawer } from "@/components/layout/new-thesis-context";
+
+export default function CockpitPage() {
+  const { open } = useNewThesisDrawer();
+  const [data, setData] = useState<{
+    positions: PositionRow[];
+    recommendations: Parameters<typeof RecommendationStats>[0]["rows"];
+    totalOpenPnl: { absolute: number; percent: number };
+    overdueTickers: string[];
+  } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/cockpit")
+      .then((res) => res.json())
+      .then(setData);
+  }, []);
+
+  if (!data) return <SkeletonLoader lines={6} />;
+
+  const pendingRecCount = data.recommendations.filter((r) => !r.recommendation.converted_to_position).length;
+
+  return (
+    <div>
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="font-display text-2xl text-on-surface">Velocity Cockpit</h1>
+        <button
+          type="button"
+          onClick={() => open()}
+          className="flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-on-primary shadow-ambient"
+        >
+          <Plus className="size-4" /> New Thesis
+        </button>
+      </div>
+
+      <PortfolioSummary
+        totalOpenPnl={data.totalOpenPnl}
+        positionCount={data.positions.length}
+        pendingRecCount={pendingRecCount}
+      />
+
+      <div className="mt-6">
+        <AlertRail positions={data.positions} overdueTickers={data.overdueTickers} />
+      </div>
+
+      <div className="mt-8">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-display text-sm uppercase text-on-surface/50">Active Positions</h2>
+          <Link href="/positions" className="text-xs text-primary underline">View all</Link>
+        </div>
+        {data.positions.length === 0 ? (
+          <EmptyState title="No active positions." description="Start with a thesis →" />
+        ) : (
+          <PositionsTable rows={data.positions} />
+        )}
+      </div>
+
+      <div className="mt-8">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-display text-sm uppercase text-on-surface/50">Jarvis Recommendations</h2>
+          <Link href="/recommendations" className="text-xs text-primary underline">View tracker</Link>
+        </div>
+        {data.recommendations.length === 0 ? (
+          <EmptyState title="No Jarvis recommendations yet." description="Build a trade plan to start tracking." />
+        ) : (
+          <RecommendationStats rows={data.recommendations} compact />
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 8: Wire the "Last updated" indicator into this screen (spec Section 5 Price Data)**
+
+Task 20 introduced `<LastUpdated at exchange />` and already uses it on the plan wizard; Task 21's HUB-3 review screen already threads a live `priceAsOf` through the same `POST /api/prices/refresh` call and renders it too. This task's `app/(app)/page.tsx` is the third and last screen (of the ones drafted so far) that shows a price: import `LastUpdated` from `@/components/shared/last-updated` and, next to the "Active Positions" section heading, render one using the most recent `last_price_at` across `data.positions`:
+
+```typescript
+import { LastUpdated } from "@/components/shared/last-updated";
+
+// inside CockpitPage, after `data` is loaded:
+const mostRecentPositionPriceAt = data.positions.reduce<string | null>(
+  (latest, r) => (r.stock?.last_price_at && (!latest || r.stock.last_price_at > latest) ? r.stock.last_price_at : latest),
+  null,
+);
+```
+
+```jsx
+<div className="mb-3 flex items-center justify-between">
+  <div className="flex items-center gap-3">
+    <h2 className="font-display text-sm uppercase text-on-surface/50">Active Positions</h2>
+    <LastUpdated at={mostRecentPositionPriceAt} exchange="NSE" />
+  </div>
+  <Link href="/positions" className="text-xs text-primary underline">View all</Link>
+</div>
+```
+
+(`app/(app)/positions/[id]/page.tsx`, Task 23, doesn't need a retrofit — its `detail.stock?.last_price_at`/`detail.stock?.exchange` are already available from `GET /api/positions/:id`'s join; add `<LastUpdated at={detail.stock?.last_price_at ?? null} exchange={detail.stock?.exchange ?? "US"} />` beside its header `<PriceBadge />` as part of Task 23 itself, not deferred here.)
+
+- [ ] **Step 9: Manual verification**
+
+Run: `npm run dev`, visit `/`, confirm it no longer redirects to `/positions`, confirm Total Open P&L / Active Positions / Pending Recommendations render, confirm the RED near-stop pill and AMBER overdue chip appear when applicable, click a position card and confirm it navigates to `/positions/:id`, confirm a "Last updated" timestamp is visible on the Cockpit, HUB-3 review, plan wizard, and position-detail screens.
+
+- [ ] **Step 10: Commit**
+
+```bash
+/usr/bin/git add app/api/cockpit "app/(app)/page.tsx" components/cockpit components/recommendations/recommendation-stats.tsx
+/usr/bin/git commit -m "feat: Screen HUB-1 — Velocity Cockpit dashboard (US-01, US-02); wire Section 5's Last-updated rule into the Cockpit"
+```
+
+---
+
+## Phase 3 — P2
+
+### Task 25: `POST /api/journal` + Jarvis-verdict generation
+
+**Files:**
+- Create: `lib/jarvis-journal-prompt.ts`
+- Create: `lib/jarvis-journal-parser.ts`
+- Create: `app/api/journal/route.ts`
+- Test: `lib/__tests__/jarvis-journal-parser.test.ts`
+- Test: `app/api/journal/__tests__/route.test.ts`
+
+**Interfaces:**
+- Consumes: `computeWeightedAverageEntry` (Task 11), `jarvisModel` (`@/lib/llm/openrouter`), `createAdminClient`
+- Produces: `POST /api/journal` (body: `{ position_id, thesis_outcome, entry_quality, sizing_quality, stop_management, exit_quality, discipline_score, what_went_right?, what_went_wrong?, lessons?, generate_only?, jarvis_verdict?, tags? }`) — with `generate_only: true`, returns `200 { verdict: string | null; suggestedTags: string[]; autoFilled: {...} }` and persists nothing (a preview call); otherwise validates all rating/outcome fields, persists a `trade_journal_entries` row, sets `positions.status = 'closed'`, and returns `201 { entry: TradeJournalEntry }`. Consumed by Task 26's review form (spec Global Constraint — AI calls get a skeleton loader, per Section 5 "Loading States": target <15s, amber-pulsing `<SkeletonLoader />`, never a bare spinner).
+
+**Ruling — one endpoint, two modes, resolves the spec's "Jarvis Verdict... Displayed read-only with an Edit option":** rather than build a second `PATCH /api/journal/[id]` purely so a user can edit an AI-generated verdict before it's ever saved, `generate_only: true` runs the P&L/date computation + the Jarvis LLM call and returns a *preview* (nothing persisted); Task 26's form then lets the user edit that preview's `verdict`/`tags` text in local state before the final save (`generate_only` omitted) persists whatever the client currently holds. This is simpler than a persist-then-patch cycle and matches the spec's actual UX ("Edit" happens on a value the user hasn't committed yet).
+
+**Ruling — auto-suggested tags:** the spec's own examples ("Indian EV", "Buyback Signal") read as thematic, LLM-derived tags, not something a regex heuristic can produce reliably. Since a Jarvis LLM call already runs for the verdict, the same call also returns `suggested_tags` in its structured JSON — one model call, not two independent tagging mechanisms. `"Discipline Break"` is the one exception: it's appended **programmatically**, never left to the model, whenever any of the position's `exits` rows has `override: true` — that's a deterministic fact from the DB, not a judgment call worth risking on LLM output.
+
+- [ ] **Step 1: Write the journal-parser test**
+
+```typescript
+// lib/__tests__/jarvis-journal-parser.test.ts
+import { describe, expect, it } from "vitest";
+import { parseJournalVerdict } from "@/lib/jarvis-journal-parser";
+
+const RAW = `\`\`\`json
+{"verdict": "You sized correctly and respected the stop. The thesis played out as planned.", "suggested_tags": ["Indian EV", "Buyback Signal"]}
+\`\`\``;
+
+describe("parseJournalVerdict", () => {
+  it("extracts the verdict and suggested tags", () => {
+    const result = parseJournalVerdict(RAW);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.verdict).toContain("sized correctly");
+      expect(result.data.suggestedTags).toEqual(["Indian EV", "Buyback Signal"]);
+    }
+  });
+
+  it("never throws on garbage input", () => {
+    expect(() => parseJournalVerdict("not json")).not.toThrow();
+    expect(parseJournalVerdict("not json").ok).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails** — Run: `npx vitest run lib/__tests__/jarvis-journal-parser.test.ts` — Expected: FAIL, module not found
+
+- [ ] **Step 3: Write the prompt + parser**
+
+```typescript
+// lib/jarvis-journal-prompt.ts
+
+/** Spec US-18's "Jarvis Verdict" — a 2-sentence AI post-mortem, run once per journal save/preview. */
+export const JARVIS_JOURNAL_SYSTEM_PROMPT = `You are Jarvis, reviewing a completed trade after the fact.
+You will be given the original thesis and the trade's actual outcome. Write a blunt, 2-sentence
+post-mortem: what the trader got right or wrong, stated plainly — this is not encouragement, it is
+calibration. Also suggest 2-4 short thematic tags for this trade (e.g. "Indian EV", "Buyback Signal",
+sector/strategy names) — never suggest "Discipline Break", that tag is applied programmatically from
+the trade's actual exit records, not from your judgment.
+
+Output exactly one fenced code block using json as the fence's info string, containing ONE object:
+
+{ "verdict": string, "suggested_tags": string[] }`;
+
+export function buildJournalUserContext(input: {
+  ticker: string;
+  marketView: string | null;
+  invalidationCondition: string | null;
+  convictionTier: string | null;
+  pnlPct: number;
+  thesisOutcome: string;
+  disciplineScore: number;
+}): string {
+  return [
+    `Ticker: ${input.ticker}`,
+    `Original thesis (Market View): ${input.marketView ?? "n/a"}`,
+    `Invalidation condition: ${input.invalidationCondition ?? "n/a"}`,
+    `Conviction Tier at entry: ${input.convictionTier ?? "n/a"}`,
+    `Realized P&L: ${input.pnlPct.toFixed(2)}%`,
+    `User-selected thesis outcome: ${input.thesisOutcome}`,
+    `User's self-rated discipline score (1-5): ${input.disciplineScore}`,
+    "",
+    "Write the verdict and suggest tags.",
+  ].join("\n");
+}
+```
+
+```typescript
+// lib/jarvis-journal-parser.ts
+import { z } from "zod";
+import { extractTrailingJsonBlock } from "./jarvis-thesis-parser";
+
+const JournalVerdictSchema = z.object({
+  verdict: z.string(),
+  suggested_tags: z.array(z.string()),
+});
+
+export type JournalVerdictExtraction =
+  | { ok: true; data: { verdict: string; suggestedTags: string[] } }
+  | { ok: false; error: string };
+
+/** Same never-throws contract as the other Jarvis parsers. */
+export function parseJournalVerdict(raw: string): JournalVerdictExtraction {
+  try {
+    const rawJson = extractTrailingJsonBlock(raw);
+    if (rawJson === null) return { ok: false, error: "No valid ```json code block found." };
+    const result = JournalVerdictSchema.safeParse(rawJson);
+    if (!result.success) return { ok: false, error: `Schema validation failed: ${result.error.message}` };
+    return { ok: true, data: { verdict: result.data.verdict, suggestedTags: result.data.suggested_tags } };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+```
+
+- [ ] **Step 4: Run to verify it passes** — Run: `npx vitest run lib/__tests__/jarvis-journal-parser.test.ts` — Expected: PASS (2/2)
+
+- [ ] **Step 5: Write the route test**
+
+```typescript
+// app/api/journal/__tests__/route.test.ts
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+vi.mock("ai", () => ({ generateText: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+
+import { generateText } from "ai";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { POST } from "../route";
+
+const VERDICT_RAW = `\`\`\`json
+{"verdict": "Good discipline overall.", "suggested_tags": ["Indian EV"]}
+\`\`\``;
+
+function buildMock(opts: { overrideExit?: boolean } = {}) {
+  const journalInsert = vi.fn().mockReturnValue({
+    select: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: { id: "j1" }, error: null }) }),
+  });
+  const positionUpdate = vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) });
+  return {
+    from: vi.fn().mockImplementation((table: string) => {
+      if (table === "positions") return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: { id: "p1", ticker: "AAPL", thesis_id: "t1" }, error: null }) }) }), update: positionUpdate };
+      if (table === "entries") return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ data: [{ date: "2026-01-01", quantity: 10, price: 100 }], error: null }) }) };
+      if (table === "exits") return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ data: [{ date: "2026-02-01", quantity: 10, price: 120, override: opts.overrideExit ?? false }], error: null }) }) };
+      if (table === "theses") return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: { market_view: "v", invalidation_condition: "i", conviction_tier: "I" }, error: null }) }) }) };
+      if (table === "trade_journal_entries") return { insert: journalInsert };
+      throw new Error(`unexpected table ${table}`);
+    }),
+    _journalInsert: journalInsert,
+    _positionUpdate: positionUpdate,
+  };
+}
+
+describe("POST /api/journal", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("generate_only returns a preview without persisting", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(buildMock() as never);
+    vi.mocked(generateText).mockResolvedValue({ text: VERDICT_RAW } as never);
+    const req = new Request("http://test", { method: "POST", body: JSON.stringify({ position_id: "p1", generate_only: true }) });
+    const res = await POST(req as never);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.verdict).toContain("Good discipline");
+    expect(body.autoFilled.pnlPct).toBeCloseTo(20, 1);
+  });
+
+  it("persists the review, appends Discipline Break for an overridden exit, and closes the position", async () => {
+    const mock = buildMock({ overrideExit: true });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(generateText).mockResolvedValue({ text: VERDICT_RAW } as never);
+    const req = new Request("http://test", {
+      method: "POST",
+      body: JSON.stringify({
+        position_id: "p1",
+        thesis_outcome: "confirmed",
+        entry_quality: 4, sizing_quality: 4, stop_management: 3, exit_quality: 4, discipline_score: 2,
+      }),
+    });
+    const res = await POST(req as never);
+    expect(res.status).toBe(201);
+    const inserted = mock._journalInsert.mock.calls[0][0];
+    expect(inserted.tags).toContain("Discipline Break");
+    expect(mock._positionUpdate).toHaveBeenCalledWith({ status: "closed" });
+  });
+});
+```
+
+- [ ] **Step 6: Run to verify it fails** — Run: `npx vitest run app/api/journal/__tests__/route.test.ts` — Expected: FAIL, module not found
+
+- [ ] **Step 7: Implement the route**
+
+```typescript
+// app/api/journal/route.ts
+import { NextResponse } from "next/server";
+import { generateText } from "ai";
+import { z } from "zod";
+
+import { JARVIS_JOURNAL_SYSTEM_PROMPT, buildJournalUserContext } from "@/lib/jarvis-journal-prompt";
+import { parseJournalVerdict } from "@/lib/jarvis-journal-parser";
+import { jarvisModel } from "@/lib/llm/openrouter";
+import { computeWeightedAverageEntry } from "@/lib/weighted-average";
+import { createAdminClient } from "@/lib/supabase/admin";
+import type { TradeJournalEntryInsert } from "@/lib/types";
+
+export const maxDuration = 60;
+
+const CreateJournalSchema = z.object({
+  position_id: z.string().min(1),
+  generate_only: z.boolean().optional(),
+  thesis_outcome: z.enum(["confirmed", "partially_confirmed", "invalidated"]).optional(),
+  entry_quality: z.number().int().min(1).max(5).optional(),
+  sizing_quality: z.number().int().min(1).max(5).optional(),
+  stop_management: z.number().int().min(1).max(5).optional(),
+  exit_quality: z.number().int().min(1).max(5).optional(),
+  discipline_score: z.number().int().min(1).max(5).optional(),
+  what_went_right: z.string().optional(),
+  what_went_wrong: z.string().optional(),
+  lessons: z.string().optional(),
+  jarvis_verdict: z.string().nullable().optional(),
+  tags: z.array(z.string()).optional(),
+});
+
+export async function POST(request: Request) {
+  const json = await request.json().catch(() => null);
+  if (json === null) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  const parsed = CreateJournalSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
+  }
+  const input = parsed.data;
+
+  if (!input.generate_only) {
+    const required = ["thesis_outcome", "entry_quality", "sizing_quality", "stop_management", "exit_quality", "discipline_score"] as const;
+    for (const field of required) {
+      if (input[field] === undefined) {
+        return NextResponse.json({ error: `${field} is required unless generate_only is true` }, { status: 400 });
+      }
+    }
+  }
+
+  const supabase = createAdminClient();
+
+  const { data: position, error: positionError } = await supabase
+    .from("positions")
+    .select("id, ticker, thesis_id")
+    .eq("id", input.position_id)
+    .single();
+  if (positionError || !position) {
+    return NextResponse.json({ error: positionError?.message ?? "Position not found" }, { status: 404 });
+  }
+
+  const [{ data: entries }, { data: exits }, { data: thesis }] = await Promise.all([
+    supabase.from("entries").select("date, quantity, price").eq("position_id", position.id),
+    supabase.from("exits").select("date, quantity, price, override").eq("position_id", position.id),
+    supabase.from("theses").select("market_view, invalidation_condition, conviction_tier").eq("id", position.thesis_id).single(),
+  ]);
+
+  const entryRows = entries ?? [];
+  const exitRows = exits ?? [];
+  const weightedAverage = computeWeightedAverageEntry(entryRows);
+  const totalCost = weightedAverage.averagePrice * weightedAverage.totalQuantity;
+  const totalProceeds = exitRows.reduce((sum, e) => sum + e.quantity * e.price, 0);
+  const pnlRupees = totalProceeds - totalCost;
+  const pnlPct = totalCost > 0 ? (pnlRupees / totalCost) * 100 : 0;
+  const entryDates = entryRows.map((e) => e.date);
+  const exitDates = exitRows.map((e) => e.date);
+  const hasOverride = exitRows.some((e) => e.override);
+
+  let verdict: string | null = input.jarvis_verdict ?? null;
+  let suggestedTags: string[] = input.tags ?? [];
+  if (verdict === null && (input.tags === undefined || input.tags.length === 0)) {
+    try {
+      const result = await generateText({
+        model: jarvisModel,
+        system: JARVIS_JOURNAL_SYSTEM_PROMPT,
+        prompt: buildJournalUserContext({
+          ticker: position.ticker,
+          marketView: thesis?.market_view ?? null,
+          invalidationCondition: thesis?.invalidation_condition ?? null,
+          convictionTier: thesis?.conviction_tier ?? null,
+          pnlPct,
+          thesisOutcome: input.thesis_outcome ?? "unknown",
+          disciplineScore: input.discipline_score ?? 0,
+        }),
+      });
+      const parsedVerdict = parseJournalVerdict(result.text);
+      if (parsedVerdict.ok) {
+        verdict = parsedVerdict.data.verdict;
+        suggestedTags = parsedVerdict.data.suggestedTags;
+      }
+    } catch {
+      // Best-effort — a failed Jarvis call must never block saving the review itself.
+    }
+  }
+  const tags = hasOverride ? [...suggestedTags, "Discipline Break"] : suggestedTags;
+
+  if (input.generate_only) {
+    return NextResponse.json({
+      verdict,
+      suggestedTags: tags,
+      autoFilled: { ticker: position.ticker, entryDates, exitDates, pnlRupees, pnlPct, convictionTier: thesis?.conviction_tier ?? null },
+    });
+  }
+
+  const insert: TradeJournalEntryInsert = {
+    position_id: position.id,
+    ticker: position.ticker,
+    entry_dates: entryDates,
+    exit_dates: exitDates,
+    pnl_rupees: pnlRupees,
+    pnl_pct: pnlPct,
+    thesis_outcome: input.thesis_outcome!,
+    conviction_tier_used: thesis?.conviction_tier ?? "IV",
+    entry_quality: input.entry_quality!,
+    sizing_quality: input.sizing_quality!,
+    stop_management: input.stop_management!,
+    exit_quality: input.exit_quality!,
+    discipline_score: input.discipline_score!,
+    what_went_right: input.what_went_right ?? null,
+    what_went_wrong: input.what_went_wrong ?? null,
+    lessons: input.lessons ?? null,
+    jarvis_verdict: verdict,
+    tags,
+  };
+
+  const { data: entry, error: insertError } = await supabase
+    .from("trade_journal_entries")
+    .insert(insert)
+    .select("*")
+    .single();
+  if (insertError || !entry) {
+    return NextResponse.json({ error: insertError?.message ?? "Failed to save journal entry" }, { status: 500 });
+  }
+
+  /** Belt-and-suspenders with Task 22's quantity-driven closure — spec US-18 says explicitly that saving the review is what closes the position, so this is idempotent-but-authoritative even if Task 22 already closed it. */
+  const { error: closeError } = await supabase.from("positions").update({ status: "closed" }).eq("id", position.id);
+  if (closeError) {
+    return NextResponse.json({ error: closeError.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ entry }, { status: 201 });
+}
+```
+
+- [ ] **Step 8: Run to verify it passes** — Run: `npx vitest run app/api/journal/__tests__/route.test.ts` — Expected: PASS (2/2)
+
+- [ ] **Step 9: Commit**
+
+```bash
+/usr/bin/git add lib/jarvis-journal-prompt.ts lib/jarvis-journal-parser.ts lib/__tests__/jarvis-journal-parser.test.ts app/api/journal
+/usr/bin/git commit -m "feat: POST /api/journal — auto-filled review + Jarvis verdict (US-18)"
+```
+
+---
+
+### Task 26: Screen 7 — Trade Journal & Review (form)
+
+**Files:**
+- Create: `components/journal/star-rating.tsx`
+- Create: `components/journal/journal-review-form.tsx`
+- Create: `app/(app)/journal/new/page.tsx`
+
+**Interfaces:**
+- Consumes: `GET /api/positions/:id` (Task 23, for the auto-filled summary — reused rather than a new endpoint), `POST /api/journal` (Task 25, both its `generate_only` preview mode and its persist mode)
+- Produces: `<StarRating value onChange />` (reused nowhere else in this plan, but factored out since it's used 5 times on this one screen), `/journal/new?positionId=X` — reached from Task 23's `handleSaved(promptJournal: true)` redirect.
+
+**Ruling — 5 sections vs. the schema's 3 free-text columns:** the spec lists five editable text sections ("What went right / What went wrong / Was the stop correct / What would I do differently / Key lesson") but `trade_journal_entries` (Task 1, already live) has exactly three: `what_went_right`, `what_went_wrong`, `lessons`. Per this plan's own stated precedence ("where the spec and this plan disagree, this plan wins," and Task 1's schema is a completed, deployed migration this plan does not revise after the fact), the form presents 3 sections with labels that fold in the other two rather than adding a schema migration for pure copy: **"What went right"**, **"What went wrong (including: was the stop correct?)"**, **"Lessons / what I'd do differently"**.
+
+- [ ] **Step 1: Build the star rating widget**
+
+```typescript
+// components/journal/star-rating.tsx
+"use client";
+
+export function StarRating({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-on-surface/70">{label}</span>
+      <div className="flex gap-1">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => onChange(n)}
+            className={n <= value ? "text-primary" : "text-on-surface/20"}
+            aria-label={`${n} star${n > 1 ? "s" : ""}`}
+          >
+            ★
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 2: Build the review form**
+
+```typescript
+// components/journal/journal-review-form.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+
+import { StarRating } from "./star-rating";
+import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import type { ThesisOutcome } from "@/lib/types";
+
+type AutoFilled = {
+  ticker: string;
+  entryDates: string[];
+  exitDates: string[];
+  pnlRupees: number;
+  pnlPct: number;
+  convictionTier: string | null;
+};
+
+const OUTCOME_OPTIONS: ThesisOutcome[] = ["confirmed", "partially_confirmed", "invalidated"];
+
+/** Spec Screen 7 (US-18). Two-phase: generate a Jarvis verdict preview first (editable), then persist. */
+export function JournalReviewForm({ positionId }: { positionId: string }) {
+  const router = useRouter();
+  const [autoFilled, setAutoFilled] = useState<AutoFilled | null>(null);
+  const [verdict, setVerdict] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [outcome, setOutcome] = useState<ThesisOutcome>("confirmed");
+  const [ratings, setRatings] = useState({ entry_quality: 3, sizing_quality: 3, stop_management: 3, exit_quality: 3, discipline_score: 3 });
+  const [text, setText] = useState({ what_went_right: "", what_went_wrong: "", lessons: "" });
+  const [editingVerdict, setEditingVerdict] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/journal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ position_id: positionId, generate_only: true }),
+    })
+      .then((res) => res.json())
+      .then((body) => {
+        setAutoFilled(body.autoFilled);
+        setVerdict(body.verdict ?? "");
+        setTags(body.suggestedTags ?? []);
+        setLoading(false);
+      });
+  }, [positionId]);
+
+  async function handleSave() {
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/journal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          position_id: positionId,
+          thesis_outcome: outcome,
+          ...ratings,
+          ...text,
+          jarvis_verdict: verdict || null,
+          tags,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Failed to save review");
+      router.push("/journal");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (loading || !autoFilled) return <SkeletonLoader lines={6} />;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="rounded-xl bg-surface-container-low p-4">
+        <p className="font-display text-lg text-on-surface">{autoFilled.ticker}</p>
+        <p className="mt-1 text-xs text-on-surface/60">
+          Entry {autoFilled.entryDates.join(", ")} · Exit {autoFilled.exitDates.join(", ")} · Tier {autoFilled.convictionTier ?? "—"}
+        </p>
+        <p className={`mt-2 font-mono text-lg ${autoFilled.pnlRupees >= 0 ? "text-status-green" : "text-status-red"}`}>
+          {autoFilled.pnlRupees >= 0 ? "+" : ""}
+          {autoFilled.pnlRupees.toFixed(2)} ({autoFilled.pnlPct.toFixed(2)}%)
+        </p>
+      </div>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs text-on-surface/50">Thesis Outcome</span>
+        <select value={outcome} onChange={(e) => setOutcome(e.target.value as ThesisOutcome)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm">
+          {OUTCOME_OPTIONS.map((o) => (
+            <option key={o} value={o}>{o.replace("_", " ")}</option>
+          ))}
+        </select>
+      </label>
+
+      <div className="flex flex-col gap-2 rounded-xl bg-surface-container-low p-4">
+        <StarRating label="Entry Quality" value={ratings.entry_quality} onChange={(v) => setRatings((r) => ({ ...r, entry_quality: v }))} />
+        <StarRating label="Sizing" value={ratings.sizing_quality} onChange={(v) => setRatings((r) => ({ ...r, sizing_quality: v }))} />
+        <StarRating label="Stop Management" value={ratings.stop_management} onChange={(v) => setRatings((r) => ({ ...r, stop_management: v }))} />
+        <StarRating label="Exit Timing" value={ratings.exit_quality} onChange={(v) => setRatings((r) => ({ ...r, exit_quality: v }))} />
+        <StarRating label="Overall Discipline" value={ratings.discipline_score} onChange={(v) => setRatings((r) => ({ ...r, discipline_score: v }))} />
+      </div>
+
+      {(
+        [
+          ["what_went_right", "What went right"],
+          ["what_went_wrong", "What went wrong (including: was the stop correct?)"],
+          ["lessons", "Lessons / what I'd do differently"],
+        ] as const
+      ).map(([key, label]) => (
+        <label key={key} className="flex flex-col gap-1">
+          <span className="text-xs text-on-surface/50">{label}</span>
+          <textarea
+            rows={3}
+            value={text[key]}
+            onChange={(e) => setText((t) => ({ ...t, [key]: e.target.value }))}
+            className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm"
+          />
+        </label>
+      ))}
+
+      <div className="rounded-xl bg-primary-container p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="font-display text-xs uppercase text-primary">Jarvis Verdict</p>
+          <button type="button" onClick={() => setEditingVerdict((v) => !v)} className="text-xs text-primary underline">
+            {editingVerdict ? "Done" : "Edit"}
+          </button>
+        </div>
+        {editingVerdict ? (
+          <textarea value={verdict} onChange={(e) => setVerdict(e.target.value)} rows={3} className="w-full rounded-lg bg-surface-container-highest px-3 py-2 text-sm text-on-surface" />
+        ) : (
+          <p className="text-sm text-primary">{verdict || "—"}</p>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {tags.map((tag) => (
+          <span key={tag} className="rounded-full bg-surface-container-highest px-3 py-1 text-xs text-on-surface/70">{tag}</span>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={handleSave}
+        disabled={submitting}
+        className="self-start rounded-xl bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40"
+      >
+        Save Review
+      </button>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 3: Build the page**
+
+```typescript
+// app/(app)/journal/new/page.tsx
+import { JournalReviewForm } from "@/components/journal/journal-review-form";
+
+export default async function NewJournalEntryPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ positionId?: string }>;
+}) {
+  const { positionId } = await searchParams;
+  if (!positionId) {
+    return <p className="text-sm text-on-surface/60">Missing positionId.</p>;
+  }
+  return (
+    <div className="mx-auto max-w-2xl">
+      <h1 className="mb-6 font-display text-2xl text-on-surface">Trade Journal & Review</h1>
+      <JournalReviewForm positionId={positionId} />
+    </div>
+  );
+}
+```
+
+- [ ] **Step 4: Manual verification**
+
+Run: `npm run dev`, fully exit a position (Task 23's flow), confirm the redirect to `/journal/new?positionId=...`, confirm auto-filled ticker/dates/P&L render, confirm the Jarvis Verdict preview loads (amber skeleton first, per Section 5's Loading States rule), edit it, save, confirm you land on `/journal` and the position now shows `closed`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+/usr/bin/git add components/journal "app/(app)/journal/new"
+/usr/bin/git commit -m "feat: Screen 7 — Trade Journal & Review form (US-18)"
+```
+
+---
+
+### Task 27: Journal archive/browse screen
+
+**Files:**
+- Modify: `app/api/journal/route.ts` (add `GET`, alongside Task 25's `POST`)
+- Create: `app/(app)/journal/page.tsx`
+- Create: `components/journal/journal-archive-table.tsx`
+
+**Interfaces:**
+- Consumes: `fetchInternalApi` (Global Constraint)
+- Produces: `GET /api/journal` (`{ entries: TradeJournalEntry[] }`), `/journal` — the sidebar's "Journal" nav target.
+
+- [ ] **Step 1: Add `GET` to `app/api/journal/route.ts`**
+
+```typescript
+export async function GET() {
+  const supabase = createAdminClient();
+  const { data: entries, error } = await supabase
+    .from("trade_journal_entries")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ entries: entries ?? [] });
+}
+```
+
+- [ ] **Step 2: Build the archive table**
+
+```typescript
+// components/journal/journal-archive-table.tsx
+"use client";
+
+import { useMemo, useState } from "react";
+import type { TradeJournalEntry, ThesisOutcome } from "@/lib/types";
+
+/** Spec US-19: filterable archive + aggregate stats + expandable rows. */
+export function JournalArchiveTable({ entries }: { entries: TradeJournalEntry[] }) {
+  const [tickerFilter, setTickerFilter] = useState("");
+  const [outcomeFilter, setOutcomeFilter] = useState<ThesisOutcome | "all">("all");
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    return entries.filter((e) => {
+      if (tickerFilter && !e.ticker.toLowerCase().includes(tickerFilter.toLowerCase())) return false;
+      if (outcomeFilter !== "all" && e.thesis_outcome !== outcomeFilter) return false;
+      return true;
+    });
+  }, [entries, tickerFilter, outcomeFilter]);
+
+  const stats = useMemo(() => {
+    const total = filtered.length;
+    const avgDiscipline = total > 0 ? filtered.reduce((s, e) => s + e.discipline_score, 0) / total : 0;
+    const wins = filtered.filter((e) => e.pnl_pct !== null && e.pnl_pct > 0).length;
+    const winRate = total > 0 ? (wins / total) * 100 : 0;
+    const tagCounts = new Map<string, number>();
+    for (const e of filtered) for (const tag of e.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+    const mostCommonTag = [...tagCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
+    return { total, avgDiscipline, winRate, mostCommonTag };
+  }, [filtered]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {[
+          ["Trades Reviewed", stats.total],
+          ["Avg Discipline", stats.avgDiscipline.toFixed(1)],
+          ["Win Rate", `${stats.winRate.toFixed(0)}%`],
+          ["Most Common Lesson Tag", stats.mostCommonTag],
+        ].map(([label, value]) => (
+          <div key={label as string} className="rounded-xl bg-surface-container-low p-4">
+            <p className="font-display text-xs uppercase text-on-surface/50">{label}</p>
+            <p className="mt-1 font-mono text-lg text-on-surface">{value}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex gap-3">
+        <input
+          placeholder="Filter by ticker"
+          value={tickerFilter}
+          onChange={(e) => setTickerFilter(e.target.value)}
+          className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm"
+        />
+        <select value={outcomeFilter} onChange={(e) => setOutcomeFilter(e.target.value as ThesisOutcome | "all")} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm">
+          <option value="all">All outcomes</option>
+          <option value="confirmed">Confirmed</option>
+          <option value="partially_confirmed">Partially Confirmed</option>
+          <option value="invalidated">Invalidated</option>
+        </select>
+      </div>
+
+      <div className="overflow-x-auto rounded-xl bg-surface-container-low">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="text-xs text-on-surface/50">
+              <th className="p-3">Ticker</th>
+              <th className="p-3">P&L %</th>
+              <th className="p-3">Outcome</th>
+              <th className="p-3">Discipline</th>
+              <th className="p-3">Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((e) => (
+              <>
+                <tr
+                  key={e.id}
+                  onClick={() => setExpanded(expanded === e.id ? null : e.id)}
+                  className="cursor-pointer border-t border-outline-variant/10 hover:bg-surface-container-high"
+                >
+                  <td className="p-3 font-medium">{e.ticker}</td>
+                  <td className={`p-3 font-mono ${e.pnl_pct != null && e.pnl_pct >= 0 ? "text-status-green" : "text-status-red"}`}>
+                    {e.pnl_pct != null ? `${e.pnl_pct >= 0 ? "+" : ""}${e.pnl_pct.toFixed(2)}%` : "—"}
+                  </td>
+                  <td className="p-3">{e.thesis_outcome.replace("_", " ")}</td>
+                  <td className="p-3">{e.discipline_score}/5</td>
+                  <td className="p-3 text-on-surface/60">{e.created_at.slice(0, 10)}</td>
+                </tr>
+                {expanded === e.id && (
+                  <tr key={`${e.id}-detail`} className="border-t border-outline-variant/10 bg-surface-container-lowest">
+                    <td colSpan={5} className="p-4 text-sm text-on-surface/80">
+                      <p><span className="text-on-surface/50">Jarvis Verdict:</span> {e.jarvis_verdict ?? "—"}</p>
+                      <p className="mt-2"><span className="text-on-surface/50">Lessons:</span> {e.lessons ?? "—"}</p>
+                      <div className="mt-2 flex gap-2">
+                        {e.tags.map((tag) => (
+                          <span key={tag} className="rounded-full bg-surface-container-highest px-2 py-0.5 text-xs">{tag}</span>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 3: Build the page**
+
+```typescript
+// app/(app)/journal/page.tsx
+import { EmptyState } from "@/components/shared/empty-state";
+import { JournalArchiveTable } from "@/components/journal/journal-archive-table";
+import { fetchInternalApi } from "@/lib/server-fetch";
+
+export default async function JournalArchivePage() {
+  const res = await fetchInternalApi("/api/journal");
+  const body = await res.json();
+  const entries = body.entries ?? [];
+
+  return (
+    <div>
+      <h1 className="mb-6 font-display text-2xl text-on-surface">Trade Journal</h1>
+      {entries.length === 0 ? (
+        <EmptyState title="No journal entries yet." description="Exit a position to write your first review →" />
+      ) : (
+        <JournalArchiveTable entries={entries} />
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 4: Manual verification**
+
+Run: `npm run dev`, visit `/journal`, confirm the aggregate stats strip and filters render, click a row and confirm it expands to show the Jarvis Verdict and tags.
+
+- [ ] **Step 5: Commit**
+
+```bash
+/usr/bin/git add app/api/journal "app/(app)/journal/page.tsx" components/journal/journal-archive-table.tsx
+/usr/bin/git commit -m "feat: Journal archive/browse screen with filters + aggregate stats (US-19)"
+```
+
+---
+
+### Task 28: Screen HUB-4 — Intelligence Feed (manual signals)
+
+**Files:**
+- Create: `app/api/signals/route.ts` (`GET`, `POST`)
+- Create: `app/api/signals/[id]/route.ts` (`PATCH` — archive)
+- Create: `app/(app)/feed/page.tsx`
+- Create: `components/feed/signal-card.tsx`
+- Create: `components/feed/add-signal-modal.tsx`
+- Create: `components/feed/agenda-sidebar.tsx`
+- Create: `components/feed/thesis-preview-drawer.tsx`
+- Test: `app/api/signals/__tests__/route.test.ts`
+
+**Interfaces:**
+- Consumes: `IntelligenceSignalInsert` (`@/lib/types`), `fetchInternalApi`
+- Produces: `GET /api/signals` (`{ signals: IntelligenceSignal[] }`, active-only, sorted red→amber→blue→grey then recency), `POST /api/signals` (manual add, per plan Decision #4 — no news/AI ingestion source is chosen anywhere in the spec, so this ships fully functional against manually-entered signals only), `PATCH /api/signals/:id` (`{ archived_at: now }`).
+
+**Ruling — "Today's Agenda" data source:** the spec asks for "upcoming thesis-test dates for the next 14 days" — this is `trade_plans.time_exit_date`, already modeled (no new table needed), joined through `positions` for the ticker. `GET /api/signals` computes this alongside the feed itself in one response, since both are read together on the same screen.
+
+- [ ] **Step 1: Write the route test**
+
+```typescript
+// app/api/signals/__tests__/route.test.ts
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+import { createAdminClient } from "@/lib/supabase/admin";
+import { GET, POST } from "../route";
+
+function buildMock() {
+  const insert = vi.fn().mockReturnValue({
+    select: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: { id: "sig1", priority: "red" }, error: null }) }),
+  });
+  return {
+    from: vi.fn().mockImplementation((table: string) => {
+      if (table === "intelligence_signals") {
+        return {
+          select: vi.fn().mockReturnValue({
+            is: vi.fn().mockReturnValue({
+              order: vi.fn().mockResolvedValue({
+                data: [
+                  { id: "s1", priority: "blue", created_at: "2026-08-20", headline: "b" },
+                  { id: "s2", priority: "red", created_at: "2026-08-19", headline: "r" },
+                ],
+                error: null,
+              }),
+            }),
+          }),
+          insert,
+        };
+      }
+      if (table === "positions") return { select: vi.fn().mockReturnValue({}) };
+      throw new Error(`unexpected table ${table}`);
+    }),
+    _insert: insert,
+  };
+}
+
+describe("GET /api/signals", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("sorts red before blue regardless of recency", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(buildMock() as never);
+    const res = await GET();
+    const body = await res.json();
+    expect(body.signals[0].priority).toBe("red");
+  });
+});
+
+describe("POST /api/signals", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("rejects a body with no headline", async () => {
+    const req = new Request("http://test", { method: "POST", body: JSON.stringify({ priority: "blue" }) });
+    const res = await POST(req as never);
+    expect(res.status).toBe(400);
+  });
+
+  it("creates a manual signal", async () => {
+    const mock = buildMock();
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    const req = new Request("http://test", { method: "POST", body: JSON.stringify({ priority: "red", headline: "Margin miss" }) });
+    const res = await POST(req as never);
+    expect(res.status).toBe(201);
+    expect(mock._insert).toHaveBeenCalled();
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails** — Run: `npx vitest run app/api/signals/__tests__/route.test.ts` — Expected: FAIL, module not found
+
+- [ ] **Step 3: Implement `app/api/signals/route.ts`**
+
+```typescript
+// app/api/signals/route.ts
+import { NextResponse } from "next/server";
+import { z } from "zod";
+
+import { createAdminClient } from "@/lib/supabase/admin";
+import type { IntelligenceSignalInsert } from "@/lib/types";
+
+const PRIORITY_ORDER: Record<string, number> = { red: 0, amber: 1, blue: 2, grey: 3 };
+
+const CreateSignalSchema = z.object({
+  priority: z.enum(["red", "amber", "blue", "grey"]),
+  headline: z.string().trim().min(1),
+  ticker: z.string().trim().optional(),
+  theme: z.string().trim().optional(),
+  thesis_id: z.string().optional(),
+});
+
+/** Spec US-08: sorted RED -> AMBER -> BLUE -> GREY, then recency within each tier. Also returns the "Today's Agenda" 14-day time-exit list. */
+export async function GET() {
+  const supabase = createAdminClient();
+
+  const { data: signals, error } = await supabase
+    .from("intelligence_signals")
+    .select("*")
+    .is("archived_at", null)
+    .order("created_at", { ascending: false });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  const sorted = [...(signals ?? [])].sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const in14Days = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const { data: positions } = await supabase.from("positions").select("id, ticker, trade_plan_id").in("status", ["active", "partial_exit"]);
+  const tradePlanIds = [...new Set((positions ?? []).map((p) => p.trade_plan_id))];
+  const { data: tradePlans } = tradePlanIds.length
+    ? await supabase.from("trade_plans").select("id, time_exit_date").in("id", tradePlanIds)
+    : { data: [] };
+  const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
+
+  const agenda = (positions ?? [])
+    .map((p) => ({ ticker: p.ticker, timeExitDate: tradePlanById.get(p.trade_plan_id)?.time_exit_date ?? null }))
+    .filter((a) => a.timeExitDate !== null && a.timeExitDate >= today && a.timeExitDate <= in14Days)
+    .sort((a, b) => a.timeExitDate!.localeCompare(b.timeExitDate!));
+
+  return NextResponse.json({ signals: sorted, agenda });
+}
+
+export async function POST(request: Request) {
+  const json = await request.json().catch(() => null);
+  if (json === null) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  const parsed = CreateSignalSchema.safeParse(json);
+  if (!parsed.success) return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
+
+  const supabase = createAdminClient();
+  const insert: IntelligenceSignalInsert = parsed.data;
+  const { data: signal, error } = await supabase.from("intelligence_signals").insert(insert).select("*").single();
+  if (error || !signal) return NextResponse.json({ error: error?.message ?? "Failed to create signal" }, { status: 500 });
+  return NextResponse.json({ signal }, { status: 201 });
+}
+```
+
+- [ ] **Step 4: Run to verify it passes** — Run: `npx vitest run app/api/signals/__tests__/route.test.ts` — Expected: PASS (3/3)
+
+- [ ] **Step 5: Implement `app/api/signals/[id]/route.ts`**
+
+```typescript
+// app/api/signals/[id]/route.ts
+import { NextResponse } from "next/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+/** Spec US-08's "archived (moves to Reviewed tab with timestamp)." */
+export async function PATCH(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const supabase = createAdminClient();
+  const { data: signal, error } = await supabase
+    .from("intelligence_signals")
+    .update({ archived_at: new Date().toISOString() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error || !signal) return NextResponse.json({ error: error?.message ?? "Signal not found" }, { status: 404 });
+  return NextResponse.json({ signal });
+}
+```
+
+- [ ] **Step 6: Build the signal card + agenda sidebar + thesis preview drawer**
+
+```typescript
+// components/feed/signal-card.tsx
+"use client";
+
+import type { IntelligenceSignal } from "@/lib/types";
+
+const PRIORITY_STYLE: Record<IntelligenceSignal["priority"], string> = {
+  red: "bg-status-red-container text-status-red",
+  amber: "bg-primary-container text-primary",
+  blue: "bg-status-blue-container text-status-blue",
+  grey: "bg-surface-container-highest text-on-surface/60",
+};
+
+export function SignalCard({
+  signal,
+  onLinkToThesis,
+  onArchive,
+}: {
+  signal: IntelligenceSignal;
+  onLinkToThesis: () => void;
+  onArchive: () => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl bg-surface-container-low p-4">
+      <div>
+        <div className="mb-1 flex items-center gap-2">
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${PRIORITY_STYLE[signal.priority]}`}>
+            {signal.priority}
+          </span>
+          {signal.ticker && <span className="text-xs font-medium text-on-surface">{signal.ticker}</span>}
+          {signal.theme && <span className="text-xs text-on-surface/50">{signal.theme}</span>}
+        </div>
+        <p className="text-sm text-on-surface">{signal.headline}</p>
+        <p className="mt-1 text-xs text-on-surface/40">{new Date(signal.created_at).toLocaleString()}</p>
+      </div>
+      <div className="flex flex-col items-end gap-2">
+        {signal.thesis_id && (
+          <button type="button" onClick={onLinkToThesis} className="text-xs text-primary underline">Link to Thesis</button>
+        )}
+        <button type="button" onClick={onArchive} className="text-xs text-on-surface/40 underline">Archive</button>
+      </div>
+    </div>
+  );
+}
+```
+
+```typescript
+// components/feed/agenda-sidebar.tsx
+export function AgendaSidebar({ agenda }: { agenda: { ticker: string; timeExitDate: string | null }[] }) {
+  return (
+    <div className="rounded-xl bg-surface-container-low p-4">
+      <h2 className="mb-3 font-display text-sm uppercase text-on-surface/50">Today&apos;s Agenda</h2>
+      {agenda.length === 0 ? (
+        <p className="text-sm text-on-surface/50">No thesis tests due in the next 14 days.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {agenda.map((a) => (
+            <li key={a.ticker} className="flex justify-between text-sm">
+              <span className="text-on-surface">{a.ticker}</span>
+              <span className="text-on-surface/60">{a.timeExitDate}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+```
+
+```typescript
+// components/feed/thesis-preview-drawer.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { X } from "lucide-react";
+import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+
+type ThesisPreview = { ticker: string | null; market_view: string | null; invalidation_condition: string | null };
+
+/** Spec US-08's "Link to Thesis" slide-out — shows the linked thesis with the signal highlighted as supporting/contrary evidence. */
+export function ThesisPreviewDrawer({ thesisId, headline, onClose }: { thesisId: string; headline: string; onClose: () => void }) {
+  const [thesis, setThesis] = useState<ThesisPreview | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/theses/${thesisId}`).then((res) => res.json()).then((body) => setThesis(body.thesis));
+  }, [thesisId]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} aria-hidden />
+      <div className="relative flex h-full w-full max-w-md flex-col gap-4 overflow-y-auto bg-surface-container-low p-6 shadow-ambient">
+        <button type="button" onClick={onClose} className="absolute right-4 top-4 text-on-surface/60 hover:text-on-surface" aria-label="Close">
+          <X className="size-5" />
+        </button>
+        {!thesis ? (
+          <SkeletonLoader lines={4} />
+        ) : (
+          <>
+            <h2 className="font-display text-lg text-on-surface">{thesis.ticker ?? "Macro Thesis"}</h2>
+            <div className="rounded-xl bg-primary-container p-4">
+              <p className="text-xs uppercase text-primary">This signal</p>
+              <p className="mt-1 text-sm text-primary">{headline}</p>
+            </div>
+            <div className="rounded-xl bg-surface-container-highest p-4">
+              <p className="text-xs text-on-surface/50">Market View</p>
+              <p className="mt-1 text-sm text-on-surface">{thesis.market_view ?? "—"}</p>
+            </div>
+            <div className="rounded-xl bg-surface-container-highest p-4">
+              <p className="text-xs text-on-surface/50">Invalidation</p>
+              <p className="mt-1 text-sm text-on-surface">{thesis.invalidation_condition ?? "—"}</p>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 7: Build the add-signal modal**
+
+```typescript
+// components/feed/add-signal-modal.tsx
+"use client";
+
+import { useState } from "react";
+import type { IntelligenceSignal } from "@/lib/types";
+
+export function AddSignalModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [priority, setPriority] = useState<IntelligenceSignal["priority"]>("blue");
+  const [headline, setHeadline] = useState("");
+  const [ticker, setTicker] = useState("");
+  const [theme, setTheme] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    try {
+      await fetch("/api/signals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priority, headline, ticker: ticker || undefined, theme: theme || undefined }),
+      });
+      onSaved();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-xl bg-surface-container-low p-6 shadow-ambient">
+        <h2 className="mb-4 font-display text-lg text-on-surface">Add Signal</h2>
+        <div className="mb-4 flex flex-col gap-3">
+          <select value={priority} onChange={(e) => setPriority(e.target.value as IntelligenceSignal["priority"])} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm">
+            <option value="red">Red — thesis-break</option>
+            <option value="amber">Amber — thesis test</option>
+            <option value="blue">Blue — general signal</option>
+            <option value="grey">Grey — background</option>
+          </select>
+          <input placeholder="Headline" value={headline} onChange={(e) => setHeadline(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+          <input placeholder="Ticker (optional)" value={ticker} onChange={(e) => setTicker(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+          <input placeholder="Theme (optional)" value={theme} onChange={(e) => setTheme(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+        </div>
+        <div className="flex justify-end gap-3">
+          <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm text-on-surface/60">Cancel</button>
+          <button type="button" onClick={handleSubmit} disabled={submitting || !headline.trim()} className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40">
+            Add
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 8: Build the feed page**
+
+```typescript
+// app/(app)/feed/page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
+
+import { SignalCard } from "@/components/feed/signal-card";
+import { AgendaSidebar } from "@/components/feed/agenda-sidebar";
+import { AddSignalModal } from "@/components/feed/add-signal-modal";
+import { ThesisPreviewDrawer } from "@/components/feed/thesis-preview-drawer";
+import { EmptyState } from "@/components/shared/empty-state";
+import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import type { IntelligenceSignal } from "@/lib/types";
+
+export default function FeedPage() {
+  const [signals, setSignals] = useState<IntelligenceSignal[] | null>(null);
+  const [agenda, setAgenda] = useState<{ ticker: string; timeExitDate: string | null }[]>([]);
+  const [tab, setTab] = useState<"active" | "reviewed">("active");
+  const [addOpen, setAddOpen] = useState(false);
+  const [previewSignal, setPreviewSignal] = useState<IntelligenceSignal | null>(null);
+
+  async function load() {
+    const res = await fetch("/api/signals");
+    const body = await res.json();
+    setSignals(body.signals ?? []);
+    setAgenda(body.agenda ?? []);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function handleArchive(id: string) {
+    await fetch(`/api/signals/${id}`, { method: "PATCH" });
+    load();
+  }
+
+  if (!signals) return <SkeletonLoader lines={6} />;
+
+  const visible = signals.filter((s) => (tab === "active" ? !s.archived_at : !!s.archived_at));
+
+  return (
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_280px]">
+      <div>
+        <div className="mb-6 flex items-center justify-between">
+          <h1 className="font-display text-2xl text-on-surface">Jarvis Intelligence Feed</h1>
+          <button type="button" onClick={() => setAddOpen(true)} className="flex items-center gap-2 rounded-xl bg-primary px-3 py-2 text-sm font-medium text-on-primary">
+            <Plus className="size-4" /> Add Signal
+          </button>
+        </div>
+
+        <div className="mb-4 flex gap-4 text-sm">
+          <button type="button" onClick={() => setTab("active")} className={tab === "active" ? "text-primary" : "text-on-surface/50"}>Active</button>
+          <button type="button" onClick={() => setTab("reviewed")} className={tab === "reviewed" ? "text-primary" : "text-on-surface/50"}>Reviewed</button>
+        </div>
+
+        {visible.length === 0 ? (
+          <EmptyState title="No signals yet." description="Add a signal to start tracking thesis-relevant news →" />
+        ) : (
+          <div className="flex flex-col gap-3">
+            {visible.map((s) => (
+              <SignalCard
+                key={s.id}
+                signal={s}
+                onLinkToThesis={() => setPreviewSignal(s)}
+                onArchive={() => handleArchive(s.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <AgendaSidebar agenda={agenda} />
+
+      {addOpen && <AddSignalModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
+      {previewSignal?.thesis_id && (
+        <ThesisPreviewDrawer thesisId={previewSignal.thesis_id} headline={previewSignal.headline} onClose={() => setPreviewSignal(null)} />
+      )}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 9: Manual verification**
+
+Run: `npm run dev`, visit `/feed`, add a signal, confirm it sorts by priority (add a red one after a blue one and confirm it jumps to the top), archive it and confirm it moves to the Reviewed tab, confirm the Today's Agenda sidebar lists any position with a `time_exit_date` in the next 14 days.
+
+- [ ] **Step 10: Commit**
+
+```bash
+/usr/bin/git add app/api/signals "app/(app)/feed" components/feed
+/usr/bin/git commit -m "feat: Screen HUB-4 — Intelligence Feed with manual signals + Today's Agenda (US-08)"
+```
+
+---
+
+## Phase 4 — P3
+
+### Task 29: Screen 8 — Opportunity Discovery (manual watchlist)
+
+**Files:**
+- Create: `app/api/opportunities/route.ts` (`GET`, `POST`)
+- Create: `app/(app)/discovery/page.tsx`
+- Create: `components/discovery/opportunity-card.tsx`
+- Create: `components/discovery/add-watchlist-modal.tsx`
+
+**Interfaces:**
+- Consumes: `OpportunityInsert` (`@/lib/types`), `LastUpdated` (Task 20), `fetchInternalApi`
+- Produces: `GET /api/opportunities` (`{ opportunities: OpportunityRow[] }`, each row carrying computed `held`/`draft` flags, a resolved `currentPrice`, and `lastPriceAt`), `POST /api/opportunities` (both the full AI-style entry and the lightweight "Add to Watchlist" ticker-only entry via `watching_only: true`), `/discovery` — this plan's last new screen.
+
+**Note (Section 5 Price Data — "Last updated" rule):** since every card resolves its own `currentPrice`, this screen shows the single most-recent `lastPriceAt` across all rows once, next to the page heading, via `<LastUpdated />` (Task 20) — see Step 4.
+
+**Ruling — resolving CMP for "Near 52W High" (US-20):** `opportunities` (Task 1 schema) has no `stock_id` FK — it denormalizes `ticker`/`market` directly, matching this plan's Decision #2 pattern. `GET /api/opportunities` resolves each row's current price with a best-effort lookup against `stocks` by `(ticker, exchange)`; a miss just means that card shows "Price unavailable" (Task 6's `PriceBadge`) and skips the 52W-high chip, same graceful-degradation pattern used everywhere else in this app.
+
+- [ ] **Step 1: Implement `app/api/opportunities/route.ts`**
+
+```typescript
+// app/api/opportunities/route.ts
+import { NextResponse } from "next/server";
+import { z } from "zod";
+
+import { createAdminClient } from "@/lib/supabase/admin";
+import type { OpportunityInsert } from "@/lib/types";
+
+const CreateOpportunitySchema = z.object({
+  ticker: z.string().trim().min(1),
+  market: z.enum(["NSE", "BSE", "US"]),
+  sector: z.string().optional(),
+  conviction_tier: z.enum(["I", "II", "III", "IV"]).optional(),
+  thesis_summary: z.string().optional(),
+  pe: z.number().optional(),
+  sector_median_pe: z.number().optional(),
+  fifty_two_week_low: z.number().optional(),
+  fifty_two_week_high: z.number().optional(),
+  watching_only: z.boolean().optional(),
+});
+
+/** Spec US-20/US-21. Resolves each row's CMP + HELD/DRAFT badges by cross-referencing `stocks`/`positions`/`theses` on `ticker` — no FK exists between `opportunities` and those tables (Decision #2's denormalized-ticker pattern). */
+export async function GET() {
+  const supabase = createAdminClient();
+
+  const { data: opportunities, error } = await supabase
+    .from("opportunities")
+    .select("*")
+    .order("conviction_tier", { ascending: true, nullsFirst: false });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  const rows = opportunities ?? [];
+  if (rows.length === 0) return NextResponse.json({ opportunities: [] });
+
+  const tickers = [...new Set(rows.map((o) => o.ticker))];
+  const [{ data: stocks }, { data: positions }, { data: theses }] = await Promise.all([
+    supabase.from("stocks").select("ticker, exchange, last_price, last_price_at").in("ticker", tickers),
+    supabase.from("positions").select("ticker").in("status", ["active", "partial_exit"]).in("ticker", tickers),
+    supabase.from("theses").select("ticker, status").eq("status", "draft").in("ticker", tickers),
+  ]);
+  const stockByTicker = new Map((stocks ?? []).map((s) => [s.ticker, s]));
+  const heldTickers = new Set((positions ?? []).map((p) => p.ticker));
+  const draftTickers = new Set((theses ?? []).map((t) => t.ticker));
+
+  const result = rows.map((o) => {
+    const stock = stockByTicker.get(o.ticker);
+    return {
+      opportunity: o,
+      currentPrice: stock?.last_price ?? null,
+      lastPriceAt: stock?.last_price_at ?? null,
+      held: heldTickers.has(o.ticker),
+      draft: draftTickers.has(o.ticker),
+    };
+  });
+
+  return NextResponse.json({ opportunities: result });
+}
+
+export async function POST(request: Request) {
+  const json = await request.json().catch(() => null);
+  if (json === null) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  const parsed = CreateOpportunitySchema.safeParse(json);
+  if (!parsed.success) return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
+
+  const supabase = createAdminClient();
+  const insert: OpportunityInsert = parsed.data;
+  const { data: opportunity, error } = await supabase.from("opportunities").insert(insert).select("*").single();
+  if (error || !opportunity) return NextResponse.json({ error: error?.message ?? "Failed to create opportunity" }, { status: 500 });
+  return NextResponse.json({ opportunity }, { status: 201 });
+}
+```
+
+- [ ] **Step 2: Build the opportunity card**
+
+```typescript
+// components/discovery/opportunity-card.tsx
+import Link from "next/link";
+import { ConvictionBadge } from "@/components/thesis/conviction-badge";
+import { PriceBadge } from "@/components/shared/price-badge";
+import type { ConvictionTier, ExchangeCode } from "@/lib/types";
+
+type Row = {
+  opportunity: {
+    id: string;
+    ticker: string;
+    sector: string | null;
+    conviction_tier: ConvictionTier | null;
+    thesis_summary: string | null;
+    pe: number | null;
+    sector_median_pe: number | null;
+    fifty_two_week_low: number | null;
+    fifty_two_week_high: number | null;
+    market: ExchangeCode;
+    watching_only: boolean;
+  };
+  currentPrice: number | null;
+  held: boolean;
+  draft: boolean;
+};
+
+/** Spec US-20/US-21. "Explore" reuses Task 10's page via its existing `?ticker=` searchParam — no new route needed. */
+export function OpportunityCard({ row }: { row: Row }) {
+  const { opportunity: o, currentPrice, held, draft } = row;
+
+  const near52wHigh =
+    currentPrice !== null && o.fifty_two_week_high !== null && currentPrice > o.fifty_two_week_high * 0.85;
+
+  return (
+    <div className="flex flex-col gap-3 rounded-xl bg-surface-container-low p-4">
+      <div className="flex items-center justify-between">
+        <span className="font-display text-sm text-on-surface">{o.ticker}</span>
+        <div className="flex items-center gap-2">
+          {o.watching_only && <span className="rounded-full bg-surface-container-highest px-2 py-0.5 text-[10px] text-on-surface/50">WATCHING</span>}
+          {held && <span className="rounded-full bg-status-green-container px-2 py-0.5 text-[10px] text-status-green">HELD</span>}
+          {draft && <span className="rounded-full bg-primary-container px-2 py-0.5 text-[10px] text-primary">DRAFT</span>}
+          {o.conviction_tier && <ConvictionBadge tier={o.conviction_tier} />}
+        </div>
+      </div>
+      <p className="text-xs text-on-surface/50">{o.sector ?? "—"}</p>
+      {o.thesis_summary && <p className="line-clamp-2 text-sm text-on-surface/80">{o.thesis_summary}</p>}
+      <div className="flex items-center justify-between text-xs text-on-surface/60">
+        <span>PE {o.pe ?? "—"} vs sector {o.sector_median_pe ?? "—"}</span>
+        <PriceBadge price={currentPrice} exchange={o.market} />
+      </div>
+      {near52wHigh && (
+        <span className="w-fit rounded-full bg-primary-container px-2 py-0.5 text-[10px] text-primary">Near 52W High ⚠</span>
+      )}
+      <Link
+        href={held ? `/positions` : draft ? `/thesis` : `/thesis/new?ticker=${o.ticker}`}
+        className="rounded-lg bg-primary px-3 py-1.5 text-center text-xs font-medium text-on-primary"
+      >
+        {held || draft ? "Review Thesis" : "Explore"}
+      </Link>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 3: Build the add-to-watchlist modal**
+
+```typescript
+// components/discovery/add-watchlist-modal.tsx
+"use client";
+
+import { useState } from "react";
+import type { ExchangeCode } from "@/lib/types";
+
+/** Spec US-21: ticker only, no thesis required. */
+export function AddWatchlistModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [ticker, setTicker] = useState("");
+  const [market, setMarket] = useState<ExchangeCode>("NSE");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    try {
+      await fetch("/api/opportunities", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticker, market, watching_only: true }),
+      });
+      onSaved();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-xl bg-surface-container-low p-6 shadow-ambient">
+        <h2 className="mb-4 font-display text-lg text-on-surface">Add to Watchlist</h2>
+        <div className="mb-4 flex flex-col gap-3">
+          <input placeholder="Ticker" value={ticker} onChange={(e) => setTicker(e.target.value.toUpperCase())} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
+          <select value={market} onChange={(e) => setMarket(e.target.value as ExchangeCode)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm">
+            <option value="NSE">NSE</option>
+            <option value="BSE">BSE</option>
+            <option value="US">US</option>
+          </select>
+        </div>
+        <div className="flex justify-end gap-3">
+          <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm text-on-surface/60">Cancel</button>
+          <button type="button" onClick={handleSubmit} disabled={submitting || !ticker.trim()} className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40">
+            Add
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 4: Build the discovery page**
+
+```typescript
+// app/(app)/discovery/page.tsx
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { Plus } from "lucide-react";
+
+import { OpportunityCard } from "@/components/discovery/opportunity-card";
+import { AddWatchlistModal } from "@/components/discovery/add-watchlist-modal";
+import { EmptyState } from "@/components/shared/empty-state";
+import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import { LastUpdated } from "@/components/shared/last-updated";
+import type { ConvictionTier } from "@/lib/types";
+
+type Row = Parameters<typeof OpportunityCard>[0]["row"];
+
+const TIER_ORDER: Record<ConvictionTier, number> = { I: 0, II: 1, III: 2, IV: 3 };
+
+export default function DiscoveryPage() {
+  const [rows, setRows] = useState<Row[] | null>(null);
+  const [tierFilter, setTierFilter] = useState<ConvictionTier | "all">("all");
+  const [sortBy, setSortBy] = useState<"tier" | "pe" | "recency">("tier");
+  const [addOpen, setAddOpen] = useState(false);
+
+  async function load() {
+    const res = await fetch("/api/opportunities");
+    const body = await res.json();
+    setRows(body.opportunities ?? []);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!rows) return [];
+    const byTier = tierFilter === "all" ? rows : rows.filter((r) => r.opportunity.conviction_tier === tierFilter);
+    /** Spec US-20: sort options are Conviction Tier (default) / PE / Recency — deliberately no "Trending"/"Popular". */
+    return [...byTier].sort((a, b) => {
+      if (sortBy === "pe") return (a.opportunity.pe ?? Infinity) - (b.opportunity.pe ?? Infinity);
+      if (sortBy === "recency") return 0; // rows already arrive newest-relevant from the API's default order
+      const tierA = a.opportunity.conviction_tier ? TIER_ORDER[a.opportunity.conviction_tier] : 4;
+      const tierB = b.opportunity.conviction_tier ? TIER_ORDER[b.opportunity.conviction_tier] : 4;
+      return tierA - tierB;
+    });
+  }, [rows, tierFilter, sortBy]);
+
+  if (!rows) return <SkeletonLoader lines={6} />;
+
+  const mostRecentPriceAt = rows.reduce<string | null>(
+    (latest, r) => (r.lastPriceAt && (!latest || r.lastPriceAt > latest) ? r.lastPriceAt : latest),
+    null,
+  );
+
+  return (
+    <div>
+      <div className="mb-6 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="font-display text-2xl text-on-surface">Opportunity Discovery</h1>
+          <LastUpdated at={mostRecentPriceAt} exchange="NSE" />
+        </div>
+        <button type="button" onClick={() => setAddOpen(true)} className="flex items-center gap-2 rounded-xl bg-primary px-3 py-2 text-sm font-medium text-on-primary">
+          <Plus className="size-4" /> Add to Watchlist
+        </button>
+      </div>
+
+      <div className="mb-6 flex gap-3">
+        <select value={tierFilter} onChange={(e) => setTierFilter(e.target.value as ConvictionTier | "all")} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm">
+          <option value="all">All Tiers</option>
+          {(["I", "II", "III", "IV"] as ConvictionTier[]).map((t) => (
+            <option key={t} value={t}>Tier {t}</option>
+          ))}
+        </select>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm">
+          <option value="tier">Sort: Conviction Tier</option>
+          <option value="pe">Sort: PE</option>
+          <option value="recency">Sort: Recency</option>
+        </select>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState title="No opportunities yet." description="Add a stock to your watchlist to start tracking →" />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((row) => (
+            <OpportunityCard key={row.opportunity.id} row={row} />
+          ))}
+        </div>
+      )}
+
+      {addOpen && <AddWatchlistModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 5: Manual verification**
+
+Run: `npm run dev`, visit `/discovery`, click "Add to Watchlist", add a ticker, confirm it appears with a "WATCHING" badge; confirm filtering by tier and sorting by PE both work; confirm a ticker that's already an active position shows "HELD" with a "Review Thesis" CTA instead of "Explore".
+
+- [ ] **Step 6: Commit**
+
+```bash
+/usr/bin/git add app/api/opportunities "app/(app)/discovery" components/discovery
+/usr/bin/git commit -m "feat: Screen 8 — Opportunity Discovery, manual watchlist (US-20, US-21)"
+```
+
+---
+
+## Final
+
+### Task 30: Whole-plan verification pass
+
+**Files:** none — this task runs the app end-to-end and confirms every user story, not write code. If any check below fails, fix the underlying task's code directly (this is the final gate before `superpowers:finishing-a-development-branch`, not a place to defer new findings).
+
+**Interfaces:** N/A.
+
+- [ ] **Step 1: Automated gates**
+
+Run, in order, and confirm each is clean before moving to Step 2:
+
+```bash
+npx vitest run
+npx tsc --noEmit
+npx next build
+```
+
+- [ ] **Step 2: Database integrity check**
+
+Run `mcp__claude_ai_Supabase__list_tables` and `mcp__claude_ai_Supabase__get_advisors` — confirm all 11 tables from Task 1 plus Task 23's `thesis_conditions` column exist, RLS is enabled with no policies on every new table, and no new advisor warnings have appeared since Task 1's fix wave.
+
+- [ ] **Step 3: Scripted manual walkthrough (`npm run dev`)**
+
+Work through every user story in one continuous session, in this order, confirming the acceptance criteria named:
+
+1. **US-09/US-10** — Open the New Thesis drawer from any screen (Section 5 Navigation rule: must be reachable without leaving the page), submit a Mode 2 (thesis-only) input, confirm the 6-field thesis renders and a duplicate-warning banner appears if a thesis for the same ticker already exists.
+2. **US-11/US-12** — Approve the thesis, confirm Step 2 auto-generates 4 bear cases, edit one counter and confirm the "Modified" badge + conviction slider both work, advance to Step 3, confirm Risk/Reward recalculates live, confirm "Lock & Save Plan" is disabled until Stop Loss is set, lock it.
+3. **I1 (spec-resolved)** — Confirm in Supabase that a `jarvis_recommendations` row was created if and only if the thesis was Tier I/II.
+4. **US-13/US-14** — From the Recommendation Tracker (or directly), log a buy outside the entry zone and confirm the amber "outside your planned zone" warning appears but never blocks the button.
+5. **US-01/US-02** — Visit `/`, confirm Total Open P&L, position/recommendation counts, the RED near-stop pill (if applicable), and the AMBER overdue-thesis chip all render; confirm the "Last updated" timestamp (Section 5 Price Data rule) is visible.
+6. **US-03/US-15** — Visit `/positions`, confirm sort-by-urgency defaults to nearest-stop-first; open a position and confirm the exit ladder, thesis metrics panel, and Jarvis Warning box all render.
+7. **US-04** — Manually set a stock's `last_price` (via Supabase) to breach its stop; reload the position and Cockpit and confirm the blocking red banner and RED alert-rail pill both appear; test the override path and confirm a sub-40-character reason is rejected client- and server-side.
+8. **US-05** — Add a second entry tranche to a position and confirm the weighted average recalculates correctly.
+9. **US-06/US-07** — Visit `/thesis/:id` for the locked plan, edit a numeric field, confirm it auto-saves on blur and shows the amber-underline "edited" treatment, confirm "Re-run AI Analysis" regenerates bear cases.
+10. **US-16/US-17** — Log a T1 trim, confirm the exit ladder flips to DONE and P&L updates; fully exit the position via a stop-hit with an override, confirm you're redirected to the journal.
+11. **US-18/US-19** — Complete the journal review (confirm the amber skeleton loads the Jarvis Verdict preview, per Section 5 Loading States), save it, confirm the position shows `closed`, then visit `/journal` and confirm the entry appears with the "Discipline Break" tag (from the override) and the aggregate stats update.
+12. **US-08** — Visit `/feed`, add a Red-priority signal, confirm it sorts above older lower-priority ones, archive it, confirm it moves to the Reviewed tab, confirm Today's Agenda lists any position due within 14 days.
+13. **US-20/US-21** — Visit `/discovery`, add a ticker to the watchlist, confirm the "WATCHING" badge and lower visual weight vs. a full opportunity card; confirm the "HELD"/"DRAFT" cross-reference badges are correct against real positions/theses; click "Explore" and confirm it lands on `/thesis/new?ticker=...` pre-filled.
+14. **US-22/US-23/US-24** — Revisit `/recommendations`, confirm the full stats strip (already shipped, Task 16) still reflects the new recommendations created in this walkthrough.
+
+- [ ] **Step 4: Error-handling spot checks (Section 5)**
+
+Temporarily break the OpenRouter API key (or point `OPENROUTER_MODEL_ID` at a bogus model) and confirm a thesis-generation call fails with the spec's "Jarvis is thinking... Taking longer than usual. [Retry]" copy, not a raw stack trace; restore the key afterward. Confirm a stock with no resolvable Yahoo symbol shows "Price unavailable" rather than a broken UI.
+
+- [ ] **Step 5: Confirm no client-side polling exists**
+
+Grep the diff for `setInterval`/`setTimeout` used for polling anywhere under `app/` or `components/` — none should exist (Section 5 Price Data rule: prices update only on page load and the explicit "Refresh Prices" action, which this plan implements as an on-load `POST /api/prices/refresh` call per screen, never a timer).
+
+- [ ] **Step 6: Update the plan's Task Index**
+
+Mark all 30 tasks complete in this file's Task Index section (top of the document) so a future reader can see the plan is fully executed.
+
+- [ ] **Step 7: Final commit**
+
+```bash
+/usr/bin/git add -A
+/usr/bin/git commit -m "chore: Task 30 — whole-plan verification pass, all 24 user stories confirmed end-to-end"
+```
+
+At this point every task in this plan is complete. Proceed to `superpowers:finishing-a-development-branch`.
