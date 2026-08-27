@@ -1,9 +1,10 @@
 import { EmptyState } from "@/components/shared/empty-state";
 import { RecommendationStats } from "@/components/recommendations/recommendation-stats";
 import { RecommendationsTable } from "@/components/recommendations/recommendations-table";
+import { fetchInternalApi } from "@/lib/server-fetch";
 
 async function fetchRecommendations() {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"}/api/recommendations`, { cache: "no-store" });
+  const res = await fetchInternalApi("/api/recommendations");
   const body = await res.json();
   return body.recommendations ?? [];
 }

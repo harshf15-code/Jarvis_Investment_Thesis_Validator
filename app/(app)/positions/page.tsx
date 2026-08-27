@@ -1,10 +1,9 @@
 import { EmptyState } from "@/components/shared/empty-state";
 import { PositionsTable, type PositionRow } from "@/components/positions/positions-table";
+import { fetchInternalApi } from "@/lib/server-fetch";
 
 async function fetchPositions(): Promise<PositionRow[]> {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"}/api/positions`, {
-    cache: "no-store",
-  });
+  const res = await fetchInternalApi("/api/positions");
   const body = await res.json();
   return body.positions ?? [];
 }
