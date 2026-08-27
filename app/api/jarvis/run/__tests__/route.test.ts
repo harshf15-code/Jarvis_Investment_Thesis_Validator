@@ -93,7 +93,7 @@ const INSERTED_ANALYSIS = {
   thesis_json: { narrative: "..." },
   stress_test_json: { narrative: "..." },
   trade_plan_json: { narrative: "..." },
-  exit_json: { narrative: "..." },
+  exit_json: { riskAwareness: "...", exitDiscipline: "..." },
   raw_llm_response: "raw",
   model_id: "anthropic/claude-sonnet-4.5",
   input_context_json: {},

@@ -32,7 +32,7 @@ const SECTIONS: JarvisSections = {
 };
 
 describe("buildJarvisAnalysisInsert", () => {
-  it("maps each of the 4 narrative columns from the 5 parsed sections, folding riskAwareness into exit_json ahead of exitDiscipline", () => {
+  it("maps thesis/stressTest/tradePlan onto their single-narrative columns, and keeps riskAwareness/exitDiscipline as two independently-addressable keys on exit_json", () => {
     const insert = buildJarvisAnalysisInsert({
       stockId: "stock-1",
       version: 3,
@@ -51,14 +51,15 @@ describe("buildJarvisAnalysisInsert", () => {
     expect(insert.stress_test_json).toEqual({ narrative: "Stress test text" });
     expect(insert.trade_plan_json).toEqual({ narrative: "Trade plan text" });
     expect(insert.exit_json).toEqual({
-      narrative: "Risk awareness text\n\nExit discipline text",
+      riskAwareness: "Risk awareness text",
+      exitDiscipline: "Exit discipline text",
     });
     expect(insert.raw_llm_response).toBe("raw text");
     expect(insert.model_id).toBe("anthropic/claude-sonnet-4.5");
     expect(insert.input_context_json).toEqual({ price: 100 });
   });
 
-  it("does not lose the exit narrative when riskAwareness is empty (missing header)", () => {
+  it("preserves each section independently even when one is empty (e.g. a missing header), rather than merging them", () => {
     const insert = buildJarvisAnalysisInsert({
       stockId: "stock-1",
       version: 1,
@@ -69,7 +70,10 @@ describe("buildJarvisAnalysisInsert", () => {
       inputContext: null,
     });
 
-    expect(insert.exit_json).toEqual({ narrative: "Exit discipline text" });
+    expect(insert.exit_json).toEqual({
+      riskAwareness: "",
+      exitDiscipline: "Exit discipline text",
+    });
     expect(insert.extraction_ok).toBe(false);
   });
 });

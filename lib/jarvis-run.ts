@@ -35,14 +35,19 @@ export function computeNextVersion(existingVersions: number[]): number {
  * carries FIVE narrative sections (thesis, stressTest, tradePlan,
  * riskAwareness, exitDiscipline), but the `jarvis_analyses` table
  * (`supabase/migrations/0001_init.sql`) has only FOUR `*_json` narrative
- * columns — there is no `risk_awareness_json`. Rather than silently
- * dropping the "Risk Awareness" section (STEP 4 of `JARVIS_SYSTEM_PROMPT`:
- * whether the trade should be rejected — no stop loss, unclear thesis,
- * emotional reasoning), it is folded into `exit_json`, prepended ahead of
- * "Exit Discipline" (STEP 5): both are the trade's final risk/action gate,
- * and this preserves the full narrative text without requiring a schema
- * change outside this task's scope. See task-8-report.md for the full
- * rationale.
+ * columns — there is no `risk_awareness_json`. Rather than dropping the
+ * "Risk Awareness" section (STEP 4 of `JARVIS_SYSTEM_PROMPT`: whether the
+ * trade should be rejected — no stop loss, unclear thesis, emotional
+ * reasoning) or concatenating it into a single opaque string with "Exit
+ * Discipline" (STEP 5) — multi-paragraph prose from the model routinely
+ * contains its own internal blank-line breaks, so a concatenated string
+ * cannot be reliably split back into its two sections later — `exit_json`
+ * is instead a two-key object: `{ riskAwareness, exitDiscipline }`, each
+ * holding its own section's markdown untouched. This is an app-level
+ * convention on top of a `jsonb` column (no DB migration needed) and keeps
+ * both sections independently addressable for Task 9's two-tab display,
+ * while `thesis_json`/`stress_test_json`/`trade_plan_json` keep the
+ * one-section-per-column `{ narrative: "..." }` shape.
  */
 export function buildJarvisAnalysisInsert(input: {
   stockId: string;
@@ -53,10 +58,6 @@ export function buildJarvisAnalysisInsert(input: {
   modelId: string;
   inputContext: Json;
 }): JarvisAnalysisInsert {
-  const exitNarrative = [input.sections.riskAwareness, input.sections.exitDiscipline]
-    .filter((text) => text.length > 0)
-    .join("\n\n");
-
   return {
     stock_id: input.stockId,
     version: input.version,
@@ -65,7 +66,10 @@ export function buildJarvisAnalysisInsert(input: {
     thesis_json: { narrative: input.sections.thesis },
     stress_test_json: { narrative: input.sections.stressTest },
     trade_plan_json: { narrative: input.sections.tradePlan },
-    exit_json: { narrative: exitNarrative },
+    exit_json: {
+      riskAwareness: input.sections.riskAwareness,
+      exitDiscipline: input.sections.exitDiscipline,
+    },
     raw_llm_response: input.rawResponse,
     model_id: input.modelId,
     input_context_json: input.inputContext,
