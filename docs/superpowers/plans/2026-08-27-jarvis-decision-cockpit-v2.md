@@ -105,15 +105,19 @@ drop table if exists holdings cascade;
 drop table if exists fundamentals cascade;
 drop table if exists price_cache cascade;
 
-drop type if exists trigger_type;
-drop type if exists stock_type;
-
 alter table stocks drop column if exists type;
 alter table stocks drop column if exists status;
 alter table stocks drop column if exists consecutive_failure_count;
 alter table stocks drop column if exists stale_since;
 alter table stocks drop column if exists deleted_at;
 -- yahoo_symbol/exchange/last_price/last_price_at/created_at/id/ticker are kept as-is.
+
+-- Column drops MUST precede these type drops — `stocks.type` is a
+-- `stock_type` column; Postgres rejects `drop type` while a column still
+-- references it (2BP01). Caught live against the real project during
+-- execution, not by static review — see this plan's ledger.
+drop type if exists trigger_type;
+drop type if exists stock_type;
 
 create type conviction_tier as enum ('I', 'II', 'III', 'IV');
 create type thesis_mode as enum ('stock_only', 'thesis_only', 'stock_plus_thesis');
