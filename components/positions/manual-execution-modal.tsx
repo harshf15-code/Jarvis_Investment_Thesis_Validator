@@ -39,6 +39,7 @@ export function ManualExecutionModal({
   const [price, setPrice] = useState("");
   const [tranche, setTranche] = useState<"T1" | "T2" | "add">("T1");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const priceNum = Number(price);
   const outsideZone =
@@ -49,6 +50,7 @@ export function ManualExecutionModal({
 
   async function handleSubmit() {
     setSubmitting(true);
+    setError(null);
     try {
       const res = await fetch("/api/positions", {
         method: "POST",
@@ -69,6 +71,8 @@ export function ManualExecutionModal({
       if (!res.ok) throw new Error(body.error ?? "Failed to log buy");
       onClose();
       router.push(`/positions/${body.position.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to log buy");
     } finally {
       setSubmitting(false);
     }
@@ -113,6 +117,8 @@ export function ManualExecutionModal({
             Your actual risk/reward will be recalculated. Proceeding.
           </p>
         )}
+
+        {error && <p className="mb-4 text-xs text-status-red">{error}</p>}
 
         <div className="flex justify-end gap-3">
           <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm text-on-surface/60">
