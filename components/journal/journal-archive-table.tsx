@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import type { TradeJournalEntry, ThesisOutcome } from "@/lib/types";
 
 /** Spec US-19: filterable archive + aggregate stats + expandable rows. */
@@ -71,12 +71,11 @@ export function JournalArchiveTable({ entries }: { entries: TradeJournalEntry[] 
             </tr>
           </thead>
           <tbody>
-            {filtered.map((e) => (
-              <>
+            {filtered.map((e, idx) => (
+              <React.Fragment key={e.id}>
                 <tr
-                  key={e.id}
                   onClick={() => setExpanded(expanded === e.id ? null : e.id)}
-                  className="cursor-pointer even:bg-surface-container-lowest hover:bg-surface-container-high"
+                  className={`cursor-pointer ${idx % 2 === 1 ? "bg-surface-container-lowest" : ""} hover:bg-surface-container-high`}
                 >
                   <td className="p-3 font-medium">{e.ticker}</td>
                   <td className={`p-3 font-mono ${e.pnl_pct != null && e.pnl_pct >= 0 ? "text-status-green" : "text-status-red"}`}>
@@ -99,7 +98,7 @@ export function JournalArchiveTable({ entries }: { entries: TradeJournalEntry[] 
                     </td>
                   </tr>
                 )}
-              </>
+              </React.Fragment>
             ))}
           </tbody>
         </table>
