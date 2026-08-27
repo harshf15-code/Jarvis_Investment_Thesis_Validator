@@ -15,34 +15,53 @@ import type { IntelligenceSignal } from "@/lib/types";
 export default function FeedPage() {
   const [signals, setSignals] = useState<IntelligenceSignal[] | null>(null);
   const [agenda, setAgenda] = useState<{ ticker: string; timeExitDate: string | null }[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [tab, setTab] = useState<"active" | "reviewed">("active");
   const [addOpen, setAddOpen] = useState(false);
   const [previewSignal, setPreviewSignal] = useState<IntelligenceSignal | null>(null);
 
-  async function load() {
-    const res = await fetch("/api/signals");
-    const body = await res.json();
-    setSignals(body.signals ?? []);
-    setAgenda(body.agenda ?? []);
-  }
-
+  // Same shape as `app/(app)/page.tsx` (Task 24): `load` lives inside the
+  // effect so the mount fetch and every mutation (archive, Add Signal's
+  // `onSaved`) share one guarded path — bumping `reloadKey` re-runs it,
+  // rather than a second, unguarded `load()` duplicating the fetch.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      const res = await fetch("/api/signals");
-      const body = await res.json();
-      if (cancelled) return;
-      setSignals(body.signals ?? []);
-      setAgenda(body.agenda ?? []);
-    })();
+
+    async function load() {
+      setError(null);
+      try {
+        const res = await fetch("/api/signals");
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? "Could not load the intelligence feed.");
+        if (cancelled) return;
+        setSignals(body.signals ?? []);
+        setAgenda(body.agenda ?? []);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Something went wrong.");
+      }
+    }
+
+    load();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadKey]);
 
   async function handleArchive(id: string) {
     await fetch(`/api/signals/${id}`, { method: "PATCH" });
-    load();
+    setReloadKey((k) => k + 1);
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl bg-status-red-container px-4 py-3 text-sm text-status-red">
+        {error}{" "}
+        <button type="button" onClick={() => setReloadKey((k) => k + 1)} className="underline">
+          Retry
+        </button>
+      </div>
+    );
   }
 
   if (!signals) return <SkeletonLoader lines={6} />;
@@ -82,7 +101,15 @@ export default function FeedPage() {
 
       <AgendaSidebar agenda={agenda} />
 
-      {addOpen && <AddSignalModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
+      {addOpen && (
+        <AddSignalModal
+          onClose={() => setAddOpen(false)}
+          onSaved={() => {
+            setAddOpen(false);
+            setReloadKey((k) => k + 1);
+          }}
+        />
+      )}
       {previewSignal?.thesis_id && (
         <ThesisPreviewDrawer thesisId={previewSignal.thesis_id} headline={previewSignal.headline} onClose={() => setPreviewSignal(null)} />
       )}

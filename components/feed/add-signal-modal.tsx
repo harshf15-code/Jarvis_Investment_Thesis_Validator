@@ -14,6 +14,7 @@ export function AddSignalModal({ onClose, onSaved }: { onClose: () => void; onSa
   const [thesisOptions, setThesisOptions] = useState<ThesisOption[]>([]);
   const [selectedThesisId, setSelectedThesisId] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/theses")
@@ -24,8 +25,9 @@ export function AddSignalModal({ onClose, onSaved }: { onClose: () => void; onSa
 
   async function handleSubmit() {
     setSubmitting(true);
+    setError(null);
     try {
-      await fetch("/api/signals", {
+      const res = await fetch("/api/signals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -36,7 +38,11 @@ export function AddSignalModal({ onClose, onSaved }: { onClose: () => void; onSa
           thesis_id: selectedThesisId || undefined,
         }),
       });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Failed to add signal");
       onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add signal");
     } finally {
       setSubmitting(false);
     }
@@ -72,6 +78,9 @@ export function AddSignalModal({ onClose, onSaved }: { onClose: () => void; onSa
             </select>
           </label>
         </div>
+
+        {error && <p className="mb-4 text-xs text-status-red">{error}</p>}
+
         <div className="flex justify-end gap-3">
           <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm text-on-surface/60">Cancel</button>
           <button type="button" onClick={handleSubmit} disabled={submitting || !headline.trim()} className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40">
