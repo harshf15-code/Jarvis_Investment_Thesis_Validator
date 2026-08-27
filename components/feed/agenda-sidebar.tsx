@@ -8,7 +8,7 @@ export function AgendaSidebar({ agenda }: { agenda: { ticker: string; timeExitDa
       ) : (
         <ul className="flex flex-col gap-2">
           {agenda.map((a) => (
-            <li key={a.ticker} className="flex justify-between text-sm">
+            <li key={`${a.ticker}-${a.timeExitDate}`} className="flex justify-between text-sm">
               <span className="text-on-surface">{a.ticker}</span>
               <span className="text-on-surface/60">{a.timeExitDate}</span>
             </li>

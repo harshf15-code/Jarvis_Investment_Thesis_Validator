@@ -15,44 +15,49 @@ const CreateSignalSchema = z.object({
   thesis_id: z.string().optional(),
 });
 
-/** Spec US-08: sorted RED -> AMBER -> BLUE -> GREY, then recency within each tier. Also returns the "Today's Agenda" 14-day time-exit list. */
+/**
+ * Spec US-08: returns ALL signals (active and archived) — the client (`/feed`)
+ * filters by tab (`!s.archived_at` for Active, `!!s.archived_at` for
+ * Reviewed). Active signals sort RED -> AMBER -> BLUE -> GREY, then recency
+ * within each tier (the query already orders by `created_at` descending, and
+ * `Array.prototype.sort` is stable, so a priority-only sort preserves that
+ * recency ordering within each tier). Archived signals sort by `archived_at`
+ * descending (most recently reviewed first) — the tab split already keeps
+ * the two groups visually separate, so this is just about within-tab order.
+ * Also returns the "Today's Agenda" 14-day time-exit list.
+ */
 export async function GET() {
   const supabase = createAdminClient();
 
   const { data: signals, error } = await supabase
     .from("intelligence_signals")
     .select("*")
-    .is("archived_at", null)
     .order("created_at", { ascending: false });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const sorted = [...(signals ?? [])].sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+  const active = (signals ?? []).filter((s) => !s.archived_at);
+  const archived = (signals ?? []).filter((s) => s.archived_at);
+  const sortedActive = [...active].sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+  const sortedArchived = [...archived].sort((a, b) => (b.archived_at ?? "").localeCompare(a.archived_at ?? ""));
+  const sorted = [...sortedActive, ...sortedArchived];
 
   const today = new Date().toISOString().slice(0, 10);
   const in14Days = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  // Today's Agenda is a supplementary sidebar computation layered onto the
-  // same response; a failure here should never take down the signals feed
-  // itself, so it degrades to an empty agenda rather than throwing.
-  let agenda: { ticker: string; timeExitDate: string | null }[] = [];
-  try {
-    const { data: positions } = await supabase
-      .from("positions")
-      .select("id, ticker, trade_plan_id")
-      .in("status", ["active", "partial_exit"]);
-    const tradePlanIds = [...new Set((positions ?? []).map((p) => p.trade_plan_id))];
-    const { data: tradePlans } = tradePlanIds.length
-      ? await supabase.from("trade_plans").select("id, time_exit_date").in("id", tradePlanIds)
-      : { data: [] };
-    const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
+  const { data: positions } = await supabase
+    .from("positions")
+    .select("id, ticker, trade_plan_id")
+    .in("status", ["active", "partial_exit"]);
+  const tradePlanIds = [...new Set((positions ?? []).map((p) => p.trade_plan_id))];
+  const { data: tradePlans } = tradePlanIds.length
+    ? await supabase.from("trade_plans").select("id, time_exit_date").in("id", tradePlanIds)
+    : { data: [] };
+  const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
 
-    agenda = (positions ?? [])
-      .map((p) => ({ ticker: p.ticker, timeExitDate: tradePlanById.get(p.trade_plan_id)?.time_exit_date ?? null }))
-      .filter((a) => a.timeExitDate !== null && a.timeExitDate >= today && a.timeExitDate <= in14Days)
-      .sort((a, b) => a.timeExitDate!.localeCompare(b.timeExitDate!));
-  } catch {
-    agenda = [];
-  }
+  const agenda = (positions ?? [])
+    .map((p) => ({ ticker: p.ticker, timeExitDate: tradePlanById.get(p.trade_plan_id)?.time_exit_date ?? null }))
+    .filter((a) => a.timeExitDate !== null && a.timeExitDate >= today && a.timeExitDate <= in14Days)
+    .sort((a, b) => a.timeExitDate!.localeCompare(b.timeExitDate!));
 
   return NextResponse.json({ signals: sorted, agenda });
 }
