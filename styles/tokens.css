@@ -1,40 +1,43 @@
 /**
- * Design tokens for the "Neon Velocity" design system.
- *
- * Dark-only palette. Every color used in the app must resolve through one of
- * these CSS custom properties — never hardcode a hex value outside this file.
- *
- * Tokens with an exact hex value specified by the design doc are marked
- * accordingly; the rest are judgment calls picked as tonal steps between the
- * base surface (#0a0e13) and on-surface (#f4f6fe), each with a one-line
- * rationale.
+ * Design tokens for "Neon Velocity v2" — the Jarvis Decision Cockpit's dark
+ * terminal palette. Replaces the v1 green palette entirely (spec Section 1).
+ * Dark-only. Every color used in the app must resolve through one of these
+ * custom properties — never hardcode a hex value outside this file.
  */
 
 :root {
-  /* --- Surfaces (dark, tiered for depth via background-color only — see No-Line Rule) --- */
-  --color-surface: #0a0e13; /* exact: base canvas per design doc */
-  --color-surface-container-lowest: #060810; /* judgment: darkest tier, recessed below base surface (e.g. page gutters) */
-  --color-surface-container-low: #12161f; /* judgment: one step up from surface, default card body */
-  --color-surface-container-high: #1c212d; /* judgment: hover state for cards, and the separator "band" fill */
-  --color-surface-container-highest: #262c3a; /* judgment: input field body / secondary button fill, most elevated flat tier */
-  --color-surface-variant: #2f3646; /* judgment: base for glassmorphism (used at 0.8 opacity + blur per spec) */
+  /* --- Surface --- */
+  --color-surface: #080808; /* exact: near-black base canvas per spec */
+  --color-surface-container-lowest: #050505; /* judgment: recessed tier below base (page gutters) */
+  --color-surface-container-low: #101010; /* judgment: default card body */
+  --color-surface-container-high: #1a1a1a; /* judgment: card hover state / separator band fill */
+  --color-surface-container-highest: #242424; /* judgment: input field body / secondary button fill */
+  --color-surface-variant: #2b2b2b; /* judgment: glassmorphism base, used at 0.8 opacity + blur */
 
-  /* --- Brand / primary gradient --- */
-  --color-primary: #5bff49; /* exact: gradient start, primary buttons + trend lines */
-  --color-primary-container: #07ca09; /* exact: gradient end at 135deg */
-  --color-on-primary: #07341a; /* judgment: deep green text on primary fill, per doc's "#07341a-ish" guidance — never white */
+  /* --- Brand / accent --- */
+  --color-primary: #e8b339; /* exact: amber-gold, CTAs/active states/labels */
+  --color-primary-container: #3d2f0f; /* judgment: dark muted-gold tonal container behind primary text/badges */
+  --color-on-primary: #201702; /* judgment: near-black text on amber-gold fill, never white */
 
   /* --- Text --- */
-  --color-on-surface: #f4f6fe; /* exact: primary text color, replaces pure white everywhere */
+  --color-on-surface: #f4f2ec; /* judgment: warm off-white, pairs with the amber accent better than pure white */
 
-  /* --- Secondary (used by the "Pulse" chip: secondary-container bg, secondary text) --- */
-  --color-secondary: #5bc8ff; /* judgment: neon cyan-blue accent, complements the green primary without competing with it */
-  --color-secondary-container: #12303f; /* judgment: muted dark-blue tonal container to sit behind the secondary text */
+  /* --- Status (exact hexes per spec) --- */
+  --color-status-red: #f87171; /* exact: stop/danger */
+  --color-status-red-container: #3a1616; /* judgment: dark muted-red container at 10% use */
+  --color-status-green: #4ade80; /* exact: gain/confirm */
+  --color-status-green-container: #123a20; /* judgment: dark muted-green container */
+  --color-status-blue: #60a5fa; /* exact: watch/info */
+  --color-status-blue-container: #12233a; /* judgment: dark muted-blue container */
 
-  /* --- Error --- */
-  --color-error: #ff7351; /* exact: error text/icon color */
-  --color-error-container: #3d1a15; /* judgment: dark muted red container, meant to be used at 10% opacity per the input error-state spec */
+  /* --- Secondary (kept distinct from status-blue for non-status accents, e.g. tags) --- */
+  --color-secondary: #60a5fa;
+  --color-secondary-container: #12233a;
+
+  /* --- Error (alias of status-red, kept for shadcn primitive compatibility) --- */
+  --color-error: #f87171;
+  --color-error-container: #3a1616;
 
   /* --- Outline (ghost border, accessibility fallback only — never a default) --- */
-  --color-outline-variant: #5c6b7e; /* judgment: mid slate-blue, only ever applied at 10% opacity per the No-Line Rule's one exception */
+  --color-outline-variant: #5c5c5c; /* judgment: mid-grey, only ever applied at 10% opacity per the No-Line Rule's one exception */
 }

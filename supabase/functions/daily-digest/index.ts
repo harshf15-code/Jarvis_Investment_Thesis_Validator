@@ -53,8 +53,8 @@ Deno.serve(async (_req: Request) => {
   ).toISOString();
 
   const { data: alertRows, error: alertError } = await supabase
-    .from("alert_log")
-    .select("id, stock_id, trigger_type, triggered_at, details")
+    .from("position_alerts")
+    .select("id, position_id, alert_type, triggered_at, details")
     .is("emailed_at", null)
     .gt("triggered_at", lookbackFloor)
     .order("triggered_at", { ascending: true });
@@ -62,33 +62,26 @@ Deno.serve(async (_req: Request) => {
   if (alertError) {
     return jsonResponse({ error: alertError.message }, 500);
   }
-
   if (!alertRows || alertRows.length === 0) {
     return jsonResponse({ sent: false, reason: "no unemailed alerts" }, 200);
   }
 
-  const stockIds = [...new Set(alertRows.map((r) => r.stock_id as string))];
-
-  const { data: stockRows, error: stocksError } = await supabase
-    .from("stocks")
+  const positionIds = [...new Set(alertRows.map((r) => r.position_id as string))];
+  const { data: positionRows, error: positionsError } = await supabase
+    .from("positions")
     .select("id, ticker")
-    .in("id", stockIds);
-
-  if (stocksError) {
-    return jsonResponse({ error: stocksError.message }, 500);
+    .in("id", positionIds);
+  if (positionsError) {
+    return jsonResponse({ error: positionsError.message }, 500);
   }
-
-  const tickerByStockId = new Map<string, string>(
-    (stockRows ?? []).map((s: { id: string; ticker: string }) => [
-      s.id,
-      s.ticker,
-    ]),
+  const tickerByPositionId = new Map<string, string>(
+    (positionRows ?? []).map((p: { id: string; ticker: string }) => [p.id, p.ticker]),
   );
 
   const enrichedRows = alertRows.map((row) => ({
-    stock_id: row.stock_id as string,
-    ticker: tickerByStockId.get(row.stock_id as string) ?? "UNKNOWN",
-    trigger_type: row.trigger_type as string,
+    stock_id: row.position_id as string, // `groupAlertsByStock` groups on this key name; semantics is now "position"
+    ticker: tickerByPositionId.get(row.position_id as string) ?? "UNKNOWN",
+    trigger_type: row.alert_type as string,
     triggered_at: row.triggered_at as string,
     details: row.details,
   }));
@@ -129,7 +122,7 @@ Deno.serve(async (_req: Request) => {
   const emailedAt = new Date().toISOString();
   for (const idBatch of chunk(alertLogIds, EMAILED_UPDATE_BATCH_SIZE)) {
     const { error: updateError } = await supabase
-      .from("alert_log")
+      .from("position_alerts")
       .update({ emailed_at: emailedAt })
       .in("id", idBatch);
 

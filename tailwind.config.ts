@@ -47,6 +47,12 @@ export default {
         error: "var(--color-error)",
         "error-container": "var(--color-error-container)",
         "outline-variant": "var(--color-outline-variant)",
+        "status-red": "var(--color-status-red)",
+        "status-red-container": "var(--color-status-red-container)",
+        "status-green": "var(--color-status-green)",
+        "status-green-container": "var(--color-status-green-container)",
+        "status-blue": "var(--color-status-blue)",
+        "status-blue-container": "var(--color-status-blue-container)",
       },
       borderRadius: {
         xl: "1.5rem",
@@ -57,14 +63,10 @@ export default {
         ambient: "0 20px 40px rgba(0,0,0,0.4)",
       },
       fontFamily: {
-        // Plus Jakarta Sans: display/headlines. Inter: body/data/labels.
-        display: [
-          "var(--font-plus-jakarta-sans)",
-          "ui-sans-serif",
-          "system-ui",
-          "sans-serif",
-        ],
-        sans: ["var(--font-inter)", "ui-sans-serif", "system-ui", "sans-serif"],
+        // Syne: headings/labels. DM Mono: body/data/numbers (spec Section 1).
+        display: ["var(--font-syne)", "ui-sans-serif", "system-ui", "sans-serif"],
+        sans: ["var(--font-dm-mono)", "ui-monospace", "monospace"],
+        mono: ["var(--font-dm-mono)", "ui-monospace", "monospace"],
       },
     },
   },

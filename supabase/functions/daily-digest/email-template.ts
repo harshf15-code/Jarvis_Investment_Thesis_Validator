@@ -13,12 +13,10 @@ export type DigestStockGroup = {
 };
 
 const TRIGGER_LABELS: Record<string, string> = {
-  entry_zone_reached: "ENTRY ZONE",
   stop_loss_breached: "STOP LOSS BREACHED",
-  trim_target_reached: "TRIM TARGET",
-  earnings_approaching: "EARNINGS APPROACHING",
-  reassess_due: "REASSESS DUE",
-  data_stale: "DATA STALE",
+  trim_target_1_reached: "TRIM TARGET 1",
+  trim_target_2_reached: "TRIM TARGET 2",
+  time_exit_due: "TIME EXIT DUE",
 };
 
 function triggerLabel(triggerType: string): string {
@@ -29,16 +27,13 @@ function triggerLabel(triggerType: string): string {
 function detailLine(alert: DigestAlert): string {
   const d = alert.details ?? {};
   switch (alert.trigger_type) {
-    case "entry_zone_reached":
-      return `price ${d.price} in [${d.entry_low}, ${d.entry_high}]`;
     case "stop_loss_breached":
       return `price ${d.price} <= stop ${d.stop_loss}`;
-    case "trim_target_reached":
-      return `price ${d.price} >= tier ${d.tier_price} (trim ${d.pct_of_position}%)`;
-    case "earnings_approaching":
-      return `earnings on ${d.earnings_date} (${d.days_out}d out)`;
-    case "reassess_due":
-      return `reassessment date ${d.reassess_date} has arrived`;
+    case "trim_target_1_reached":
+    case "trim_target_2_reached":
+      return `price ${d.price} >= ${d.tier} at ${d.tier_price}`;
+    case "time_exit_due":
+      return `time exit due (${d.time_exit_date})`;
     default:
       try {
         return JSON.stringify(d);
