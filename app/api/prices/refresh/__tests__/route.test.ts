@@ -56,6 +56,7 @@ describe("POST /api/prices/refresh", () => {
 
     expect(res.status).toBe(200);
     expect(body.prices.s1.price).toBe(150.25);
+    expect(body.prices.s1.asOf).toBe("2026-08-27T10:00:00.000Z");
     expect(body.prices.s2).toBeUndefined();
   });
 });
