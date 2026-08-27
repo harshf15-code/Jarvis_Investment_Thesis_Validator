@@ -26,16 +26,12 @@ function triggerLabel(triggerType: string): string {
 function detailLine(alert: DigestAlert): string {
   const d = alert.details ?? {};
   switch (alert.trigger_type) {
-    case "entry_zone_reached":
-      return `price ${d.price} in [${d.entry_low}, ${d.entry_high}]`;
     case "stop_loss_breached":
       return `price ${d.price} <= stop ${d.stop_loss}`;
     case "trim_target_reached":
-      return `price ${d.price} >= tier ${d.tier_price} (trim ${d.pct_of_position}%)`;
-    case "earnings_approaching":
-      return `earnings on ${d.earnings_date} (${d.days_out}d out)`;
-    case "reassess_due":
-      return `reassessment date ${d.reassess_date} has arrived`;
+      return `price ${d.price} >= ${d.tier} at ${d.tier_price}`;
+    case "time_exit_due":
+      return `time exit due (${d.time_exit_date})`;
     default:
       try {
         return JSON.stringify(d);
