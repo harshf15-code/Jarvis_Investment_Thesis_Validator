@@ -6,18 +6,19 @@ import { POST } from "../route";
 
 function buildMock(opts: { entries: { quantity: number }[]; existingExits: { quantity: number }[] }) {
   const positionUpdate = vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) });
+  const exitsInsert = vi.fn().mockReturnValue({
+    select: vi.fn().mockReturnValue({
+      single: vi.fn().mockResolvedValue({
+        data: { id: "ex1", position_id: "p1", quantity: 30, price: 180, type: "trim_t1" },
+        error: null,
+      }),
+    }),
+  });
   return {
     from: vi.fn().mockImplementation((table: string) => {
       if (table === "exits") {
         return {
-          insert: vi.fn().mockReturnValue({
-            select: vi.fn().mockReturnValue({
-              single: vi.fn().mockResolvedValue({
-                data: { id: "ex1", position_id: "p1", quantity: 30, price: 180, type: "trim_t1" },
-                error: null,
-              }),
-            }),
-          }),
+          insert: exitsInsert,
           select: vi.fn().mockReturnValue({
             eq: vi.fn().mockResolvedValue({ data: opts.existingExits, error: null }),
           }),
@@ -32,6 +33,7 @@ function buildMock(opts: { entries: { quantity: number }[]; existingExits: { qua
       throw new Error(`unexpected table ${table}`);
     }),
     _positionUpdate: positionUpdate,
+    _exitsInsert: exitsInsert,
   };
 }
 
@@ -80,5 +82,21 @@ describe("POST /api/positions/[id]/exits", () => {
     });
     const res = await POST(req as never, { params: Promise.resolve({ id: "p1" }) });
     expect(res.status).toBe(400);
+  });
+
+  it("rejects an exit quantity greater than what remains on the position, without writing anything", async () => {
+    const mock = buildMock({ entries: [{ quantity: 100 }], existingExits: [{ quantity: 30 }] });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    const req = new Request("http://test", {
+      method: "POST",
+      body: JSON.stringify({ date: "2026-08-27", quantity: 100, price: 180, type: "trim_t1" }),
+    });
+    const res = await POST(req as never, { params: Promise.resolve({ id: "p1" }) });
+    const body = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(body.error).toMatch(/exceeds/i);
+    expect(mock._exitsInsert).not.toHaveBeenCalled();
+    expect(mock._positionUpdate).not.toHaveBeenCalled();
   });
 });

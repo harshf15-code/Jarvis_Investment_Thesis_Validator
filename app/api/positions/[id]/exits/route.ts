@@ -44,6 +44,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (entriesError) return NextResponse.json({ error: entriesError.message }, { status: 500 });
   if (exitsError) return NextResponse.json({ error: exitsError.message }, { status: 500 });
 
+  const totalEntered = (entries ?? []).reduce((sum, e) => sum + e.quantity, 0);
+  const totalExitedBefore = (existingExits ?? []).reduce((sum, e) => sum + e.quantity, 0);
+  const quantityRemainingBeforeThisExit = totalEntered - totalExitedBefore;
+
+  // Reject an overshoot before writing anything: a negative remainingQuantity
+  // would still mark the position "closed" but leave a permanently wrong
+  // exits row and a negative number in a UI that renders it directly
+  // (Task 23's "Quantity (full remaining)" field).
+  if (parsed.data.quantity > quantityRemainingBeforeThisExit) {
+    return NextResponse.json(
+      {
+        error: `Exit quantity (${parsed.data.quantity}) exceeds the ${quantityRemainingBeforeThisExit} shares remaining on this position`,
+      },
+      { status: 400 },
+    );
+  }
+
   const { data: exit, error: insertError } = await supabase
     .from("exits")
     .insert({ position_id: positionId, ...parsed.data })
@@ -53,9 +70,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: insertError?.message ?? "Failed to insert exit" }, { status: 500 });
   }
 
-  const totalEntered = (entries ?? []).reduce((sum, e) => sum + e.quantity, 0);
-  const totalExitedBefore = (existingExits ?? []).reduce((sum, e) => sum + e.quantity, 0);
-  const remainingQuantity = totalEntered - totalExitedBefore - parsed.data.quantity;
+  const remainingQuantity = quantityRemainingBeforeThisExit - parsed.data.quantity;
   const positionStatus = remainingQuantity <= 0 ? "closed" : "partial_exit";
 
   const { error: updateError } = await supabase
