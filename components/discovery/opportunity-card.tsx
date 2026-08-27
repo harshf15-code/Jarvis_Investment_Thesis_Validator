@@ -46,7 +46,10 @@ export function OpportunityCard({ row }: { row: Row }) {
       <p className="text-xs text-on-surface/50">{o.sector ?? "—"}</p>
       {o.thesis_summary && <p className="line-clamp-2 text-sm text-on-surface/80">{o.thesis_summary}</p>}
       <div className="flex items-center justify-between text-xs text-on-surface/60">
-        <span>PE {o.pe ?? "—"} vs sector {o.sector_median_pe ?? "—"}</span>
+        <span>
+          PE <span className="font-mono tabular-nums">{o.pe ?? "—"}</span> vs sector{" "}
+          <span className="font-mono tabular-nums">{o.sector_median_pe ?? "—"}</span>
+        </span>
         <PriceBadge price={currentPrice} exchange={o.market} />
       </div>
       {near52wHigh && (

@@ -17,28 +17,36 @@ const TIER_ORDER: Record<ConvictionTier, number> = { I: 0, II: 1, III: 2, IV: 3 
 
 export default function DiscoveryPage() {
   const [rows, setRows] = useState<Row[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [tierFilter, setTierFilter] = useState<ConvictionTier | "all">("all");
   const [sortBy, setSortBy] = useState<"tier" | "pe" | "recency">("tier");
   const [addOpen, setAddOpen] = useState(false);
 
-  async function load() {
-    const res = await fetch("/api/opportunities");
-    const body = await res.json();
-    setRows(body.opportunities ?? []);
-  }
-
+  // Same shape as `app/(app)/page.tsx` (Task 24) and
+  // `components/journal/journal-review-form.tsx`: `load` lives inside the
+  // effect, and a mutation (the Add Watchlist modal's `onSaved`) just bumps
+  // `reloadKey` rather than calling `load` directly.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      const res = await fetch("/api/opportunities");
-      const body = await res.json();
-      if (cancelled) return;
-      setRows(body.opportunities ?? []);
-    })();
+
+    async function load() {
+      setError(null);
+      try {
+        const res = await fetch("/api/opportunities");
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? "Could not load opportunities.");
+        if (!cancelled) setRows(body.opportunities ?? []);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Something went wrong.");
+      }
+    }
+
+    load();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadKey]);
 
   const filtered = useMemo(() => {
     if (!rows) return [];
@@ -52,6 +60,17 @@ export default function DiscoveryPage() {
       return tierA - tierB;
     });
   }, [rows, tierFilter, sortBy]);
+
+  if (error) {
+    return (
+      <div className="rounded-xl bg-status-red-container px-4 py-3 text-sm text-status-red">
+        {error}{" "}
+        <button type="button" onClick={() => setReloadKey((k) => k + 1)} className="underline">
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (!rows) return <SkeletonLoader lines={6} />;
 
@@ -98,7 +117,15 @@ export default function DiscoveryPage() {
         </div>
       )}
 
-      {addOpen && <AddWatchlistModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
+      {addOpen && (
+        <AddWatchlistModal
+          onClose={() => setAddOpen(false)}
+          onSaved={() => {
+            setAddOpen(false);
+            setReloadKey((k) => k + 1);
+          }}
+        />
+      )}
     </div>
   );
 }
