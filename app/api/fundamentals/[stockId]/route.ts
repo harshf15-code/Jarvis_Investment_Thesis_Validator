@@ -31,11 +31,45 @@ async function stockExists(
 }
 
 /**
+ * Looks up the existing `fundamentals` row (if any) for `(stockId,
+ * metricKey)`, so `PATCH` can tell an "editing/creating a manual metric"
+ * upsert apart from one that would silently clobber an auto-pulled row that
+ * happens to share the same key.
+ */
+async function findExistingSource(
+  supabase: ReturnType<typeof createAdminClient>,
+  stockId: string,
+  metricKey: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("fundamentals")
+    .select("source")
+    .eq("stock_id", stockId)
+    .eq("metric_key", metricKey)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+  return data?.source ?? null;
+}
+
+/**
  * PATCH /api/fundamentals/[stockId] — upsert-by-`metric_key`. Always writes
  * `source: 'manual'`: this is the only write path for user-tracked metrics,
  * and `fundamentals` has a `unique (stock_id, metric_key)` constraint
  * (`supabase/migrations/0001_init.sql`), so this both adds a brand-new
  * metric and edits an existing one through the same call.
+ *
+ * Guards against key collisions with an auto-pulled row: if a `source =
+ * 'auto'` row already exists for this `(stock_id, metric_key)`, the upsert
+ * is rejected with 409 rather than silently converting that row to
+ * `source = 'manual'` and overwriting its value (the `unique (stock_id,
+ * metric_key)` constraint has no `source` component, so nothing at the DB
+ * level would otherwise stop that). Not currently reachable in this
+ * codebase — nothing writes `source = 'auto'` rows yet — but the guard
+ * closes the gap now rather than waiting for a future task's auto-writer to
+ * make it exploitable.
  */
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
   const { stockId } = await params;
@@ -64,6 +98,27 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   }
   if (!exists) {
     return NextResponse.json({ error: "Stock not found" }, { status: 404 });
+  }
+
+  let existingSource: string | null;
+  try {
+    existingSource = await findExistingSource(
+      supabase,
+      stockId,
+      parsed.data.metric_key,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+  if (existingSource === "auto") {
+    return NextResponse.json(
+      {
+        error:
+          "A metric with this key already exists as an auto-pulled value — choose a different key",
+      },
+      { status: 409 },
+    );
   }
 
   const insert: FundamentalInsert = {
