@@ -14,7 +14,8 @@ export type DigestStockGroup = {
 
 const TRIGGER_LABELS: Record<string, string> = {
   stop_loss_breached: "STOP LOSS BREACHED",
-  trim_target_reached: "TRIM TARGET",
+  trim_target_1_reached: "TRIM TARGET 1",
+  trim_target_2_reached: "TRIM TARGET 2",
   time_exit_due: "TIME EXIT DUE",
 };
 
@@ -28,7 +29,8 @@ function detailLine(alert: DigestAlert): string {
   switch (alert.trigger_type) {
     case "stop_loss_breached":
       return `price ${d.price} <= stop ${d.stop_loss}`;
-    case "trim_target_reached":
+    case "trim_target_1_reached":
+    case "trim_target_2_reached":
       return `price ${d.price} >= ${d.tier} at ${d.tier_price}`;
     case "time_exit_due":
       return `time exit due (${d.time_exit_date})`;

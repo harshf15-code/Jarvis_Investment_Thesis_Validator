@@ -92,7 +92,8 @@ type Market = "NSE" | "US";
 type Exchange = "NSE" | "BSE" | "US";
 type PositionAlertType =
   | "stop_loss_breached"
-  | "trim_target_reached"
+  | "trim_target_1_reached"
+  | "trim_target_2_reached"
   | "time_exit_due";
 
 type StockRow = { id: string; yahoo_symbol: string; exchange: Exchange };
@@ -115,7 +116,7 @@ type TradePlanRow = {
 type PositionAlertEvent =
   | { type: "stop_loss_breached"; details: { price: number; stop_loss: number } }
   | {
-      type: "trim_target_reached";
+      type: "trim_target_1_reached" | "trim_target_2_reached";
       details: { price: number; tier: "target_1" | "target_2"; tier_price: number };
     }
   | { type: "time_exit_due"; details: { time_exit_date: string } };
@@ -144,13 +145,13 @@ function evaluatePositionTriggers(
   }
   if (tradePlan.target_1 !== null && price >= tradePlan.target_1) {
     events.push({
-      type: "trim_target_reached",
+      type: "trim_target_1_reached",
       details: { price, tier: "target_1", tier_price: tradePlan.target_1 },
     });
   }
   if (tradePlan.target_2 !== null && price >= tradePlan.target_2) {
     events.push({
-      type: "trim_target_reached",
+      type: "trim_target_2_reached",
       details: { price, tier: "target_2", tier_price: tradePlan.target_2 },
     });
   }

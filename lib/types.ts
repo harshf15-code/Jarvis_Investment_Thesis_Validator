@@ -17,6 +17,8 @@ export type PositionAlertType =
   | "entry_zone_reached"
   | "stop_loss_breached"
   | "trim_target_reached"
+  | "trim_target_1_reached"
+  | "trim_target_2_reached"
   | "time_exit_due";
 
 export type Json =
