@@ -67,6 +67,13 @@ export type Thesis = {
   raw_llm_response: string | null;
 };
 
+/** One measurable thesis condition tracked on a locked trade plan (spec US-15). */
+export type ThesisCondition = {
+  label: string;
+  target: string;
+  currentValue: string;
+};
+
 /** `trade_plans` */
 export type TradePlan = {
   id: string;
@@ -82,6 +89,8 @@ export type TradePlan = {
   max_portfolio_pct: number | null;
   time_exit_date: string | null;
   time_exit_condition: string | null;
+  /** `0010_trade_plan_thesis_conditions.sql` — jsonb, defaults to `[]`. */
+  thesis_conditions: ThesisCondition[];
   edited_fields: string[];
   ai_suggested: Json;
   created_at: string;
@@ -250,6 +259,7 @@ export type TradePlanInsert = Pick<TradePlan, "thesis_id"> &
       | "max_portfolio_pct"
       | "time_exit_date"
       | "time_exit_condition"
+      | "thesis_conditions"
       | "edited_fields"
       | "ai_suggested"
       | "created_at"

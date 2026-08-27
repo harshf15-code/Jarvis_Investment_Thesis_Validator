@@ -9,7 +9,13 @@ const EDITABLE_FIELDS = [
 ] as const;
 
 const UpdateTradePlanSchema = z
-  .object(Object.fromEntries(EDITABLE_FIELDS.map((f) => [f, z.union([z.number(), z.string()]).nullable().optional()])))
+  .object({
+    ...Object.fromEntries(EDITABLE_FIELDS.map((f) => [f, z.union([z.number(), z.string()]).nullable().optional()])),
+    /** US-15 (Task 23): user-owned, never AI-suggested — kept out of `EDITABLE_FIELDS` so it never enters the `edited_fields` diff. */
+    thesis_conditions: z
+      .array(z.object({ label: z.string(), target: z.string(), currentValue: z.string() }))
+      .optional(),
+  })
   .strict();
 
 /** Spec US-07: inline edits auto-save on blur; edited fields show an amber underline (diff from `ai_suggested`) until "Reset to AI suggestion". */
@@ -31,9 +37,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ error: fetchError?.message ?? "Trade plan not found" }, { status: 404 });
   }
 
+  // `thesis_conditions` is split out before the diff loop: it has no
+  // `ai_suggested` counterpart to diff against, and marking it "edited" would
+  // put an amber "edited from AI's suggestion" underline on a field the AI
+  // never suggested.
+  const { thesis_conditions, ...editableData } = parsed.data;
+
   const aiSuggested = (existing.ai_suggested ?? {}) as Record<string, unknown>;
   const existingEditedFields = new Set<string>(existing.edited_fields ?? []);
-  for (const [field, value] of Object.entries(parsed.data)) {
+  for (const [field, value] of Object.entries(editableData)) {
     if (value === undefined) continue;
     if (field in aiSuggested && aiSuggested[field] === value) {
       existingEditedFields.delete(field);
@@ -45,7 +57,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const { data: tradePlan, error: updateError } = await supabase
     .from("trade_plans")
     .update({
-      ...parsed.data,
+      ...editableData,
+      ...(thesis_conditions !== undefined ? { thesis_conditions } : {}),
       edited_fields: [...existingEditedFields],
       updated_at: new Date().toISOString(),
     })

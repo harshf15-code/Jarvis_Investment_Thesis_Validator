@@ -88,4 +88,30 @@ describe("PATCH /api/trade-plans/[id]", () => {
     );
     expect(body.tradePlan.edited_fields).toEqual(["target_1"]);
   });
+
+  // Task 23 / US-15: `thesis_conditions` is user-owned data with no
+  // `ai_suggested` counterpart, so it must reach the update untouched while
+  // staying out of the amber "edited from AI's suggestion" diff entirely.
+  it("updates thesis_conditions without adding it to edited_fields", async () => {
+    const { supabase, updateSpy } = buildSupabaseMock({
+      id: "tp1",
+      thesis_conditions: [],
+      ai_suggested: {},
+      edited_fields: [],
+    });
+    vi.mocked(createAdminClient).mockReturnValue(supabase as never);
+
+    const req = new Request("http://test", {
+      method: "PATCH",
+      body: JSON.stringify({
+        thesis_conditions: [{ label: "Chetak share", target: ">=18%", currentValue: "16%" }],
+      }),
+    });
+    const res = await PATCH(req as never, { params: Promise.resolve({ id: "tp1" }) });
+
+    expect(res.status).toBe(200);
+    const updateArg = updateSpy.mock.calls[0][0];
+    expect(updateArg.thesis_conditions).toHaveLength(1);
+    expect(updateArg.edited_fields).not.toContain("thesis_conditions");
+  });
 });

@@ -1,5 +1,6 @@
 import { EmptyState } from "@/components/shared/empty-state";
-import { PositionsTable, type PositionRow } from "@/components/positions/positions-table";
+import { PositionsPageClient } from "@/components/positions/positions-page-client";
+import type { PositionRow } from "@/components/positions/positions-table";
 import { fetchInternalApi } from "@/lib/server-fetch";
 
 async function fetchPositions(): Promise<PositionRow[]> {
@@ -17,7 +18,7 @@ export default async function PositionsPage() {
       {rows.length === 0 ? (
         <EmptyState title="No active positions." description="Start with a thesis →" />
       ) : (
-        <PositionsTable rows={rows} />
+        <PositionsPageClient rows={rows} />
       )}
     </div>
   );
