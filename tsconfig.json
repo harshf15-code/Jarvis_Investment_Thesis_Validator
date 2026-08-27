@@ -30,5 +30,15 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    // Deno Edge Functions (Task 11): a separate deployable/runtime with its
+    // own globals (`Deno.*`), URL-specifier imports (`https://esm.sh/...`),
+    // and `.ts`-extension relative imports — none of which are valid under
+    // this project's Node/bundler `moduleResolution`. Not part of the
+    // Next.js build; type-checked only by eye and via the pure logic
+    // extracted into `lib/trigger-logic.ts` (see that file's and
+    // `supabase/functions/poll-prices/index.ts`'s comments).
+    "supabase/functions/**"
+  ]
 }

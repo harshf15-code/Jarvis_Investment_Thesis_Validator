@@ -1,0 +1,100 @@
+-- 0003_pg_cron_jobs.sql.example
+--
+-- NOT an applied migration (note the `.sql.example` suffix, not `.sql`) --
+-- `supabase db push`/the migration runner will NOT pick this file up. It is
+-- a ready-to-adapt template for the LATER manual deployment step (Task 11's
+-- brief: Edge Functions are written + unit-tested here, but not deployed
+-- and not wired to a real `pg_cron` schedule in this task). Copy this to
+-- `0003_pg_cron_jobs.sql` and fill in the placeholders below once
+-- `poll-prices`/`daily-digest` are actually deployed to a real Supabase
+-- project.
+--
+-- Placeholders to replace before applying:
+--   <PROJECT_REF>          the deployed project's ref, e.g. abcdefghijklmnop
+--   <SERVICE_ROLE_KEY>     that project's service_role key (Settings -> API)
+--
+-- Prerequisites (run once per project, before `cron.schedule`):
+--   create extension if not exists pg_cron;
+--   create extension if not exists pg_net;  -- for net.http_post
+--
+-- Schedule design (all times UTC — pg_cron's `cron.schedule` runs on the
+-- Postgres server's configured timezone, which is UTC on Supabase by
+-- default):
+--
+-- - poll-prices-nse: NSE regular session is 09:15-15:30 Asia/Kolkata
+--   (IST, UTC+5:30, no DST) = 03:45-10:00 UTC. `*/15 3-10 * * 1-5` fires
+--   every 15 minutes from 03:00 through 10:45 UTC (matches the "15-30 min
+--   cycle" cadence referenced in task-11-brief.md's dedup-guard note) --
+--   slightly wider than the real 03:45-10:00 session on both ends. The
+--   widened window is intentional slack, not a precision requirement:
+--   `poll-prices`'s own `isMarketOpen("NSE", now)` check (Deno-side
+--   reimplementation of `lib/market-hours.ts`) is the actual source of
+--   truth and no-ops (`{ skipped: true, reason: "market closed" }`) outside
+--   the real session, so a few extra invocations just outside the window
+--   cost a wasted no-op call, not an incorrect one.
+--
+-- - poll-prices-us: US regular session is 09:30-16:00 America/New_York,
+--   which observes DST (EDT = UTC-4, roughly Mar-Nov; EST = UTC-5
+--   otherwise) -- i.e. 13:30-20:00 UTC during EDT or 14:30-21:00 UTC during
+--   EST. `cron.schedule`'s plain 5-field cron syntax can't shift with DST,
+--   so `*/15 13-21 * * 1-5` (13:00 through 21:45 UTC) is deliberately
+--   widened to fully cover BOTH regimes; same reasoning as poll-prices-nse
+--   above -- `isMarketOpen("US", now)` is what actually gates execution.
+--
+-- - daily-digest: once/day, after both markets have closed for the day
+--   (US close is the later of the two) -- 22:00 UTC, Mon-Fri, comfortably
+--   after the widest US-close estimate (21:00 UTC EDT) above.
+--
+-- Both `poll-prices` calls also restrict to Mon-Fri (`1-5`) since neither
+-- market trades on weekends; `isMarketOpen` would also correctly return
+-- `false` on a weekend call, so this is belt-and-suspenders, not load-bearing.
+
+select cron.schedule(
+  'poll-prices-nse',
+  '*/15 3-10 * * 1-5',
+  $$
+  select net.http_post(
+    url := 'https://<PROJECT_REF>.supabase.co/functions/v1/poll-prices?market=NSE',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer <SERVICE_ROLE_KEY>',
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+
+select cron.schedule(
+  'poll-prices-us',
+  '*/15 13-21 * * 1-5',
+  $$
+  select net.http_post(
+    url := 'https://<PROJECT_REF>.supabase.co/functions/v1/poll-prices?market=US',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer <SERVICE_ROLE_KEY>',
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+
+select cron.schedule(
+  'daily-digest',
+  '0 22 * * 1-5',
+  $$
+  select net.http_post(
+    url := 'https://<PROJECT_REF>.supabase.co/functions/v1/daily-digest',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer <SERVICE_ROLE_KEY>',
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+
+-- To remove a schedule later:
+--   select cron.unschedule('poll-prices-nse');
+--   select cron.unschedule('poll-prices-us');
+--   select cron.unschedule('daily-digest');
