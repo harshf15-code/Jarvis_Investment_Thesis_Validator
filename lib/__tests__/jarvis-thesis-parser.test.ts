@@ -74,4 +74,13 @@ describe("parseThesisResponse", () => {
       expect(result.extraction.data.ticker).toBe(null);
     }
   });
+
+  it("accepts a null narrative field per the prompt's own contract (I7 fix)", () => {
+    const raw = VALID_RESPONSE.replace('"catalyst": "Z will close the gap.",', '"catalyst": null,');
+    const result = parseThesisResponse(raw);
+    expect(result.extraction.ok).toBe(true);
+    if (result.extraction.ok) {
+      expect(result.extraction.data.catalyst).toBe(null);
+    }
+  });
 });

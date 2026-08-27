@@ -12,11 +12,16 @@ import { z } from "zod";
 export const ThesisExtractSchema = z.object({
   mode: z.enum(["stock_only", "thesis_only", "stock_plus_thesis"]),
   ticker: z.string().nullable(),
-  market_view: z.string(),
-  mispricing: z.string(),
-  catalyst: z.string(),
-  time_horizon: z.string(),
-  invalidation_condition: z.string(),
+  // I7 fix: `JARVIS_THESIS_SYSTEM_PROMPT` explicitly tells the model to use
+  // null for any field it cannot responsibly determine, for every field —
+  // these five narrative fields must accept that null the same as `ticker`
+  // does, or a genuinely thin thesis fails schema validation entirely and
+  // discards an otherwise-usable response.
+  market_view: z.string().nullable(),
+  mispricing: z.string().nullable(),
+  catalyst: z.string().nullable(),
+  time_horizon: z.string().nullable(),
+  invalidation_condition: z.string().nullable(),
   conviction_tier: z.enum(["I", "II", "III", "IV"]),
   conviction_score: z.number().min(0).max(100),
   stock_suggestions: z.array(

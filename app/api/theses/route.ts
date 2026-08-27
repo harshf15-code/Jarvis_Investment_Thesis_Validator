@@ -203,3 +203,16 @@ export async function POST(request: NextRequest) {
     { status: 201 },
   );
 }
+
+/** Screen HUB-3's thesis list (Task 21) — newest first. */
+export async function GET() {
+  const supabase = createAdminClient();
+  const { data: theses, error } = await supabase
+    .from("theses")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  return NextResponse.json({ theses: theses ?? [] });
+}
