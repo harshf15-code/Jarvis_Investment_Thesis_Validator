@@ -111,3 +111,18 @@ export const RunJarvisInputSchema = z.object({
 });
 
 export type RunJarvisInput = z.infer<typeof RunJarvisInputSchema>;
+
+/**
+ * PATCH /api/fundamentals/[stockId] body. Upserts one user-tracked
+ * ("manual") metric by `metric_key` — this route never writes `source:
+ * 'auto'` rows (those are pulled from Yahoo elsewhere), so the request body
+ * only ever needs the key/value pair itself.
+ */
+export const UpsertFundamentalInputSchema = z.object({
+  metric_key: z.string().trim().min(1, "metric_key is required"),
+  metric_value: z.string().trim().min(1, "metric_value is required"),
+});
+
+export type UpsertFundamentalInput = z.infer<
+  typeof UpsertFundamentalInputSchema
+>;
