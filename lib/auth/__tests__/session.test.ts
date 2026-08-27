@@ -18,11 +18,16 @@ describe("verifySessionToken", () => {
   it("rejects a tampered token (signature no longer matches)", async () => {
     const token = await createSessionToken();
     const parts = token.split(".");
-    // Flip the last character of the signature segment so the signature no
-    // longer verifies against the payload/header.
-    const lastChar = parts[2].slice(-1);
-    const flipped = lastChar === "A" ? "B" : "A";
-    parts[2] = parts[2].slice(0, -1) + flipped;
+    // Decode the base64url signature to raw bytes and flip every bit of the
+    // first byte via XOR, then re-encode. Unlike swapping a single base64url
+    // character (which can be a no-op when that character sits in the
+    // trailing partial group and the flip happens to land on bits that don't
+    // change the decoded value), XOR-ing a full decoded byte is guaranteed to
+    // change the signature's actual bytes every time, regardless of what the
+    // real signature happens to be — so this can't flake.
+    const signatureBytes = Buffer.from(parts[2], "base64url");
+    signatureBytes[0] = signatureBytes[0] ^ 0xff;
+    parts[2] = signatureBytes.toString("base64url");
     const tampered = parts.join(".");
 
     await expect(verifySessionToken(tampered)).resolves.toBe(false);
