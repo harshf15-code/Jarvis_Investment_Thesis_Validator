@@ -8,6 +8,7 @@ import { FundamentalsPanel } from "@/components/stock-detail/fundamentals-panel"
 import { HoldingTypeAction } from "@/components/stock-detail/holding-actions";
 import { JarvisTabs } from "@/components/stock-detail/jarvis-tabs";
 import { RunJarvisButton } from "@/components/stock-detail/run-jarvis-button";
+import { formatCurrency } from "@/lib/format";
 import { getHistoricalOHLCV } from "@/lib/market-data";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type {
@@ -26,15 +27,6 @@ import type {
  * of which should ever run during `next build`.
  */
 export const dynamic = "force-dynamic";
-
-function formatCurrency(value: number, exchange: Stock["exchange"]): string {
-  const isUS = exchange === "US";
-  return new Intl.NumberFormat(isUS ? "en-US" : "en-IN", {
-    style: "currency",
-    currency: isUS ? "USD" : "INR",
-    maximumFractionDigits: 2,
-  }).format(value);
-}
 
 function formatAsOf(iso: string | null): string {
   if (iso === null) {

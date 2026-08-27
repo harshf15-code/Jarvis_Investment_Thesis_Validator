@@ -7,6 +7,20 @@ import { cn } from "@/lib/utils";
 import type { FundamentalRow } from "@/lib/types";
 
 /**
+ * Bottom-heavy focus style (Neon Velocity input rule), matching the pattern
+ * used by `app/(auth)/login/page.tsx`/`components/add-ticker/add-ticker-form.tsx`/
+ * `components/stock-detail/holding-actions.tsx` — a flat field body with a
+ * 2px `primary` highlight on the bottom edge only when focused, never
+ * shadcn's default all-around focus ring. Kept local to this file (each of
+ * those other call sites also defines its own copy rather than sharing one
+ * constant), just sized down for this panel's denser inline-edit rows.
+ */
+const editInputClassName =
+  "h-7 w-28 rounded-t-md border-0 border-b-2 border-b-transparent bg-surface-container-highest px-2 text-sm text-on-surface outline-none transition-colors focus:border-b-primary";
+const newFieldInputClassName =
+  "h-9 rounded-t-lg border-0 border-b-2 border-b-transparent bg-surface-container-highest px-2.5 text-sm text-on-surface outline-none transition-colors placeholder:text-on-surface/40 focus:border-b-primary";
+
+/**
  * Two sections: auto-pulled standard metrics (`source = 'auto'`, read-only)
  * and user-tracked custom metrics (`source = 'manual'`, editable inline —
  * add/edit/remove a key-value pair against `PATCH`/`DELETE
@@ -171,7 +185,7 @@ export function FundamentalsPanel({
                       onChange={(event) =>
                         setEditingValue(event.target.value)
                       }
-                      className="h-7 w-28 rounded-md bg-surface-container-highest px-2 text-sm text-on-surface outline-none"
+                      className={editInputClassName}
                     />
                     <button
                       type="button"
@@ -236,7 +250,7 @@ export function FundamentalsPanel({
               value={newKey}
               onChange={(event) => setNewKey(event.target.value)}
               placeholder="e.g. Custom P/S"
-              className="h-9 rounded-lg bg-surface-container-highest px-2.5 text-sm text-on-surface outline-none placeholder:text-on-surface/40"
+              className={newFieldInputClassName}
             />
           </div>
           <div className="flex flex-1 flex-col gap-1">
@@ -252,7 +266,7 @@ export function FundamentalsPanel({
               value={newValue}
               onChange={(event) => setNewValue(event.target.value)}
               placeholder="e.g. 4.2"
-              className="h-9 rounded-lg bg-surface-container-highest px-2.5 text-sm text-on-surface outline-none placeholder:text-on-surface/40"
+              className={newFieldInputClassName}
             />
           </div>
           <button

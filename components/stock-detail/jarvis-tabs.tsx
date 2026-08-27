@@ -137,16 +137,31 @@ const TAB_CONFIG = [
  * Restyled shadcn `Tabs` per the No-Line Rule: active tab is a
  * background/text-color shift plus a primary-colored underline accent
  * (`data-[state=active]:after:opacity-100`), never a bordered tab strip.
- * The installed `components/ui/tabs.tsx` primitive's own baked-in active
- * styling targets a `data-active` attribute Radix never actually sets
- * (Radix only ever sets `data-state="active"|"inactive"`), so it's
- * effectively inert here — these `data-[state=active]:` overrides are what
- * actually drives the active look.
+ *
+ * `components/ui/tabs.tsx`'s primitive used to target a `data-active`
+ * attribute Radix never actually sets (Radix only ever sets
+ * `data-state="active"|"inactive"`), which made its own baked-in active
+ * styling dead CSS — Task 12's design polish sweep fixed that primitive bug
+ * (`data-active:` -> `data-[state=active]:`) at the source. That fix makes
+ * the primitive's `dark:group-data-[variant=line]/tabs-list:data-[state=active]:bg-transparent`
+ * and `dark:data-[state=active]:text-foreground` rules live for the first
+ * time — both apply here (`variant="line"`, and the app is always in dark
+ * mode per `app/layout.tsx`) and, because their extra `dark:`/`group-data-`
+ * modifiers give them *higher* CSS specificity than a bare
+ * `data-[state=active]:bg-*`/`text-*` override, they'd win the cascade over
+ * a plain override and silently blank out the active tab's background/text
+ * (confirmed by inspecting the compiled `.next` CSS: the `dark:group-data-`
+ * background rule and the `dark:` text rule both out-specificity a bare
+ * override). The trailing `!` (Tailwind's important modifier, same
+ * technique already used in `components/ui/badge.tsx`) forces these two
+ * specific overrides to win regardless of specificity, rather than trying
+ * to out-specify every one of the primitive's `dark:`/`group-data-`
+ * variants by hand.
  */
 const tabsTriggerClassName = cn(
   "relative h-9 flex-none rounded-lg px-3 text-sm font-medium text-on-surface/60 transition-colors",
   "hover:text-on-surface",
-  "data-[state=active]:bg-surface-container-high data-[state=active]:text-on-surface",
+  "data-[state=active]:bg-surface-container-high! data-[state=active]:text-on-surface!",
   // The base `TabsTrigger` (`components/ui/tabs.tsx`) already positions an
   // `after:` pseudo-element via `group-data-horizontal/tabs:after:inset-x-0
   // group-data-horizontal/tabs:after:bottom-[-5px]

@@ -1,6 +1,8 @@
 import Link from "next/link";
 
+import { PulseChip } from "@/components/layout/pulse-chip";
 import { StatusChip } from "@/components/dashboard/status-chip";
+import { formatCurrency } from "@/lib/format";
 import { computeUnrealizedPnl } from "@/lib/pnl";
 import { cn } from "@/lib/utils";
 import type { Holding, Stock } from "@/lib/types";
@@ -18,15 +20,6 @@ export type StockWithHolding = Stock & { holding: Holding | null };
  * it stays a plain server-renderable component. The P&L math itself lives in
  * `lib/pnl.ts` as a pure function, called directly during render here.
  */
-
-function formatCurrency(value: number, exchange: Stock["exchange"]): string {
-  const isUS = exchange === "US";
-  return new Intl.NumberFormat(isUS ? "en-US" : "en-IN", {
-    style: "currency",
-    currency: isUS ? "USD" : "INR",
-    maximumFractionDigits: 2,
-  }).format(value);
-}
 
 function formatAsOf(iso: string | null): string {
   if (iso === null) {
@@ -87,7 +80,8 @@ export function StockCard({ stock }: { stock: StockWithHolding }) {
       </div>
 
       {holding !== null ? (
-        <div className="flex flex-col gap-1 text-sm">
+        <div className="flex flex-col gap-1.5 text-sm">
+          <PulseChip />
           <span className="text-on-surface/70">
             {holding.shares} sh @ {formatCurrency(holding.cost_basis, stock.exchange)}
           </span>

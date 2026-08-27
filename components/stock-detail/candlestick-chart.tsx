@@ -29,19 +29,17 @@ export type OhlcvBar = {
  * Reads a Neon Velocity design token's resolved value straight off
  * `:root` via `getComputedStyle`, rather than hardcoding a hex duplicate of
  * `styles/tokens.css` here — if a token's hex ever changes, this chart picks
- * it up automatically instead of silently drifting out of sync. Falls back
- * to the token file's current value only as a defensive default for the (in
- * practice unreachable, since this only ever runs client-side after mount)
- * case where the custom property isn't resolvable yet.
+ * it up automatically instead of silently drifting out of sync.
+ *
+ * No hardcoded hex fallback: `styles/tokens.css` must stay the single
+ * source of truth for every color in the app (Task 12's design-polish sweep
+ * grep for stray hex codes checks exactly this). This is safe because the
+ * only caller runs inside a `useEffect` (see below), which never executes
+ * during SSR — `document`/`getComputedStyle` are always available by the
+ * time this runs, so the token always resolves to a real value.
  */
-function readColorToken(name: string, fallback: string): string {
-  if (typeof window === "undefined") {
-    return fallback;
-  }
-  const value = getComputedStyle(document.documentElement)
-    .getPropertyValue(name)
-    .trim();
-  return value || fallback;
+function readColorToken(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 /** `#rrggbb` -> `rgba(r, g, b, alpha)`, for grid lines / tinted fills. */
@@ -89,11 +87,11 @@ export function CandlestickChart({ ohlcv }: { ohlcv: OhlcvBar[] }) {
       return;
     }
 
-    const surface = readColorToken("--color-surface", "#0a0e13");
-    const onSurface = readColorToken("--color-on-surface", "#f4f6fe");
-    const outlineVariant = readColorToken("--color-outline-variant", "#5c6b7e");
-    const primary = readColorToken("--color-primary", "#5bff49");
-    const error = readColorToken("--color-error", "#ff7351");
+    const surface = readColorToken("--color-surface");
+    const onSurface = readColorToken("--color-on-surface");
+    const outlineVariant = readColorToken("--color-outline-variant");
+    const primary = readColorToken("--color-primary");
+    const error = readColorToken("--color-error");
 
     const chart = createChart(container, {
       autoSize: true,
