@@ -72,11 +72,15 @@ export async function POST(request: NextRequest) {
 
   let stockId: string | null = null;
   if (resolved) {
-    const { data: existingStock } = await supabase
+    const { data: existingStock, error: stockLookupError } = await supabase
       .from("stocks")
       .select("id")
       .eq("yahoo_symbol", resolved.yahooSymbol)
       .maybeSingle();
+
+    if (stockLookupError) {
+      return NextResponse.json({ error: stockLookupError.message }, { status: 500 });
+    }
 
     if (existingStock) {
       stockId = existingStock.id;
@@ -139,6 +143,10 @@ export async function POST(request: NextRequest) {
   // US-10 duplicate-thesis warning — informational only, never blocks.
   let duplicateWarning: { existingThesisId: string; status: string; createdAt: string } | null = null;
   if (extractedTicker) {
+    // Error intentionally swallowed here: this lookup is purely informational
+    // (US-10), so a transient read failure should not block thesis creation —
+    // it just means the warning is silently skipped for this request. Do not
+    // "fix" this into an early return.
     const { data: existingTheses } = await supabase
       .from("theses")
       .select("id, status, created_at")
