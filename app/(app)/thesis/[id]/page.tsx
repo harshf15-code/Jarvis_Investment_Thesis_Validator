@@ -84,16 +84,27 @@ export default function ThesisReviewPage({ params }: { params: Promise<{ id: str
         setTradePlan(body.tradePlan);
         if (body.stock?.exchange) setExchange(body.stock.exchange);
         if (body.thesis.stock_id) {
-          const priceRes = await fetch("/api/prices/refresh", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stockIds: [body.thesis.stock_id] }),
-          });
-          const priceBody = await priceRes.json();
-          const quote = priceBody.prices?.[body.thesis.stock_id];
-          if (!cancelled && quote) {
-            setCmp(quote.price);
-            setPriceAsOf(quote.asOf);
+          // Isolated from the outer try/catch on purpose — a failed refresh
+          // is not fatal (matches `[id]/plan/page.tsx`'s `fetchQuote`
+          // comment: "the caller falls back to the stock's stored
+          // `last_price`"). It must never propagate into the outer `catch`
+          // and blow away the thesis/trade-plan data already set above.
+          try {
+            const priceRes = await fetch("/api/prices/refresh", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ stockIds: [body.thesis.stock_id] }),
+            });
+            if (priceRes.ok) {
+              const priceBody = await priceRes.json();
+              const quote = priceBody.prices?.[body.thesis.stock_id];
+              if (!cancelled && quote) {
+                setCmp(quote.price);
+                setPriceAsOf(quote.asOf);
+              }
+            }
+          } catch {
+            // Swallowed: CMP/LastUpdated just render their "unavailable" state.
           }
         }
         if (!cancelled) setLoading(false);
