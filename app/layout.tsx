@@ -1,32 +1,28 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans, Inter } from "next/font/google";
+import { DM_Mono, Syne } from "next/font/google";
 import "@/styles/tokens.css";
 import "./globals.css";
 
-const plusJakartaSans = Plus_Jakarta_Sans({
+const dmMono = DM_Mono({
   subsets: ["latin"],
-  variable: "--font-plus-jakarta-sans",
+  weight: ["300", "400", "500"],
+  variable: "--font-dm-mono",
 });
 
-const inter = Inter({
+const syne = Syne({
   subsets: ["latin"],
-  variable: "--font-inter",
+  variable: "--font-syne",
 });
 
 export const metadata: Metadata = {
-  title: "Jarvis Watchlist Tracker",
-  description: "Jarvis Watchlist Tracker",
+  title: "Jarvis Decision Cockpit",
+  description: "Jarvis Decision Cockpit",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html
-      lang="en"
-      className={`dark ${plusJakartaSans.variable} ${inter.variable}`}
-    >
-      {/* App is permanently dark-themed — body background is set explicitly
-          to the `surface` token, never left to default white. */}
-      <body className="bg-surface text-on-surface antialiased">
+    <html lang="en" className={`dark ${dmMono.variable} ${syne.variable}`}>
+      <body className="bg-surface text-on-surface font-sans antialiased">
         {children}
       </body>
     </html>
