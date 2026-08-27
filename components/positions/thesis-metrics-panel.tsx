@@ -25,7 +25,7 @@ export function ThesisMetricsPanel({
 
   async function handleBlur(index: number, value: string) {
     if (rows[index].currentValue === value) return;
-    const previous = rows;
+    const previousValue = rows[index].currentValue;
     const next = rows.map((r, i) => (i === index ? { ...r, currentValue: value } : r));
     setRows(next);
     setError(null);
@@ -41,7 +41,13 @@ export function ThesisMetricsPanel({
       // leaving an unsaved number sitting there looking saved.
       if (!res.ok) throw new Error("Failed to save thesis condition");
     } catch {
-      setRows(previous);
+      // Rolls back this row's field only, off the *current* state — never a
+      // whole-array snapshot taken when this blur started. With two saves in
+      // flight (tabbing quickly between rows), restoring the snapshot would
+      // wipe a sibling row's value that succeeded in the meantime back to its
+      // pre-edit display, re-creating the very "shown ≠ saved" bug this
+      // rollback exists to prevent.
+      setRows((cur) => cur.map((r, i) => (i === index ? { ...r, currentValue: previousValue } : r)));
       setRevisions((r) => ({ ...r, [index]: (r[index] ?? 0) + 1 }));
       setError("Couldn't save that value — reverted to the last saved one. Try again.");
     }
