@@ -111,3 +111,42 @@ export function buildJarvisThesisUserContext(input: BuildThesisContextInput): st
 
   return lines.join("\n");
 }
+
+/**
+ * Stress-test system prompt: spec Screen 2-3 Step 2, run only AFTER a
+ * thesis has been approved (Task 20). Produces 4 bear cases + counters —
+ * the model challenges its own prior thesis output, not the raw user input.
+ */
+export const JARVIS_STRESS_TEST_SYSTEM_PROMPT = `You are Jarvis. You will be given a structured thesis you previously produced.
+Your job now is to attack it: assume the market may already be correct and the thesis is wrong.
+
+Produce exactly 4 concrete bear cases — reasons this thesis could fail — each paired with a
+counter-argument for why the bear case doesn't hold (or, if it's a strong bear case, an honest
+counter that concedes it weakens conviction rather than a forced rebuttal).
+
+Output exactly one fenced code block using json as the fence's info string, containing ONE
+object and nothing else:
+
+{
+  "bear_cases": [
+    { "reason": string, "counter": string }
+  ]
+}
+
+Exactly 4 entries in "bear_cases". No narrative prose outside the JSON block for this prompt.`;
+
+export function buildStressTestUserContext(thesis: {
+  market_view: string | null;
+  mispricing: string | null;
+  catalyst: string | null;
+  invalidation_condition: string | null;
+}): string {
+  return [
+    `Market View: ${thesis.market_view}`,
+    `Mispricing: ${thesis.mispricing}`,
+    `Catalyst: ${thesis.catalyst}`,
+    `Invalidation: ${thesis.invalidation_condition}`,
+    "",
+    "Stress-test this thesis.",
+  ].join("\n");
+}

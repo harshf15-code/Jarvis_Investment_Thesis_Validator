@@ -137,3 +137,33 @@ export function parseThesisResponse(raw: string): ParsedThesisResponse {
     };
   }
 }
+
+export const BearCaseExtractSchema = z.object({
+  bear_cases: z
+    .array(z.object({ reason: z.string(), counter: z.string() }))
+    .length(4),
+});
+
+export type StressTestExtraction =
+  | { ok: true; data: { bear_cases: { reason: string; counter: string; modified: boolean }[] } }
+  | { ok: false; error: string };
+
+/** Same never-throws contract as `parseThesisResponse`. */
+export function parseStressTestResponse(raw: string): StressTestExtraction {
+  try {
+    const rawJson = extractTrailingJsonBlock(raw);
+    if (rawJson === null) {
+      return { ok: false, error: "No valid ```json code block found." };
+    }
+    const result = BearCaseExtractSchema.safeParse(rawJson);
+    if (!result.success) {
+      return { ok: false, error: `Schema validation failed: ${result.error.message}` };
+    }
+    return {
+      ok: true,
+      data: { bear_cases: result.data.bear_cases.map((bc) => ({ ...bc, modified: false })) },
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
