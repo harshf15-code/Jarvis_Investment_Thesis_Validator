@@ -13,12 +13,9 @@ export type DigestStockGroup = {
 };
 
 const TRIGGER_LABELS: Record<string, string> = {
-  entry_zone_reached: "ENTRY ZONE",
   stop_loss_breached: "STOP LOSS BREACHED",
   trim_target_reached: "TRIM TARGET",
-  earnings_approaching: "EARNINGS APPROACHING",
-  reassess_due: "REASSESS DUE",
-  data_stale: "DATA STALE",
+  time_exit_due: "TIME EXIT DUE",
 };
 
 function triggerLabel(triggerType: string): string {

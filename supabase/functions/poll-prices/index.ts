@@ -23,66 +23,6 @@ import { isMarketOpen } from "./market-hours.ts";
  */
 const yahooFinance = new YahooFinance();
 
-type Market = "NSE" | "US";
-type StockType = "watchlist" | "holding";
-type Exchange = "NSE" | "BSE" | "US";
-type TriggerType =
-  | "entry_zone_reached"
-  | "stop_loss_breached"
-  | "trim_target_reached"
-  | "earnings_approaching"
-  | "reassess_due";
-
-type StockRow = {
-  id: string;
-  ticker: string;
-  yahoo_symbol: string;
-  exchange: Exchange;
-  type: StockType;
-  status: string;
-  consecutive_failure_count: number;
-  stale_since: string | null;
-};
-
-type AlertCriteriaRow = {
-  id: string;
-  stock_id: string;
-  entry_low: number | null;
-  entry_high: number | null;
-  stop_loss: number | null;
-  trim_targets: { price: number; pct_of_position: number }[];
-  earnings_date: string | null;
-  reassessment_date: string | null;
-  time_exit_date: string | null;
-};
-
-type TriggerEvent =
-  | {
-      type: "entry_zone_reached";
-      details: { price: number; entry_low: number; entry_high: number };
-    }
-  | {
-      type: "stop_loss_breached";
-      details: { price: number; stop_loss: number };
-    }
-  | {
-      type: "trim_target_reached";
-      details: {
-        price: number;
-        tier_price: number;
-        pct_of_position: number;
-        tier_index: number;
-      };
-    }
-  | {
-      type: "earnings_approaching";
-      details: { earnings_date: string; days_out: number };
-    }
-  | {
-      type: "reassess_due";
-      details: { reassess_date: string };
-    };
-
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -148,93 +88,79 @@ async function getQuote(
   };
 }
 
-/**
- * Deno-local transcription of `lib/trigger-logic.ts`'s `evaluateTriggers`.
- * See that file for the full rationale/precedence writeup — this copy must
- * stay behaviorally identical; it exists here only because Deno can't
- * `import` from `/lib`.
- */
-function daysBetweenDateOnly(dateStr: string, now: Date): number {
-  const target = new Date(`${dateStr}T00:00:00Z`).getTime();
-  const nowUtcMidnight = Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-  );
-  const msPerDay = 24 * 60 * 60 * 1000;
-  return Math.round((target - nowUtcMidnight) / msPerDay);
-}
+type Market = "NSE" | "US";
+type Exchange = "NSE" | "BSE" | "US";
+type PositionAlertType =
+  | "stop_loss_breached"
+  | "trim_target_reached"
+  | "time_exit_due";
 
-function evaluateTriggers(
-  stock: { type: StockType },
-  alertCriteria: AlertCriteriaRow,
+type StockRow = { id: string; yahoo_symbol: string; exchange: Exchange };
+
+type PositionRow = {
+  id: string;
+  ticker: string;
+  stock_id: string;
+  trade_plan_id: string;
+};
+
+type TradePlanRow = {
+  id: string;
+  stop_loss: number | null;
+  target_1: number | null;
+  target_2: number | null;
+  time_exit_date: string | null;
+};
+
+type PositionAlertEvent =
+  | { type: "stop_loss_breached"; details: { price: number; stop_loss: number } }
+  | {
+      type: "trim_target_reached";
+      details: { price: number; tier: "target_1" | "target_2"; tier_price: number };
+    }
+  | { type: "time_exit_due"; details: { time_exit_date: string } };
+
+/**
+ * Deno-local transcription of the v1 trigger-evaluation shape, retargeted at
+ * `trade_plans`. A position is, by definition, already entered — so unlike
+ * v1's `alert_criteria` (which watched both not-yet-bought watchlist stocks
+ * AND holdings), this only ever evaluates exit-side conditions: stop,
+ * either fixed target tier, and the time-exit date. Entry-zone/recommendation
+ * status (Jarvis Recommendation Tracker, spec US-22) is computed client-side
+ * on page load, not here — see plan Task 16.
+ */
+function evaluatePositionTriggers(
+  tradePlan: TradePlanRow,
   price: number,
   now: Date,
-): TriggerEvent[] {
-  const events: TriggerEvent[] = [];
+): PositionAlertEvent[] {
+  const events: PositionAlertEvent[] = [];
 
-  if (
-    stock.type === "watchlist" &&
-    alertCriteria.entry_low !== null &&
-    alertCriteria.entry_high !== null &&
-    price >= alertCriteria.entry_low &&
-    price <= alertCriteria.entry_high
-  ) {
-    events.push({
-      type: "entry_zone_reached",
-      details: {
-        price,
-        entry_low: alertCriteria.entry_low,
-        entry_high: alertCriteria.entry_high,
-      },
-    });
-  }
-
-  if (
-    stock.type === "holding" &&
-    alertCriteria.stop_loss !== null &&
-    price <= alertCriteria.stop_loss
-  ) {
+  if (tradePlan.stop_loss !== null && price <= tradePlan.stop_loss) {
     events.push({
       type: "stop_loss_breached",
-      details: { price, stop_loss: alertCriteria.stop_loss },
+      details: { price, stop_loss: tradePlan.stop_loss },
     });
   }
-
-  if (stock.type === "holding") {
-    for (const [tierIndex, tier] of alertCriteria.trim_targets.entries()) {
-      if (price >= tier.price) {
-        events.push({
-          type: "trim_target_reached",
-          details: {
-            price,
-            tier_price: tier.price,
-            pct_of_position: tier.pct_of_position,
-            tier_index: tierIndex,
-          },
-        });
-      }
-    }
+  if (tradePlan.target_1 !== null && price >= tradePlan.target_1) {
+    events.push({
+      type: "trim_target_reached",
+      details: { price, tier: "target_1", tier_price: tradePlan.target_1 },
+    });
   }
-
-  if (alertCriteria.earnings_date !== null) {
-    const daysOut = daysBetweenDateOnly(alertCriteria.earnings_date, now);
-    if (daysOut >= 0 && daysOut <= 3) {
-      events.push({
-        type: "earnings_approaching",
-        details: { earnings_date: alertCriteria.earnings_date, days_out: daysOut },
-      });
-    }
+  if (tradePlan.target_2 !== null && price >= tradePlan.target_2) {
+    events.push({
+      type: "trim_target_reached",
+      details: { price, tier: "target_2", tier_price: tradePlan.target_2 },
+    });
   }
-
-  const reassessDate =
-    alertCriteria.reassessment_date ?? alertCriteria.time_exit_date;
-  if (reassessDate !== null) {
-    const daysOut = daysBetweenDateOnly(reassessDate, now);
-    if (daysOut <= 0) {
+  if (tradePlan.time_exit_date !== null) {
+    const target = new Date(`${tradePlan.time_exit_date}T00:00:00Z`).getTime();
+    const nowUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    if (nowUtcMidnight >= target) {
       events.push({
-        type: "reassess_due",
-        details: { reassess_date: reassessDate },
+        type: "time_exit_due",
+        details: { time_exit_date: tradePlan.time_exit_date },
       });
     }
   }
@@ -242,33 +168,8 @@ function evaluateTriggers(
   return events;
 }
 
-/**
- * Deno-local transcription of `lib/trigger-logic.ts`'s `deriveStatus`.
- * Precedence: Stop Hit > Trim Hit > Reassess Due > In Entry Zone >
- * (Holding | Watching). See `lib/trigger-logic.ts` for the full rationale.
- */
-function deriveStatus(
-  stockType: StockType,
-  firedTriggerTypes: TriggerType[],
-): string {
-  const has = (t: TriggerType) => firedTriggerTypes.includes(t);
-
-  if (has("stop_loss_breached")) return "Stop Hit";
-  if (has("trim_target_reached")) return "Trim Hit";
-  if (has("reassess_due")) return "Reassess Due";
-  if (has("entry_zone_reached")) return "In Entry Zone";
-  return stockType === "holding" ? "Holding" : "Watching";
-}
-
-/**
- * Deno-local transcription of `lib/trigger-logic.ts`'s
- * `isWithinDedupWindow`. 20-hour window per task-11-brief.md.
- */
-function isWithinDedupWindow(
-  lastTriggeredAt: string,
-  now: Date,
-  windowHours = 20,
-): boolean {
+/** Same 20-hour dedup window as v1 (`lib/trigger-logic.ts#isWithinDedupWindow`). */
+function isWithinDedupWindow(lastTriggeredAt: string, now: Date, windowHours = 20): boolean {
   const diffMs = now.getTime() - new Date(lastTriggeredAt).getTime();
   return diffMs < windowHours * 60 * 60 * 1000;
 }
@@ -276,190 +177,40 @@ function isWithinDedupWindow(
 // deno-lint-ignore no-explicit-any
 type SupabaseClientAny = any;
 
-/**
- * Inserts one `alert_log` row per fired event, skipping any
- * `(stock_id, trigger_type)` pair that already has a row triggered within
- * the last 20 hours (the dedup guard — see
- * `lib/trigger-logic.ts#isWithinDedupWindow`). Returns the trigger types
- * that were actually logged (not deduped); callers should still pass
- * `events` (not this return value) into `deriveStatus`, since status should
- * reflect the currently-true condition regardless of whether it was
- * re-logged this cycle.
- *
- * Typed against a minimal structural shape (`{ type, details }`) rather
- * than `TriggerEvent` specifically, so `recordFetchFailure`'s `data_stale`
- * event — which never comes out of `evaluateTriggers` and so isn't a member
- * of the `TriggerEvent` union — can share this same dedup-checked insert
- * path instead of duplicating it.
- */
-async function logAlerts(
+/** Inserts one `position_alerts` row per event not already logged within the dedup window. */
+async function logPositionAlerts(
   supabase: SupabaseClientAny,
-  stockId: string,
-  events: { type: string; details: unknown }[],
+  positionId: string,
+  events: PositionAlertEvent[],
   now: Date,
 ): Promise<void> {
   for (const event of events) {
     const { data: existing, error: existingError } = await supabase
-      .from("alert_log")
+      .from("position_alerts")
       .select("triggered_at")
-      .eq("stock_id", stockId)
-      .eq("trigger_type", event.type)
+      .eq("position_id", positionId)
+      .eq("alert_type", event.type)
       .order("triggered_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
     if (existingError) {
-      console.error(
-        `poll-prices: failed to check dedup window for stock ${stockId} / ${event.type}`,
-        existingError,
-      );
+      console.error(`poll-prices: dedup check failed for position ${positionId}/${event.type}`, existingError);
       continue;
     }
-
     if (existing && isWithinDedupWindow(existing.triggered_at, now)) {
       continue;
     }
 
-    const { error: insertError } = await supabase.from("alert_log").insert({
-      stock_id: stockId,
-      trigger_type: event.type,
+    const { error: insertError } = await supabase.from("position_alerts").insert({
+      position_id: positionId,
+      alert_type: event.type,
       triggered_at: now.toISOString(),
       details: event.details,
     });
-
     if (insertError) {
-      console.error(
-        `poll-prices: failed to insert alert_log row for stock ${stockId} / ${event.type}`,
-        insertError,
-      );
+      console.error(`poll-prices: insert failed for position ${positionId}/${event.type}`, insertError);
     }
-  }
-}
-
-/**
- * Records one failed quote fetch: increments `consecutive_failure_count`,
- * and sets `stale_since` the moment the count first crosses the 3-failure
- * threshold (never overwrites an already-set `stale_since` — that's still
- * the start of the same stale episode).
- *
- * Also fires a `data_stale` `alert_log` row, but ONLY on the cycle that
- * actually crosses the threshold (`crossingStaleThreshold`) — not on every
- * subsequent failed poll while the stock stays stale. This is deliberately
- * gated in addition to (not instead of) `logAlerts`'s own 20-hour dedup
- * guard: gating here means a stock that's already stale doesn't even issue
- * the dedup-check query on every 15-30 minute cycle, while the dedup guard
- * remains the actual correctness backstop (e.g. if `stale_since` were ever
- * cleared and re-crossed within the same 20-hour window).
- */
-async function recordFetchFailure(
-  supabase: SupabaseClientAny,
-  stock: StockRow,
-  now: Date,
-  err: unknown,
-): Promise<void> {
-  const newFailureCount = stock.consecutive_failure_count + 1;
-  const update: Record<string, unknown> = {
-    consecutive_failure_count: newFailureCount,
-  };
-  const crossingStaleThreshold = newFailureCount >= 3 && !stock.stale_since;
-  if (crossingStaleThreshold) {
-    update.stale_since = now.toISOString();
-  }
-
-  const { error } = await supabase
-    .from("stocks")
-    .update(update)
-    .eq("id", stock.id);
-
-  if (error) {
-    console.error(
-      `poll-prices: failed to record fetch failure for stock ${stock.id}`,
-      error,
-    );
-  }
-
-  if (crossingStaleThreshold) {
-    await logAlerts(
-      supabase,
-      stock.id,
-      [
-        {
-          type: "data_stale",
-          details: {
-            consecutive_failure_count: newFailureCount,
-            last_error: err instanceof Error ? err.message : String(err),
-          },
-        },
-      ],
-      now,
-    );
-  }
-}
-
-/**
- * Fetches the live quote and refreshes `stocks.last_price`/`last_price_at`/
- * `consecutive_failure_count`/`stale_since` for ONE active stock,
- * regardless of whether it has an active `alert_criteria` row — a
- * freshly-added stock that hasn't been through a Jarvis run yet must not
- * show a frozen add-time price forever just because there's nothing yet to
- * evaluate triggers against.
- *
- * `alertCriteria` is optional: only when it's present does this also
- * evaluate triggers, log any fired `alert_log` rows, and derive/update
- * `status` — with no active criteria there is nothing to compare the price
- * against, so that whole block is skipped and `status` is left untouched.
- */
-async function processStock(
-  supabase: SupabaseClientAny,
-  stock: StockRow,
-  alertCriteria: AlertCriteriaRow | undefined,
-  now: Date,
-): Promise<void> {
-  let quote: { price: number; asOf: Date };
-  try {
-    quote = await getQuote(stock.yahoo_symbol);
-  } catch (err) {
-    console.error(
-      `poll-prices: quote fetch failed for ${stock.ticker} (${stock.yahoo_symbol}) after retries`,
-      err,
-    );
-    await recordFetchFailure(supabase, stock, now, err);
-    return;
-  }
-
-  const update: Record<string, unknown> = {
-    last_price: quote.price,
-    last_price_at: quote.asOf.toISOString(),
-    consecutive_failure_count: 0,
-    stale_since: null,
-  };
-
-  if (alertCriteria) {
-    const events = evaluateTriggers(
-      { type: stock.type },
-      alertCriteria,
-      quote.price,
-      now,
-    );
-
-    await logAlerts(supabase, stock.id, events, now);
-
-    update.status = deriveStatus(
-      stock.type,
-      events.map((e) => e.type) as TriggerType[],
-    );
-  }
-
-  const { error: updateError } = await supabase
-    .from("stocks")
-    .update(update)
-    .eq("id", stock.id);
-
-  if (updateError) {
-    console.error(
-      `poll-prices: failed to update stock row for ${stock.ticker}`,
-      updateError,
-    );
   }
 }
 
@@ -468,10 +219,7 @@ Deno.serve(async (req: Request) => {
   const marketParam = url.searchParams.get("market");
 
   if (marketParam !== "NSE" && marketParam !== "US") {
-    return jsonResponse(
-      { error: 'market query param must be "NSE" or "US"' },
-      400,
-    );
+    return jsonResponse({ error: 'market query param must be "NSE" or "US"' }, 400);
   }
   const market: Market = marketParam;
 
@@ -482,66 +230,72 @@ Deno.serve(async (req: Request) => {
   const supabase = createAdminClient();
   const exchanges: Exchange[] = market === "NSE" ? ["NSE", "BSE"] : ["US"];
 
-  const { data: stocks, error: stocksError } = await supabase
-    .from("stocks")
-    .select(
-      "id, ticker, yahoo_symbol, exchange, type, status, consecutive_failure_count, stale_since",
-    )
-    .is("deleted_at", null)
-    .in("exchange", exchanges);
+  const { data: activePositions, error: positionsError } = await supabase
+    .from("positions")
+    .select("id, ticker, stock_id, trade_plan_id")
+    .eq("status", "active");
 
-  if (stocksError) {
-    return jsonResponse({ error: stocksError.message }, 500);
+  if (positionsError) {
+    return jsonResponse({ error: positionsError.message }, 500);
   }
-
-  const stockRows = (stocks ?? []) as StockRow[];
-  if (stockRows.length === 0) {
+  const positionRows = (activePositions ?? []) as PositionRow[];
+  if (positionRows.length === 0) {
     return jsonResponse({ processed: 0 }, 200);
   }
 
-  const stockIds = stockRows.map((s) => s.id);
+  const stockIds = [...new Set(positionRows.map((p) => p.stock_id))];
+  const { data: stocks, error: stocksError } = await supabase
+    .from("stocks")
+    .select("id, yahoo_symbol, exchange")
+    .in("id", stockIds);
+  if (stocksError) {
+    return jsonResponse({ error: stocksError.message }, 500);
+  }
+  const stockById = new Map<string, StockRow>((stocks ?? []).map((s: StockRow) => [s.id, s]));
 
-  const { data: activeCriteria, error: criteriaError } = await supabase
-    .from("alert_criteria")
-    .select(
-      "id, stock_id, entry_low, entry_high, stop_loss, trim_targets, earnings_date, reassessment_date, time_exit_date",
-    )
-    .in("stock_id", stockIds)
-    .eq("is_active", true);
-
-  if (criteriaError) {
-    return jsonResponse({ error: criteriaError.message }, 500);
+  // Only process positions whose stock trades on the exchange(s) this
+  // invocation's `market` param covers — same split as v1's NSE+BSE-vs-US
+  // pg_cron windows.
+  const relevantPositions = positionRows.filter((p) => {
+    const stock = stockById.get(p.stock_id);
+    return stock !== undefined && exchanges.includes(stock.exchange);
+  });
+  if (relevantPositions.length === 0) {
+    return jsonResponse({ processed: 0 }, 200);
   }
 
-  const criteriaByStockId = new Map<string, AlertCriteriaRow>(
-    ((activeCriteria ?? []) as AlertCriteriaRow[]).map((c) => [
-      c.stock_id,
-      c,
-    ]),
-  );
+  const tradePlanIds = [...new Set(relevantPositions.map((p) => p.trade_plan_id))];
+  const { data: tradePlans, error: tradePlansError } = await supabase
+    .from("trade_plans")
+    .select("id, stop_loss, target_1, target_2, time_exit_date")
+    .in("id", tradePlanIds);
+  if (tradePlansError) {
+    return jsonResponse({ error: tradePlansError.message }, 500);
+  }
+  const tradePlanById = new Map<string, TradePlanRow>((tradePlans ?? []).map((t: TradePlanRow) => [t.id, t]));
 
   const now = new Date();
   let processed = 0;
 
-  for (const stock of stockRows) {
-    // No active alert_criteria row is NOT a reason to skip this stock
-    // entirely (a freshly-added stock may not have run through Jarvis yet)
-    // — `processStock` always refreshes the price/timestamp, and only
-    // skips trigger-evaluation/alert_log/status-derivation when
-    // `alertCriteria` is `undefined`.
-    const alertCriteria = criteriaByStockId.get(stock.id);
+  for (const position of relevantPositions) {
+    const stock = stockById.get(position.stock_id)!;
+    const tradePlan = tradePlanById.get(position.trade_plan_id);
+    if (!tradePlan) continue;
 
     try {
-      await processStock(supabase, stock, alertCriteria, now);
+      const quote = await getQuote(stock.yahoo_symbol);
+      await supabase
+        .from("stocks")
+        .update({ last_price: quote.price, last_price_at: quote.asOf.toISOString() })
+        .eq("id", stock.id);
+
+      const events = evaluatePositionTriggers(tradePlan, quote.price, now);
+      await logPositionAlerts(supabase, position.id, events, now);
       processed++;
     } catch (err) {
-      // Isolation guarantee: one stock's unexpected failure (a DB error
-      // outside the quote-fetch path, a bug, etc.) must never abort the
-      // rest of the batch.
-      console.error(
-        `poll-prices: unexpected error processing stock ${stock.ticker} (${stock.id})`,
-        err,
-      );
+      // Isolation guarantee, same as v1: one position's failure must never
+      // abort the rest of the batch.
+      console.error(`poll-prices: failed to process position ${position.ticker} (${position.id})`, err);
     }
   }
 
