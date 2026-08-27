@@ -95,13 +95,19 @@ export async function GET() {
     percent: totalCostBasis > 0 ? (totalAbsolute / totalCostBasis) * 100 : 0,
   };
 
+  // De-duplicated: two open positions can sit on the same ticker (separate
+  // theses), and the rail should show one chip per ticker, not one per row.
   const today = new Date().toISOString().slice(0, 10);
-  const overdueTickers = positionRows
-    .filter((p) => {
-      const tradePlan = tradePlanById.get(p.trade_plan_id);
-      return tradePlan?.time_exit_date != null && tradePlan.time_exit_date < today;
-    })
-    .map((p) => p.ticker);
+  const overdueTickers = [
+    ...new Set(
+      positionRows
+        .filter((p) => {
+          const tradePlan = tradePlanById.get(p.trade_plan_id);
+          return tradePlan?.time_exit_date != null && tradePlan.time_exit_date < today;
+        })
+        .map((p) => p.ticker),
+    ),
+  ];
 
   const recStockIds = [...new Set((recs ?? []).map((r) => r.stock_id))];
   const { data: recStocks } = recStockIds.length

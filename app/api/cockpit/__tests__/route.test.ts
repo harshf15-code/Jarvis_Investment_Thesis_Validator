@@ -126,6 +126,25 @@ describe("GET /api/cockpit", () => {
     expect(body.positions).toHaveLength(2);
   });
 
+  it("lists an overdue ticker once even when two positions share it", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(
+      buildMock({
+        positions: [POSITION, { ...POSITION, id: "p2" }],
+        entries: [],
+        exits: [],
+        stocks: [{ id: "s1", last_price: 120, exchange: "US" }],
+        trade_plans: [{ id: "tp1", stop_loss: 90, target_1: null, target_2: null, time_exit_date: OVERDUE }],
+        theses: [{ id: "t1", conviction_tier: "I" }],
+        jarvis_recommendations: [],
+      }) as never,
+    );
+
+    const res = await GET();
+    const body = await res.json();
+
+    expect(body.overdueTickers).toEqual(["AAPL"]);
+  });
+
   it("joins each recommendation to its stock and asks for them newest-first", async () => {
     const mock = buildMock({
       positions: [],
