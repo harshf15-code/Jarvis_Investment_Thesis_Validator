@@ -1,49 +1,23 @@
-/**
- * Canonical TypeScript types mirroring `supabase/migrations/0001_init.sql` and
- * `0002_indexes.sql` exactly. This is the single source of truth for
- * stock/holding/analysis/alert shapes — every later task (API routes, the
- * Jarvis LLM integration, the dashboard, the Edge Functions' Deno-side
- * reimplementation) should import from here rather than redefining these
- * shapes locally.
- *
- * Column -> field mapping notes:
- * - `uuid` / `timestamptz` / `date` columns are typed as `string` (ISO 8601),
- *   matching what `@supabase/supabase-js` returns over PostgREST.
- * - `numeric(p,s)` columns are typed as `number`. PostgREST serializes
- *   `numeric` as a bare JSON number (not a string), so this matches the
- *   runtime shape; be aware this can lose precision for values outside
- *   JS's safe double range, which is not a concern for this app's data.
- * - `bigint generated always as identity` primary keys (`price_cache.id`,
- *   `fundamentals.id`) are typed as `number` and deliberately excluded from
- *   the corresponding `*Insert` types below, since Postgres rejects a
- *   client-supplied value for a `GENERATED ALWAYS` identity column without
- *   `OVERRIDING SYSTEM VALUE`.
- * - `jsonb` columns are typed as `Json`. The application-level shapes stored
- *   inside `thesis_json`, `stress_test_json`, `trade_plan_json`, `exit_json`,
- *   `input_context_json`, `trim_targets`, and `alert_log.details` belong to
- *   the tasks that produce/consume them (the Jarvis LLM integration, the
- *   alert engine); this file only fixes the DB-level `jsonb` contract.
- */
-
-// ---------------------------------------------------------------------------
-// Enums (Postgres `create type ... as enum`)
-// ---------------------------------------------------------------------------
-
-export type StockType = "watchlist" | "holding";
+// lib/types.ts
+// Canonical TypeScript types mirroring supabase/migrations/0006_thesis_cockpit_schema.sql
+// and 0007_thesis_cockpit_indexes.sql exactly. See that file's header comment
+// (preserved from v1) for the `type` vs `interface` rule and the numeric/jsonb
+// mapping notes — both still apply unchanged.
 
 export type ExchangeCode = "NSE" | "BSE" | "US";
-
-export type TriggerType =
+export type ConvictionTier = "I" | "II" | "III" | "IV";
+export type ThesisMode = "stock_only" | "thesis_only" | "stock_plus_thesis";
+export type ThesisStatus = "draft" | "active" | "closed" | "macro";
+export type PositionStatus = "active" | "partial_exit" | "closed";
+export type EntryTranche = "T1" | "T2" | "add";
+export type ExitType = "trim_t1" | "trim_t2" | "stop_hit" | "time_exit" | "manual";
+export type RecommendationStatus = "open" | "t1_hit" | "t2_hit" | "stop_hit" | "time_expired";
+export type ThesisOutcome = "confirmed" | "partially_confirmed" | "invalidated";
+export type PositionAlertType =
   | "entry_zone_reached"
   | "stop_loss_breached"
   | "trim_target_reached"
-  | "earnings_approaching"
-  | "reassess_due"
-  | "data_stale";
-
-// ---------------------------------------------------------------------------
-// JSON value type (for `jsonb` columns)
-// ---------------------------------------------------------------------------
+  | "time_exit_due";
 
 export type Json =
   | string
@@ -53,285 +27,398 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
-// ---------------------------------------------------------------------------
-// Row types (one per table, in `0001_init.sql` order)
-// ---------------------------------------------------------------------------
-
-// Note: these row types deliberately use `type X = {...}` rather than
-// `interface X {...}`. `@supabase/supabase-js`'s `SupabaseClient<Database>`
-// generic requires each table's `Row`/`Insert`/`Update` to satisfy
-// postgrest-js's `GenericTable` (`Row: Record<string, unknown>`, etc.), and
-// TypeScript only treats a plain object type — not a declared `interface`
-// (which never gets an implicit index signature) — as assignable to an
-// index-signature type like `Record<string, unknown>`. Using `interface`
-// here compiles fine on its own but silently breaks every `.insert()`/
-// `.update()`/`.select()` call's type inference against `Database` (they
-// collapse to `never` instead of erroring loudly), which is exactly the
-// generated-types shape `supabase gen types typescript` itself produces
-// (always `type`, never `interface`) — so this matches that convention
-// rather than deviating from it.
-
-/** `stocks` */
+/** `stocks` (trimmed ticker/exchange/price registry — see plan Decisions #2) */
 export type Stock = {
   id: string;
   ticker: string;
   yahoo_symbol: string;
   exchange: ExchangeCode;
-  type: StockType;
-  status: string;
-  consecutive_failure_count: number;
-  stale_since: string | null;
   last_price: number | null;
   last_price_at: string | null;
   created_at: string;
-  deleted_at: string | null;
 };
 
-/** `holdings` (one-to-one with `stocks` via `stock_id`) */
-export type Holding = {
-  stock_id: string;
-  shares: number;
-  cost_basis: number;
-  date_acquired: string;
-  updated_at: string;
+/** One bear case + counter-argument inside `theses.bear_cases`. */
+export type BearCase = {
+  reason: string;
+  counter: string;
+  modified: boolean;
 };
 
-/** `jarvis_analyses` */
-export type JarvisAnalysis = {
+/** `theses` */
+export type Thesis = {
   id: string;
-  stock_id: string;
-  version: number;
-  is_latest: boolean;
-  extraction_ok: boolean;
-  thesis_json: Json;
-  stress_test_json: Json;
-  trade_plan_json: Json;
-  exit_json: Json;
-  raw_llm_response: string;
-  model_id: string;
-  input_context_json: Json;
   created_at: string;
+  input_text: string;
+  mode: ThesisMode;
+  stock_id: string | null;
+  ticker: string | null;
+  market_view: string | null;
+  mispricing: string | null;
+  catalyst: string | null;
+  time_horizon: string | null;
+  invalidation_condition: string | null;
+  conviction_tier: ConvictionTier | null;
+  conviction_score: number | null;
+  status: ThesisStatus;
+  bear_cases: BearCase[];
+  raw_llm_response: string | null;
 };
 
-/** `alert_criteria` */
-export type AlertCriteria = {
+/** `trade_plans` */
+export type TradePlan = {
   id: string;
-  stock_id: string;
-  jarvis_analysis_id: string;
-  is_active: boolean;
-  entry_low: number | null;
-  entry_high: number | null;
+  thesis_id: string;
+  entry_zone_low: number | null;
+  entry_zone_high: number | null;
+  add_tranche_low: number | null;
+  add_tranche_high: number | null;
   stop_loss: number | null;
-  trim_targets: Json;
+  target_1: number | null;
+  target_2: number | null;
+  position_size_pct: number | null;
+  max_portfolio_pct: number | null;
   time_exit_date: string | null;
-  reassessment_date: string | null;
-  earnings_date: string | null;
-  invalidation_text: string | null;
+  time_exit_condition: string | null;
+  edited_fields: string[];
+  ai_suggested: Json;
   created_at: string;
-};
-
-/** `price_cache` */
-export type PriceCacheRow = {
-  id: number;
-  stock_id: string;
-  ts: string;
-  open: number | null;
-  high: number | null;
-  low: number | null;
-  close: number | null;
-  volume: number | null;
-  interval: string;
-  created_at: string;
-};
-
-/** `fundamentals` */
-export type FundamentalRow = {
-  id: number;
-  stock_id: string;
-  metric_key: string;
-  metric_value: string;
-  source: string;
   updated_at: string;
 };
 
-/** `alert_log` */
-export type AlertLog = {
+/** `positions` */
+export type Position = {
   id: string;
+  thesis_id: string;
+  trade_plan_id: string;
   stock_id: string;
-  trigger_type: TriggerType;
+  ticker: string;
+  status: PositionStatus;
+  created_at: string;
+};
+
+/** `entries` */
+export type Entry = {
+  id: string;
+  position_id: string;
+  date: string;
+  quantity: number;
+  price: number;
+  tranche: EntryTranche;
+  notes: string | null;
+  created_at: string;
+};
+
+/** `exits` */
+export type Exit = {
+  id: string;
+  position_id: string;
+  date: string;
+  quantity: number;
+  price: number;
+  type: ExitType;
+  reason: string | null;
+  override: boolean;
+  override_reason: string | null;
+  created_at: string;
+};
+
+/** `jarvis_recommendations` */
+export type JarvisRecommendation = {
+  id: string;
+  thesis_id: string;
+  trade_plan_id: string | null;
+  stock_id: string;
+  ticker: string;
+  recommended_at: string;
+  recommended_entry_low: number | null;
+  recommended_entry_high: number | null;
+  recommended_stop: number | null;
+  recommended_target_1: number | null;
+  recommended_target_2: number | null;
+  conviction_tier: ConvictionTier;
+  price_at_recommendation: number;
+  status: RecommendationStatus;
+  converted_to_position: boolean;
+  position_id: string | null;
+  thesis_summary: string;
+};
+
+/** `trade_journal_entries` */
+export type TradeJournalEntry = {
+  id: string;
+  position_id: string;
+  ticker: string;
+  entry_dates: string[];
+  exit_dates: string[];
+  pnl_rupees: number;
+  pnl_pct: number | null;
+  thesis_outcome: ThesisOutcome;
+  conviction_tier_used: ConvictionTier;
+  entry_quality: number;
+  sizing_quality: number;
+  stop_management: number;
+  exit_quality: number;
+  discipline_score: number;
+  what_went_right: string | null;
+  what_went_wrong: string | null;
+  lessons: string | null;
+  jarvis_verdict: string | null;
+  tags: string[];
+  created_at: string;
+};
+
+/** `position_alerts` (v2 replacement for the old `alert_log`) */
+export type PositionAlert = {
+  id: string;
+  position_id: string;
+  alert_type: PositionAlertType;
   triggered_at: string;
   details: Json;
   emailed_at: string | null;
 };
 
-// ---------------------------------------------------------------------------
-// Insert types: Row shape narrowed to what's required on `insert()`, i.e.
-// columns with a SQL `default` or that are nullable become optional.
-// ---------------------------------------------------------------------------
+/** `intelligence_signals` */
+export type IntelligenceSignal = {
+  id: string;
+  created_at: string;
+  priority: "red" | "amber" | "blue" | "grey";
+  ticker: string | null;
+  theme: string | null;
+  headline: string;
+  thesis_id: string | null;
+  archived_at: string | null;
+};
+
+/** `opportunities` */
+export type Opportunity = {
+  id: string;
+  created_at: string;
+  ticker: string;
+  sector: string | null;
+  conviction_tier: ConvictionTier | null;
+  thesis_summary: string | null;
+  pe: number | null;
+  sector_median_pe: number | null;
+  fifty_two_week_low: number | null;
+  fifty_two_week_high: number | null;
+  market: ExchangeCode;
+  watching_only: boolean;
+};
+
+// --- Insert types (columns with a SQL default or that are nullable become optional) ---
 
 export type StockInsert = Pick<Stock, "ticker" | "yahoo_symbol" | "exchange"> &
+  Partial<Pick<Stock, "id" | "last_price" | "last_price_at" | "created_at">>;
+
+export type ThesisInsert = Pick<Thesis, "input_text" | "mode"> &
   Partial<
     Pick<
-      Stock,
+      Thesis,
       | "id"
-      | "type"
+      | "created_at"
+      | "stock_id"
+      | "ticker"
+      | "market_view"
+      | "mispricing"
+      | "catalyst"
+      | "time_horizon"
+      | "invalidation_condition"
+      | "conviction_tier"
+      | "conviction_score"
       | "status"
-      | "consecutive_failure_count"
-      | "stale_since"
-      | "last_price"
-      | "last_price_at"
-      | "created_at"
-      | "deleted_at"
+      | "bear_cases"
+      | "raw_llm_response"
     >
   >;
 
-export type HoldingInsert = Pick<
-  Holding,
-  "stock_id" | "shares" | "cost_basis" | "date_acquired"
-> &
-  Partial<Pick<Holding, "updated_at">>;
-
-export type JarvisAnalysisInsert = Pick<
-  JarvisAnalysis,
-  | "stock_id"
-  | "version"
-  | "thesis_json"
-  | "stress_test_json"
-  | "trade_plan_json"
-  | "exit_json"
-  | "raw_llm_response"
-  | "model_id"
-  | "input_context_json"
-> &
-  Partial<
-    Pick<JarvisAnalysis, "id" | "is_latest" | "extraction_ok" | "created_at">
-  >;
-
-export type AlertCriteriaInsert = Pick<
-  AlertCriteria,
-  "stock_id" | "jarvis_analysis_id"
-> &
+export type TradePlanInsert = Pick<TradePlan, "thesis_id"> &
   Partial<
     Pick<
-      AlertCriteria,
+      TradePlan,
       | "id"
-      | "is_active"
-      | "entry_low"
-      | "entry_high"
+      | "entry_zone_low"
+      | "entry_zone_high"
+      | "add_tranche_low"
+      | "add_tranche_high"
       | "stop_loss"
-      | "trim_targets"
+      | "target_1"
+      | "target_2"
+      | "position_size_pct"
+      | "max_portfolio_pct"
       | "time_exit_date"
-      | "reassessment_date"
-      | "earnings_date"
-      | "invalidation_text"
+      | "time_exit_condition"
+      | "edited_fields"
+      | "ai_suggested"
+      | "created_at"
+      | "updated_at"
+    >
+  >;
+
+export type PositionInsert = Pick<
+  Position,
+  "thesis_id" | "trade_plan_id" | "stock_id" | "ticker"
+> &
+  Partial<Pick<Position, "id" | "status" | "created_at">>;
+
+export type EntryInsert = Pick<
+  Entry,
+  "position_id" | "date" | "quantity" | "price" | "tranche"
+> &
+  Partial<Pick<Entry, "id" | "notes" | "created_at">>;
+
+export type ExitInsert = Pick<
+  Exit,
+  "position_id" | "date" | "quantity" | "price" | "type"
+> &
+  Partial<
+    Pick<Exit, "id" | "reason" | "override" | "override_reason" | "created_at">
+  >;
+
+export type JarvisRecommendationInsert = Pick<
+  JarvisRecommendation,
+  "thesis_id" | "stock_id" | "ticker" | "conviction_tier" | "price_at_recommendation" | "thesis_summary"
+> &
+  Partial<
+    Pick<
+      JarvisRecommendation,
+      | "id"
+      | "trade_plan_id"
+      | "recommended_at"
+      | "recommended_entry_low"
+      | "recommended_entry_high"
+      | "recommended_stop"
+      | "recommended_target_1"
+      | "recommended_target_2"
+      | "status"
+      | "converted_to_position"
+      | "position_id"
+    >
+  >;
+
+export type TradeJournalEntryInsert = Pick<
+  TradeJournalEntry,
+  | "position_id"
+  | "ticker"
+  | "pnl_rupees"
+  | "thesis_outcome"
+  | "conviction_tier_used"
+  | "entry_quality"
+  | "sizing_quality"
+  | "stop_management"
+  | "exit_quality"
+  | "discipline_score"
+> &
+  Partial<
+    Pick<
+      TradeJournalEntry,
+      | "id"
+      | "entry_dates"
+      | "exit_dates"
+      | "pnl_pct"
+      | "what_went_right"
+      | "what_went_wrong"
+      | "lessons"
+      | "jarvis_verdict"
+      | "tags"
       | "created_at"
     >
   >;
 
-/** `id` is excluded: `price_cache.id` is `generated always as identity`. */
-export type PriceCacheInsert = Pick<PriceCacheRow, "stock_id" | "ts"> &
+export type PositionAlertInsert = Pick<
+  PositionAlert,
+  "position_id" | "alert_type" | "details"
+> &
+  Partial<Pick<PositionAlert, "id" | "triggered_at" | "emailed_at">>;
+
+export type IntelligenceSignalInsert = Pick<IntelligenceSignal, "priority" | "headline"> &
+  Partial<
+    Pick<IntelligenceSignal, "id" | "created_at" | "ticker" | "theme" | "thesis_id" | "archived_at">
+  >;
+
+export type OpportunityInsert = Pick<Opportunity, "ticker" | "market"> &
   Partial<
     Pick<
-      PriceCacheRow,
-      "open" | "high" | "low" | "close" | "volume" | "interval" | "created_at"
+      Opportunity,
+      | "id"
+      | "created_at"
+      | "sector"
+      | "conviction_tier"
+      | "thesis_summary"
+      | "pe"
+      | "sector_median_pe"
+      | "fifty_two_week_low"
+      | "fifty_two_week_high"
+      | "watching_only"
     >
   >;
 
-/** `id` is excluded: `fundamentals.id` is `generated always as identity`. */
-export type FundamentalInsert = Pick<
-  FundamentalRow,
-  "stock_id" | "metric_key" | "metric_value"
-> &
-  Partial<Pick<FundamentalRow, "source" | "updated_at">>;
-
-export type AlertLogInsert = Pick<
-  AlertLog,
-  "stock_id" | "trigger_type" | "details"
-> &
-  Partial<Pick<AlertLog, "id" | "triggered_at" | "emailed_at">>;
-
-// ---------------------------------------------------------------------------
-// Update types: everything optional, since an `update()` call only needs to
-// supply the columns being changed.
-// ---------------------------------------------------------------------------
-
+// --- Update types ---
 export type StockUpdate = Partial<StockInsert>;
-export type HoldingUpdate = Partial<HoldingInsert>;
-export type JarvisAnalysisUpdate = Partial<JarvisAnalysisInsert>;
-export type AlertCriteriaUpdate = Partial<AlertCriteriaInsert>;
-export type PriceCacheUpdate = Partial<PriceCacheInsert>;
-export type FundamentalUpdate = Partial<FundamentalInsert>;
-export type AlertLogUpdate = Partial<AlertLogInsert>;
-
-// ---------------------------------------------------------------------------
-// Hand-written `Database` type, in the shape `@supabase/supabase-js` expects
-// as its generic parameter (same shape `supabase gen types typescript` would
-// produce). Written by hand because no live Supabase project exists to
-// generate against in this task; if/when one does, generated types can drop
-// in as a replacement without changing any code that imports `Database`.
-// ---------------------------------------------------------------------------
+export type ThesisUpdate = Partial<ThesisInsert>;
+export type TradePlanUpdate = Partial<TradePlanInsert>;
+export type PositionUpdate = Partial<PositionInsert>;
+export type EntryUpdate = Partial<EntryInsert>;
+export type ExitUpdate = Partial<ExitInsert>;
+export type JarvisRecommendationUpdate = Partial<JarvisRecommendationInsert>;
+export type TradeJournalEntryUpdate = Partial<TradeJournalEntryInsert>;
+export type PositionAlertUpdate = Partial<PositionAlertInsert>;
+export type IntelligenceSignalUpdate = Partial<IntelligenceSignalInsert>;
+export type OpportunityUpdate = Partial<OpportunityInsert>;
 
 export interface Database {
   public: {
     Tables: {
-      stocks: {
-        Row: Stock;
-        Insert: StockInsert;
-        Update: StockUpdate;
-        // `Relationships` is required by `@supabase/postgrest-js`'s
-        // `GenericTable` constraint (the shape `SupabaseClient<Database>`'s
-        // `.insert()`/`.update()`/`.select()` overloads are resolved
-        // against); without it here, those overloads silently collapse to
-        // `never` instead of `Row`/`Insert`/`Update`. Left empty rather than
-        // populated with real FK relationship metadata since every route in
-        // this plan joins `stocks`/`holdings` with a second query in
-        // application code (see `app/api/stocks/route.ts`'s `GET`) rather
-        // than a PostgREST embedded-resource `select("*, holdings(*)")`.
+      stocks: { Row: Stock; Insert: StockInsert; Update: StockUpdate; Relationships: [] };
+      theses: { Row: Thesis; Insert: ThesisInsert; Update: ThesisUpdate; Relationships: [] };
+      trade_plans: { Row: TradePlan; Insert: TradePlanInsert; Update: TradePlanUpdate; Relationships: [] };
+      positions: { Row: Position; Insert: PositionInsert; Update: PositionUpdate; Relationships: [] };
+      entries: { Row: Entry; Insert: EntryInsert; Update: EntryUpdate; Relationships: [] };
+      exits: { Row: Exit; Insert: ExitInsert; Update: ExitUpdate; Relationships: [] };
+      jarvis_recommendations: {
+        Row: JarvisRecommendation;
+        Insert: JarvisRecommendationInsert;
+        Update: JarvisRecommendationUpdate;
         Relationships: [];
       };
-      holdings: {
-        Row: Holding;
-        Insert: HoldingInsert;
-        Update: HoldingUpdate;
+      trade_journal_entries: {
+        Row: TradeJournalEntry;
+        Insert: TradeJournalEntryInsert;
+        Update: TradeJournalEntryUpdate;
         Relationships: [];
       };
-      jarvis_analyses: {
-        Row: JarvisAnalysis;
-        Insert: JarvisAnalysisInsert;
-        Update: JarvisAnalysisUpdate;
+      position_alerts: {
+        Row: PositionAlert;
+        Insert: PositionAlertInsert;
+        Update: PositionAlertUpdate;
         Relationships: [];
       };
-      alert_criteria: {
-        Row: AlertCriteria;
-        Insert: AlertCriteriaInsert;
-        Update: AlertCriteriaUpdate;
+      intelligence_signals: {
+        Row: IntelligenceSignal;
+        Insert: IntelligenceSignalInsert;
+        Update: IntelligenceSignalUpdate;
         Relationships: [];
       };
-      price_cache: {
-        Row: PriceCacheRow;
-        Insert: PriceCacheInsert;
-        Update: PriceCacheUpdate;
-        Relationships: [];
-      };
-      fundamentals: {
-        Row: FundamentalRow;
-        Insert: FundamentalInsert;
-        Update: FundamentalUpdate;
-        Relationships: [];
-      };
-      alert_log: {
-        Row: AlertLog;
-        Insert: AlertLogInsert;
-        Update: AlertLogUpdate;
+      opportunities: {
+        Row: Opportunity;
+        Insert: OpportunityInsert;
+        Update: OpportunityUpdate;
         Relationships: [];
       };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
     Enums: {
-      stock_type: StockType;
       exchange_code: ExchangeCode;
-      trigger_type: TriggerType;
+      conviction_tier: ConvictionTier;
+      thesis_mode: ThesisMode;
+      thesis_status: ThesisStatus;
+      position_status: PositionStatus;
+      entry_tranche: EntryTranche;
+      exit_type: ExitType;
+      recommendation_status: RecommendationStatus;
+      thesis_outcome: ThesisOutcome;
+      position_alert_type: PositionAlertType;
     };
     CompositeTypes: Record<string, never>;
   };
