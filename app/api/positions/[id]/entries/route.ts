@@ -5,7 +5,7 @@ import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 const AddEntrySchema = z.object({
-  date: z.coerce.date(),
+  date: z.string().date(),
   quantity: z.coerce.number().positive(),
   price: z.coerce.number().positive(),
   tranche: z.enum(["T1", "T2", "add"]),
