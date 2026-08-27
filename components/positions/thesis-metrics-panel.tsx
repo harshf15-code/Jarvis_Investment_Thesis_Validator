@@ -16,9 +16,16 @@ export function ThesisMetricsPanel({
 }) {
   const [rows, setRows] = useState(conditions);
   const [error, setError] = useState<string | null>(null);
+  // Bumped for one row when its save is rolled back, to remount that
+  // (uncontrolled) input so the DOM value follows the rollback instead of
+  // keeping the unsaved text on screen. Same `defaultValue`-remount trick as
+  // `app/(app)/thesis/[id]/page.tsx`; keyed per row so a failure here can't
+  // discard text the user is mid-way through typing in a sibling row.
+  const [revisions, setRevisions] = useState<Record<number, number>>({});
 
   async function handleBlur(index: number, value: string) {
     if (rows[index].currentValue === value) return;
+    const previous = rows;
     const next = rows.map((r, i) => (i === index ? { ...r, currentValue: value } : r));
     setRows(next);
     setError(null);
@@ -30,10 +37,13 @@ export function ThesisMetricsPanel({
       });
       // A silently-dropped autosave on a financial tracking field is worse than
       // a visible failure — the user would keep trading off a number they think
-      // is recorded.
+      // is recorded. So a failure rolls the optimistic value back rather than
+      // leaving an unsaved number sitting there looking saved.
       if (!res.ok) throw new Error("Failed to save thesis condition");
     } catch {
-      setError("Couldn't save that value. Re-enter it to retry.");
+      setRows(previous);
+      setRevisions((r) => ({ ...r, [index]: (r[index] ?? 0) + 1 }));
+      setError("Couldn't save that value — reverted to the last saved one. Try again.");
     }
   }
 
@@ -44,7 +54,7 @@ export function ThesisMetricsPanel({
         <p className="text-sm text-on-surface/50">No thesis conditions tracked for this plan.</p>
       ) : (
         rows.map((c, i) => (
-          <div key={`${i}-${c.label}`} className="flex items-center justify-between rounded-xl bg-surface-container-low p-3">
+          <div key={`${revisions[i] ?? 0}-${i}-${c.label}`} className="flex items-center justify-between rounded-xl bg-surface-container-low p-3">
             <div>
               <p className="text-sm text-on-surface">{c.label}</p>
               <p className="text-xs text-on-surface/50">needs {c.target}</p>
