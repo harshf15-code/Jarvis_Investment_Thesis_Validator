@@ -5,6 +5,7 @@ import { StatusChip } from "@/components/dashboard/status-chip";
 import { AlertHistoryLog } from "@/components/stock-detail/alert-history-log";
 import { CandlestickChart } from "@/components/stock-detail/candlestick-chart";
 import { FundamentalsPanel } from "@/components/stock-detail/fundamentals-panel";
+import { HoldingTypeAction } from "@/components/stock-detail/holding-actions";
 import { JarvisTabs } from "@/components/stock-detail/jarvis-tabs";
 import { RunJarvisButton } from "@/components/stock-detail/run-jarvis-button";
 import { getHistoricalOHLCV } from "@/lib/market-data";
@@ -274,7 +275,10 @@ export default async function StockDetailPage({
             </div>
           </div>
 
-          <RunJarvisButton stockId={stock.id} />
+          <div className="flex flex-col items-end gap-3">
+            <RunJarvisButton stockId={stock.id} />
+            <HoldingTypeAction stockId={stock.id} type={stock.type} />
+          </div>
         </div>
 
         {alertCriteria ? (
