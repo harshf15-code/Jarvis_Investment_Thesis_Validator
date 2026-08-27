@@ -9,7 +9,7 @@ export async function GET() {
   const { data: positions, error: positionsError } = await supabase
     .from("positions")
     .select("*")
-    .eq("status", "active");
+    .in("status", ["active", "partial_exit"]);
   if (positionsError) {
     return NextResponse.json({ error: positionsError.message }, { status: 500 });
   }
