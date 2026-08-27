@@ -57,6 +57,7 @@ export default function ThesisReviewPage({ params }: { params: Promise<{ id: str
   const [priceAsOf, setPriceAsOf] = useState<string | null>(null);
   const [exchange, setExchange] = useState<ExchangeCode>("US");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [rerunning, setRerunning] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -64,31 +65,43 @@ export default function ThesisReviewPage({ params }: { params: Promise<{ id: str
   // component-scope function called from it) so a mutation only needs to
   // bump `reloadKey` to trigger a refetch — matches `[id]/plan/page.tsx`'s
   // convention and keeps state updates out of the effect's own call graph.
+  // Same error-handling shape as that sibling page's `fetchThesis`: this is
+  // the shared "view any thesis" destination other tasks link into (stale
+  // links, deleted theses), so a non-ok response must render a retryable
+  // error state instead of throwing on `body.thesis` being undefined.
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       setLoading(true);
-      const res = await fetch(`/api/theses/${id}`);
-      const body = await res.json();
-      if (cancelled) return;
-      setThesis(body.thesis);
-      setTradePlan(body.tradePlan);
-      if (body.stock?.exchange) setExchange(body.stock.exchange);
-      if (body.thesis.stock_id) {
-        const priceRes = await fetch("/api/prices/refresh", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stockIds: [body.thesis.stock_id] }),
-        });
-        const priceBody = await priceRes.json();
-        const quote = priceBody.prices?.[body.thesis.stock_id];
-        if (!cancelled && quote) {
-          setCmp(quote.price);
-          setPriceAsOf(quote.asOf);
+      setError(null);
+      try {
+        const res = await fetch(`/api/theses/${id}`);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? "Thesis not found.");
+        if (cancelled) return;
+        setThesis(body.thesis);
+        setTradePlan(body.tradePlan);
+        if (body.stock?.exchange) setExchange(body.stock.exchange);
+        if (body.thesis.stock_id) {
+          const priceRes = await fetch("/api/prices/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ stockIds: [body.thesis.stock_id] }),
+          });
+          const priceBody = await priceRes.json();
+          const quote = priceBody.prices?.[body.thesis.stock_id];
+          if (!cancelled && quote) {
+            setCmp(quote.price);
+            setPriceAsOf(quote.asOf);
+          }
         }
+        if (!cancelled) setLoading(false);
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Something went wrong.");
+        setLoading(false);
       }
-      if (!cancelled) setLoading(false);
     }
 
     load();
@@ -144,7 +157,18 @@ export default function ThesisReviewPage({ params }: { params: Promise<{ id: str
     }
   }
 
-  if (loading || !thesis) return <SkeletonLoader lines={8} />;
+  if (loading) return <SkeletonLoader lines={8} />;
+
+  if (error || !thesis) {
+    return (
+      <div className="rounded-xl bg-status-red-container px-4 py-3 text-sm text-status-red">
+        {error ?? "Thesis not found."}{" "}
+        <button type="button" onClick={refresh} className="underline">
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   const riskReward =
     tradePlan?.stop_loss != null && tradePlan?.entry_zone_low != null && tradePlan?.target_1 != null
