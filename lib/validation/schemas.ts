@@ -104,3 +104,10 @@ export const UpdateStockInputSchema = z
   });
 
 export type UpdateStockInput = z.infer<typeof UpdateStockInputSchema>;
+
+/** POST /api/jarvis/run body. */
+export const RunJarvisInputSchema = z.object({
+  stockId: z.string().min(1, "stockId is required"),
+});
+
+export type RunJarvisInput = z.infer<typeof RunJarvisInputSchema>;
