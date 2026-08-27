@@ -11,28 +11,32 @@
 --
 -- Placeholders to replace before applying:
 --   <PROJECT_REF>          the deployed project's ref, e.g. abcdefghijklmnop
---   <SERVICE_ROLE_KEY>     that project's service_role key (Settings -> API)
 --
--- ** SECURITY WARNING **
--- The `cron.schedule(...)` calls below embed <SERVICE_ROLE_KEY> directly in
--- the job's SQL body, which Postgres stores as plaintext and which is
--- readable by anyone who can query `cron.job`/`cron.job_run_details` (any
--- role with sufficient privileges on the `cron` schema, not just the
--- project owner). That's a real exposure of a credential that bypasses RLS
--- entirely. For a quick/local setup this is the accepted tradeoff (matches
--- this project's "single-user app, no live Supabase project yet" stage),
--- but for a real deployment prefer storing the key in Supabase Vault
--- (`select vault.create_secret('<SERVICE_ROLE_KEY>', 'poll_prices_service_role_key')`)
--- and reading it back inside the job body via
--- `(select decrypted_secret from vault.decrypted_secrets where name =
--- 'poll_prices_service_role_key')` instead of the literal key -- `cron.job`
--- then only ever shows the lookup, not the secret itself. Left as a
--- follow-up rather than rewritten here to keep this example's core
--- scheduling logic easy to read; adapt it before applying to a real project
--- with real user data at stake.
+-- ** SECURITY: this uses Supabase Vault, not a literal key in the job body **
+-- An earlier version of this template embedded the service_role key
+-- directly in each `cron.schedule(...)` body. Don't do that -- Postgres
+-- stores job bodies as plaintext, readable by anyone who can query
+-- `cron.job`/`cron.job_run_details` (any role with sufficient privileges on
+-- the `cron` schema, not just the project owner), which is a real exposure
+-- of a credential that bypasses RLS entirely. This version instead stores
+-- the key once in Supabase Vault and has each job look it up by name at
+-- call time, so `cron.job`'s stored `command` only ever shows the lookup
+-- subquery, never the secret itself (verified directly against a live
+-- project: `select command like '%eyJ%' from cron.job` returns false for
+-- all three jobs below).
+--
 -- Prerequisites (run once per project, before `cron.schedule`):
---   create extension if not exists pg_cron;
---   create extension if not exists pg_net;  -- for net.http_post
+--   create extension if not exists pg_cron with schema extensions;
+--   create extension if not exists pg_net with schema extensions;
+--   select vault.create_secret(
+--     '<SERVICE_ROLE_KEY>',                    -- Settings -> API -> service_role
+--     'poll_prices_service_role_key',
+--     'Service role key for pg_cron -> Edge Function calls'
+--   );
+-- (`db query`/the SQL editor run each statement separately -- `create
+-- extension` and `vault.create_secret` can't share one prepared statement
+-- with the `cron.schedule` calls below in some clients, so run them first,
+-- confirm they succeed, then run the three schedules.)
 --
 -- Schedule design (all times UTC — pg_cron's `cron.schedule` runs on the
 -- Postgres server's configured timezone, which is UTC on Supabase by
@@ -73,7 +77,7 @@ select cron.schedule(
   select net.http_post(
     url := 'https://<PROJECT_REF>.supabase.co/functions/v1/poll-prices?market=NSE',
     headers := jsonb_build_object(
-      'Authorization', 'Bearer <SERVICE_ROLE_KEY>',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'poll_prices_service_role_key'),
       'Content-Type', 'application/json'
     ),
     body := '{}'::jsonb
@@ -88,7 +92,7 @@ select cron.schedule(
   select net.http_post(
     url := 'https://<PROJECT_REF>.supabase.co/functions/v1/poll-prices?market=US',
     headers := jsonb_build_object(
-      'Authorization', 'Bearer <SERVICE_ROLE_KEY>',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'poll_prices_service_role_key'),
       'Content-Type', 'application/json'
     ),
     body := '{}'::jsonb
@@ -103,7 +107,7 @@ select cron.schedule(
   select net.http_post(
     url := 'https://<PROJECT_REF>.supabase.co/functions/v1/daily-digest',
     headers := jsonb_build_object(
-      'Authorization', 'Bearer <SERVICE_ROLE_KEY>',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'poll_prices_service_role_key'),
       'Content-Type', 'application/json'
     ),
     body := '{}'::jsonb
