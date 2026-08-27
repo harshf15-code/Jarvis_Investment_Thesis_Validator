@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.102",
-    "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "ai": "^6.0.268",
     "class-variance-authority": "^0.7.1",

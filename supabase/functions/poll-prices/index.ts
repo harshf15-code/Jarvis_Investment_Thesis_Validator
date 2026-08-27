@@ -285,11 +285,17 @@ type SupabaseClientAny = any;
  * `events` (not this return value) into `deriveStatus`, since status should
  * reflect the currently-true condition regardless of whether it was
  * re-logged this cycle.
+ *
+ * Typed against a minimal structural shape (`{ type, details }`) rather
+ * than `TriggerEvent` specifically, so `recordFetchFailure`'s `data_stale`
+ * event — which never comes out of `evaluateTriggers` and so isn't a member
+ * of the `TriggerEvent` union — can share this same dedup-checked insert
+ * path instead of duplicating it.
  */
 async function logAlerts(
   supabase: SupabaseClientAny,
   stockId: string,
-  events: TriggerEvent[],
+  events: { type: string; details: unknown }[],
   now: Date,
 ): Promise<void> {
   for (const event of events) {
@@ -330,16 +336,34 @@ async function logAlerts(
   }
 }
 
+/**
+ * Records one failed quote fetch: increments `consecutive_failure_count`,
+ * and sets `stale_since` the moment the count first crosses the 3-failure
+ * threshold (never overwrites an already-set `stale_since` — that's still
+ * the start of the same stale episode).
+ *
+ * Also fires a `data_stale` `alert_log` row, but ONLY on the cycle that
+ * actually crosses the threshold (`crossingStaleThreshold`) — not on every
+ * subsequent failed poll while the stock stays stale. This is deliberately
+ * gated in addition to (not instead of) `logAlerts`'s own 20-hour dedup
+ * guard: gating here means a stock that's already stale doesn't even issue
+ * the dedup-check query on every 15-30 minute cycle, while the dedup guard
+ * remains the actual correctness backstop (e.g. if `stale_since` were ever
+ * cleared and re-crossed within the same 20-hour window).
+ */
 async function recordFetchFailure(
   supabase: SupabaseClientAny,
   stock: StockRow,
+  now: Date,
+  err: unknown,
 ): Promise<void> {
   const newFailureCount = stock.consecutive_failure_count + 1;
   const update: Record<string, unknown> = {
     consecutive_failure_count: newFailureCount,
   };
-  if (newFailureCount >= 3 && !stock.stale_since) {
-    update.stale_since = new Date().toISOString();
+  const crossingStaleThreshold = newFailureCount >= 3 && !stock.stale_since;
+  if (crossingStaleThreshold) {
+    update.stale_since = now.toISOString();
   }
 
   const { error } = await supabase
@@ -353,12 +377,42 @@ async function recordFetchFailure(
       error,
     );
   }
+
+  if (crossingStaleThreshold) {
+    await logAlerts(
+      supabase,
+      stock.id,
+      [
+        {
+          type: "data_stale",
+          details: {
+            consecutive_failure_count: newFailureCount,
+            last_error: err instanceof Error ? err.message : String(err),
+          },
+        },
+      ],
+      now,
+    );
+  }
 }
 
+/**
+ * Fetches the live quote and refreshes `stocks.last_price`/`last_price_at`/
+ * `consecutive_failure_count`/`stale_since` for ONE active stock,
+ * regardless of whether it has an active `alert_criteria` row — a
+ * freshly-added stock that hasn't been through a Jarvis run yet must not
+ * show a frozen add-time price forever just because there's nothing yet to
+ * evaluate triggers against.
+ *
+ * `alertCriteria` is optional: only when it's present does this also
+ * evaluate triggers, log any fired `alert_log` rows, and derive/update
+ * `status` — with no active criteria there is nothing to compare the price
+ * against, so that whole block is skipped and `status` is left untouched.
+ */
 async function processStock(
   supabase: SupabaseClientAny,
   stock: StockRow,
-  alertCriteria: AlertCriteriaRow,
+  alertCriteria: AlertCriteriaRow | undefined,
   now: Date,
 ): Promise<void> {
   let quote: { price: number; asOf: Date };
@@ -369,33 +423,36 @@ async function processStock(
       `poll-prices: quote fetch failed for ${stock.ticker} (${stock.yahoo_symbol}) after retries`,
       err,
     );
-    await recordFetchFailure(supabase, stock);
+    await recordFetchFailure(supabase, stock, now, err);
     return;
   }
 
-  const events = evaluateTriggers(
-    { type: stock.type },
-    alertCriteria,
-    quote.price,
-    now,
-  );
+  const update: Record<string, unknown> = {
+    last_price: quote.price,
+    last_price_at: quote.asOf.toISOString(),
+    consecutive_failure_count: 0,
+    stale_since: null,
+  };
 
-  await logAlerts(supabase, stock.id, events, now);
+  if (alertCriteria) {
+    const events = evaluateTriggers(
+      { type: stock.type },
+      alertCriteria,
+      quote.price,
+      now,
+    );
 
-  const status = deriveStatus(
-    stock.type,
-    events.map((e) => e.type) as TriggerType[],
-  );
+    await logAlerts(supabase, stock.id, events, now);
+
+    update.status = deriveStatus(
+      stock.type,
+      events.map((e) => e.type) as TriggerType[],
+    );
+  }
 
   const { error: updateError } = await supabase
     .from("stocks")
-    .update({
-      last_price: quote.price,
-      last_price_at: quote.asOf.toISOString(),
-      consecutive_failure_count: 0,
-      stale_since: null,
-      status,
-    })
+    .update(update)
     .eq("id", stock.id);
 
   if (updateError) {
@@ -467,13 +524,12 @@ Deno.serve(async (req: Request) => {
   let processed = 0;
 
   for (const stock of stockRows) {
+    // No active alert_criteria row is NOT a reason to skip this stock
+    // entirely (a freshly-added stock may not have run through Jarvis yet)
+    // — `processStock` always refreshes the price/timestamp, and only
+    // skips trigger-evaluation/alert_log/status-derivation when
+    // `alertCriteria` is `undefined`.
     const alertCriteria = criteriaByStockId.get(stock.id);
-    if (!alertCriteria) {
-      // No active alert_criteria row for this stock -> nothing to evaluate
-      // triggers against. Not an error (a freshly-added stock may not have
-      // run through Jarvis yet); just skip it this cycle.
-      continue;
-    }
 
     try {
       await processStock(supabase, stock, alertCriteria, now);

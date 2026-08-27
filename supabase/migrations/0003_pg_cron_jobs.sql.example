@@ -13,6 +13,23 @@
 --   <PROJECT_REF>          the deployed project's ref, e.g. abcdefghijklmnop
 --   <SERVICE_ROLE_KEY>     that project's service_role key (Settings -> API)
 --
+-- ** SECURITY WARNING **
+-- The `cron.schedule(...)` calls below embed <SERVICE_ROLE_KEY> directly in
+-- the job's SQL body, which Postgres stores as plaintext and which is
+-- readable by anyone who can query `cron.job`/`cron.job_run_details` (any
+-- role with sufficient privileges on the `cron` schema, not just the
+-- project owner). That's a real exposure of a credential that bypasses RLS
+-- entirely. For a quick/local setup this is the accepted tradeoff (matches
+-- this project's "single-user app, no live Supabase project yet" stage),
+-- but for a real deployment prefer storing the key in Supabase Vault
+-- (`select vault.create_secret('<SERVICE_ROLE_KEY>', 'poll_prices_service_role_key')`)
+-- and reading it back inside the job body via
+-- `(select decrypted_secret from vault.decrypted_secrets where name =
+-- 'poll_prices_service_role_key')` instead of the literal key -- `cron.job`
+-- then only ever shows the lookup, not the secret itself. Left as a
+-- follow-up rather than rewritten here to keep this example's core
+-- scheduling logic easy to read; adapt it before applying to a real project
+-- with real user data at stake.
 -- Prerequisites (run once per project, before `cron.schedule`):
 --   create extension if not exists pg_cron;
 --   create extension if not exists pg_net;  -- for net.http_post

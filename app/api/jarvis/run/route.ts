@@ -24,6 +24,15 @@ import { RunJarvisInputSchema } from "@/lib/validation/schemas";
  */
 const HISTORY_DAYS = 60;
 
+/**
+ * Raises this route's execution time limit above Vercel's default (10s on
+ * Hobby, 15s on Pro) -- this docblock's own "10-30s expected" is multiple
+ * retried Yahoo calls (up to 3 attempts each, exponential backoff) plus a
+ * non-streaming LLM call, which can comfortably exceed the default before
+ * ever hitting a real failure.
+ */
+export const maxDuration = 60;
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -96,6 +105,46 @@ export async function POST(request: NextRequest) {
   const customFundamentals: Record<string, string> = {};
   for (const row of manualFundamentalsRows ?? []) {
     customFundamentals[row.metric_key] = row.metric_value;
+  }
+
+  // Step 2b: persist the auto-pulled fundamentals snapshot as `source:
+  // 'auto'` rows, so `FundamentalsPanel`'s auto-fundamentals section (which
+  // reads from the `fundamentals` table) is actually populated -- prior to
+  // this, `getFundamentals()`'s result was only ever used in-memory to
+  // build the LLM prompt/`input_context_json` snapshot, never written back.
+  //
+  // Any key that already has a `source: 'manual'` row (present in
+  // `customFundamentals` above) is skipped here: upserting with
+  // `onConflict: "stock_id,metric_key"` would otherwise silently convert
+  // that manual row to `source: 'auto'` and overwrite its value, which is
+  // exactly the collision `PATCH /api/fundamentals/[stockId]` guards
+  // against on its own write path. An `auto` row upserting over another
+  // `auto` row for the same key is fine and expected -- that's just this
+  // run refreshing the value.
+  const fundamentalsToUpsert = Object.entries(fundamentals)
+    .filter(([key]) => !(key in customFundamentals))
+    .map((entry) => {
+      const [metricKey, metricValue] = entry;
+      return {
+        stock_id: stockId,
+        metric_key: metricKey,
+        metric_value: String(metricValue),
+        source: "auto" as const,
+        updated_at: new Date().toISOString(),
+      };
+    });
+
+  if (fundamentalsToUpsert.length > 0) {
+    const { error: fundamentalsUpsertError } = await supabase
+      .from("fundamentals")
+      .upsert(fundamentalsToUpsert, { onConflict: "stock_id,metric_key" });
+
+    if (fundamentalsUpsertError) {
+      return NextResponse.json(
+        { error: fundamentalsUpsertError.message },
+        { status: 500 },
+      );
+    }
   }
 
   // Step 3: build the prompt.

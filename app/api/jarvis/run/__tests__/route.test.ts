@@ -200,6 +200,7 @@ describe("POST /api/jarvis/run", () => {
     const { client, calls } = createMockSupabase([
       ok(STOCK), // fetch stock
       ok([]), // manual fundamentals
+      ok(null), // upsert auto fundamentals
       ok([{ version: 1 }, { version: 2 }]), // existing versions -> next = 3
       ok(null), // unset previous is_latest
       ok(INSERTED_ANALYSIS), // insert jarvis_analyses
@@ -235,6 +236,7 @@ describe("POST /api/jarvis/run", () => {
     const { client, calls } = createMockSupabase([
       ok(STOCK), // fetch stock
       ok([]), // manual fundamentals
+      ok(null), // upsert auto fundamentals
       ok([]), // existing versions -> next = 1
       ok(null), // unset previous is_latest
       ok({ ...INSERTED_ANALYSIS, extraction_ok: false }), // insert jarvis_analyses
@@ -261,6 +263,7 @@ describe("POST /api/jarvis/run", () => {
     const { client } = createMockSupabase([
       ok(STOCK),
       ok([]),
+      ok(null), // upsert auto fundamentals
       ok([]),
       ok(null),
       fail("db is down"),
@@ -270,5 +273,83 @@ describe("POST /api/jarvis/run", () => {
 
     const response = await POST(jsonRequest({ stockId: "stock-1" }));
     expect(response.status).toBe(500);
+  });
+
+  it("persists getFundamentals()'s result as source:'auto' fundamentals rows, upserted on (stock_id, metric_key)", async () => {
+    const { client, calls } = createMockSupabase([
+      ok(STOCK), // fetch stock
+      ok([]), // manual fundamentals
+      ok(null), // upsert auto fundamentals
+      ok([]), // existing versions -> next = 1
+      ok(null), // unset previous is_latest
+      ok(INSERTED_ANALYSIS), // insert jarvis_analyses
+      ok(null), // unset previous is_active
+      ok(null), // insert alert_criteria
+    ]);
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    generateTextMock.mockResolvedValue({ text: RAW_RESPONSE_OK });
+
+    const response = await POST(jsonRequest({ stockId: "stock-1" }));
+    expect(response.status).toBe(201);
+
+    const upsertCalls = callsFor(calls, "fundamentals", "upsert");
+    expect(upsertCalls).toHaveLength(1);
+
+    const [rows, options] = upsertCalls[0].args as [
+      { stock_id: string; metric_key: string; metric_value: string; source: string; updated_at: string }[],
+      { onConflict: string },
+    ];
+    expect(options).toEqual({ onConflict: "stock_id,metric_key" });
+    expect(rows).toEqual([
+      {
+        stock_id: "stock-1",
+        metric_key: "trailingPE",
+        metric_value: "28.5",
+        source: "auto",
+        updated_at: expect.any(String),
+      },
+    ]);
+  });
+
+  it("does not clobber a manual fundamentals row that shares a key with an auto-pulled value", async () => {
+    const { client, calls } = createMockSupabase([
+      ok(STOCK), // fetch stock
+      ok([{ metric_key: "trailingPE", metric_value: "999" }]), // manual fundamentals
+      // No response queued for a fundamentals upsert -- none should happen.
+      ok([]), // existing versions -> next = 1
+      ok(null), // unset previous is_latest
+      ok(INSERTED_ANALYSIS), // insert jarvis_analyses
+      ok(null), // unset previous is_active
+      ok(null), // insert alert_criteria
+    ]);
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    generateTextMock.mockResolvedValue({ text: RAW_RESPONSE_OK });
+
+    const response = await POST(jsonRequest({ stockId: "stock-1" }));
+    expect(response.status).toBe(201);
+
+    expect(callsFor(calls, "fundamentals", "upsert")).toHaveLength(0);
+  });
+
+  it("skips the fundamentals upsert entirely when getFundamentals() returns no fields", async () => {
+    vi.mocked(getFundamentals).mockResolvedValue({});
+
+    const { client, calls } = createMockSupabase([
+      ok(STOCK), // fetch stock
+      ok([]), // manual fundamentals
+      // No response queued for a fundamentals upsert -- none should happen.
+      ok([]), // existing versions -> next = 1
+      ok(null), // unset previous is_latest
+      ok(INSERTED_ANALYSIS), // insert jarvis_analyses
+      ok(null), // unset previous is_active
+      ok(null), // insert alert_criteria
+    ]);
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    generateTextMock.mockResolvedValue({ text: RAW_RESPONSE_OK });
+
+    const response = await POST(jsonRequest({ stockId: "stock-1" }));
+    expect(response.status).toBe(201);
+
+    expect(callsFor(calls, "fundamentals", "upsert")).toHaveLength(0);
   });
 });

@@ -2,10 +2,10 @@ import Link from "next/link";
 
 import { PulseChip } from "@/components/layout/pulse-chip";
 import { StatusChip } from "@/components/dashboard/status-chip";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatExchangeTime } from "@/lib/format";
 import { computeUnrealizedPnl } from "@/lib/pnl";
 import { cn } from "@/lib/utils";
-import type { Holding, Stock } from "@/lib/types";
+import type { ExchangeCode, Holding, Stock } from "@/lib/types";
 
 /**
  * A `stocks` row joined with its `holdings` row, matching the shape
@@ -21,7 +21,7 @@ export type StockWithHolding = Stock & { holding: Holding | null };
  * `lib/pnl.ts` as a pure function, called directly during render here.
  */
 
-function formatAsOf(iso: string | null): string {
+function formatAsOf(iso: string | null, exchange: ExchangeCode): string {
   if (iso === null) {
     return "No price yet";
   }
@@ -29,12 +29,7 @@ function formatAsOf(iso: string | null): string {
   if (Number.isNaN(date.getTime())) {
     return "No price yet";
   }
-  return `as of ${date.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })}`;
+  return `as of ${formatExchangeTime(date, exchange)}`;
 }
 
 export function StockCard({ stock }: { stock: StockWithHolding }) {
@@ -75,7 +70,7 @@ export function StockCard({ stock }: { stock: StockWithHolding }) {
           {lastPrice !== null ? formatCurrency(lastPrice, stock.exchange) : "—"}
         </span>
         <span className="text-xs text-on-surface/50">
-          {formatAsOf(stock.last_price_at)}
+          {formatAsOf(stock.last_price_at, stock.exchange)}
         </span>
       </div>
 

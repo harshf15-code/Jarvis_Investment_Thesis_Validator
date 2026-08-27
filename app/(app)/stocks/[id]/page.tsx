@@ -8,7 +8,7 @@ import { FundamentalsPanel } from "@/components/stock-detail/fundamentals-panel"
 import { HoldingTypeAction } from "@/components/stock-detail/holding-actions";
 import { JarvisTabs } from "@/components/stock-detail/jarvis-tabs";
 import { RunJarvisButton } from "@/components/stock-detail/run-jarvis-button";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatExchangeTime } from "@/lib/format";
 import { getHistoricalOHLCV } from "@/lib/market-data";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type {
@@ -28,7 +28,7 @@ import type {
  */
 export const dynamic = "force-dynamic";
 
-function formatAsOf(iso: string | null): string {
+function formatAsOf(iso: string | null, exchange: Stock["exchange"]): string {
   if (iso === null) {
     return "No price yet";
   }
@@ -36,12 +36,7 @@ function formatAsOf(iso: string | null): string {
   if (Number.isNaN(date.getTime())) {
     return "No price yet";
   }
-  return `as of ${date.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })}`;
+  return `as of ${formatExchangeTime(date, exchange)}`;
 }
 
 function formatDateOnly(dateStr: string | null): string {
@@ -262,7 +257,7 @@ export default async function StockDetailPage({
                   : "—"}
               </span>
               <span className="text-sm text-on-surface/40">
-                {formatAsOf(stock.last_price_at)}
+                {formatAsOf(stock.last_price_at, stock.exchange)}
               </span>
             </div>
           </div>
@@ -321,7 +316,7 @@ export default async function StockDetailPage({
             />
           </section>
 
-          <AlertHistoryLog alerts={alertLog} />
+          <AlertHistoryLog alerts={alertLog} exchange={stock.exchange} />
         </div>
       </div>
     </main>

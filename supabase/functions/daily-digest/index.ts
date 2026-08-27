@@ -18,13 +18,45 @@ function jsonResponse(body: unknown, status: number): Response {
   });
 }
 
+/**
+ * How far back the unemailed-alerts query looks. Without a floor, if
+ * sending ever fails for an extended period, `emailed_at is null` rows
+ * accumulate unboundedly -- every scheduled run re-fetches (and, on
+ * success, re-updates) an ever-growing set, and the batch update-by-id-list
+ * below could eventually hit a PostgREST URL length limit. 7 days
+ * comfortably covers this app's once-daily digest cadence with room for a
+ * multi-day outage to recover from, while bounding the worst case.
+ */
+const UNEMAILED_ALERTS_LOOKBACK_DAYS = 7;
+
+/**
+ * Batch size for the `emailed_at` update-by-id-list. Chunked so that a
+ * large backlog (see `UNEMAILED_ALERTS_LOOKBACK_DAYS` above) can never
+ * produce a single `.in("id", [...])` PostgREST call with an unbounded
+ * number of ids in its URL.
+ */
+const EMAILED_UPDATE_BATCH_SIZE = 100;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
 Deno.serve(async (_req: Request) => {
   const supabase = createAdminClient();
+
+  const lookbackFloor = new Date(
+    Date.now() - UNEMAILED_ALERTS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString();
 
   const { data: alertRows, error: alertError } = await supabase
     .from("alert_log")
     .select("id, stock_id, trigger_type, triggered_at, details")
     .is("emailed_at", null)
+    .gt("triggered_at", lookbackFloor)
     .order("triggered_at", { ascending: true });
 
   if (alertError) {
@@ -89,26 +121,33 @@ Deno.serve(async (_req: Request) => {
   // failed above, we return before reaching here and every row stays
   // `emailed_at is null`, so the next scheduled run retries them (rather
   // than silently dropping alerts on a transient AgentMail failure).
+  //
+  // Chunked (`EMAILED_UPDATE_BATCH_SIZE` ids per `.in(...)` call) rather
+  // than one call with every id, so a large backlog can never produce a
+  // single request whose URL is too long for PostgREST.
   const alertLogIds = alertRows.map((r) => r.id);
-  const { error: updateError } = await supabase
-    .from("alert_log")
-    .update({ emailed_at: new Date().toISOString() })
-    .in("id", alertLogIds);
+  const emailedAt = new Date().toISOString();
+  for (const idBatch of chunk(alertLogIds, EMAILED_UPDATE_BATCH_SIZE)) {
+    const { error: updateError } = await supabase
+      .from("alert_log")
+      .update({ emailed_at: emailedAt })
+      .in("id", idBatch);
 
-  if (updateError) {
-    // The email already went out at this point; failing to mark rows
-    // emailed means the next run may re-send the same alerts. Surface it
-    // loudly rather than silently swallowing it.
-    console.error(
-      "daily-digest: email sent but failed to mark alert_log rows emailed",
-      updateError,
-    );
-    return jsonResponse(
-      {
-        error: `Email sent but failed to mark alert_log rows emailed: ${updateError.message}`,
-      },
-      500,
-    );
+    if (updateError) {
+      // The email already went out at this point; failing to mark rows
+      // emailed means the next run may re-send the same alerts. Surface it
+      // loudly rather than silently swallowing it.
+      console.error(
+        "daily-digest: email sent but failed to mark alert_log rows emailed",
+        updateError,
+      );
+      return jsonResponse(
+        {
+          error: `Email sent but failed to mark alert_log rows emailed: ${updateError.message}`,
+        },
+        500,
+      );
+    }
   }
 
   return jsonResponse(

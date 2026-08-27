@@ -1,4 +1,5 @@
-import type { AlertLog, Json, TriggerType } from "@/lib/types";
+import { formatExchangeTime } from "@/lib/format";
+import type { AlertLog, ExchangeCode, Json, TriggerType } from "@/lib/types";
 
 /**
  * Not "use client": this only reads already-fetched props and renders
@@ -19,18 +20,12 @@ function humanizeTriggerType(raw: TriggerType): string {
   return TRIGGER_TYPE_LABELS[raw] ?? raw;
 }
 
-function formatTriggeredAt(iso: string): string {
+function formatTriggeredAt(iso: string, exchange: ExchangeCode): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) {
     return iso;
   }
-  return date.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatExchangeTime(date, exchange, { year: "numeric" });
 }
 
 /**
@@ -69,7 +64,13 @@ function renderDetails(details: Json): string {
  * error — an empty `alert_log` is the normal, expected state for any stock
  * that hasn't triggered an alert yet.
  */
-export function AlertHistoryLog({ alerts }: { alerts: AlertLog[] }) {
+export function AlertHistoryLog({
+  alerts,
+  exchange,
+}: {
+  alerts: AlertLog[];
+  exchange: ExchangeCode;
+}) {
   const sorted = [...alerts].sort(
     (a, b) =>
       new Date(b.triggered_at).getTime() - new Date(a.triggered_at).getTime(),
@@ -93,7 +94,7 @@ export function AlertHistoryLog({ alerts }: { alerts: AlertLog[] }) {
               >
                 <div className="flex flex-wrap items-baseline gap-2">
                   <span className="text-on-surface/40">
-                    {formatTriggeredAt(alert.triggered_at)}
+                    {formatTriggeredAt(alert.triggered_at, exchange)}
                   </span>
                   <span className="font-medium text-on-surface/85">
                     {humanizeTriggerType(alert.trigger_type)}

@@ -1,36 +1,87 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Jarvis Watchlist Tracker
 
-## Getting Started
+A single-user Next.js app for tracking a stock watchlist/holdings, running an
+LLM ("Jarvis") thesis/stress-test/trade-plan analysis per ticker, and getting
+alerted (dashboard status + a daily email digest) when price crosses an
+entry zone, stop loss, trim target, or a reassessment/earnings date comes
+due.
 
-First, run the development server:
+## Tech stack
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- **Next.js 16** (App Router) + React 19, TypeScript, Tailwind CSS v4
+- **Supabase** (Postgres) for storage, accessed server-side only via a
+  service-role client (`lib/supabase/admin.ts`) — RLS is enabled with no
+  policies on every table, so the anon key has no direct table access
+- **Supabase Edge Functions** (Deno) for scheduled background work:
+  `poll-prices` (refreshes prices, evaluates alert triggers) and
+  `daily-digest` (emails unsent alerts via AgentMail), both meant to run on
+  `pg_cron`
+- **OpenRouter** (via the [Vercel AI SDK](https://ai-sdk.dev)) for the
+  Jarvis LLM analysis
+- **yahoo-finance2** for quotes, OHLCV history, and fundamentals
+- A single shared-password session (no per-user accounts), signed with
+  `jose` (HS256 JWT) — see `middleware.ts` and `app/(auth)/`
+- `vitest` for unit/integration tests
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Local setup
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Install dependencies:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+   ```bash
+   npm install
+   ```
 
-## Learn More
+2. Copy `.env.local.example` to `.env.local` and fill in the values:
 
-To learn more about Next.js, take a look at the following resources:
+   ```bash
+   cp .env.local.example .env.local
+   ```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+   This covers the Next.js app's own env vars (Supabase project URL/keys,
+   `OPENROUTER_API_KEY`, `APP_PASSWORD`, `SESSION_SECRET`). Note the two
+   Supabase Edge Function secrets documented at the bottom of that file
+   (`AGENTMAIL_API_KEY`, `DIGEST_RECIPIENT_EMAIL`) are **not** read from
+   `.env.local` — they're set on the Supabase project itself (see
+   Deployment below).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+3. Run the dev server:
 
-## Deploy on Vercel
+   ```bash
+   npm run dev
+   ```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+   Open [http://localhost:3000](http://localhost:3000).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+4. Run the test suite:
+
+   ```bash
+   npm run test
+   ```
+
+   Other useful commands: `npm run build`, `npm run lint`,
+   `npx tsc --noEmit`.
+
+## Deployment
+
+This repo's Next.js app deploys like any other Next.js app (e.g. to
+Vercel), but the Supabase side needs a few manual, one-time steps against a
+real Supabase project:
+
+1. **Apply the database migrations** — run every `supabase/migrations/*.sql`
+   file (in order) against the project, either via the Supabase CLI
+   (`supabase db push`) or the SQL editor. This creates the schema and
+   enables RLS on every table.
+2. **Deploy the Edge Functions** — `supabase functions deploy poll-prices`
+   and `supabase functions deploy daily-digest`, then set their secrets:
+
+   ```bash
+   supabase secrets set AGENTMAIL_API_KEY=... DIGEST_RECIPIENT_EMAIL=...
+   ```
+
+3. **Register the cron schedules** — copy
+   `supabase/migrations/0003_pg_cron_jobs.sql.example` to
+   `0003_pg_cron_jobs.sql`, fill in the `<PROJECT_REF>`/`<SERVICE_ROLE_KEY>`
+   placeholders (read that file's own comments first — it flags a real
+   security tradeoff around embedding the service-role key in a cron job
+   body), and apply it to schedule `poll-prices`/`daily-digest` via
+   `pg_cron`.
