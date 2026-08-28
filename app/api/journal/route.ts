@@ -7,6 +7,7 @@ import { parseJournalVerdict } from "@/lib/jarvis-journal-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { listJournalEntries } from "@/lib/queries";
 import type { TradeJournalEntryInsert } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -149,11 +150,9 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
-  const supabase = createAdminClient();
-  const { data: entries, error } = await supabase
-    .from("trade_journal_entries")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ entries: entries ?? [] });
+  try {
+    return NextResponse.json({ entries: await listJournalEntries() });
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
 }

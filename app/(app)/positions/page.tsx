@@ -1,16 +1,10 @@
 import { EmptyState } from "@/components/shared/empty-state";
 import { PositionsPageClient } from "@/components/positions/positions-page-client";
 import type { PositionRow } from "@/components/positions/positions-table";
-import { fetchInternalApi } from "@/lib/server-fetch";
-
-async function fetchPositions(): Promise<PositionRow[]> {
-  const res = await fetchInternalApi("/api/positions");
-  const body = await res.json();
-  return body.positions ?? [];
-}
+import { listOpenPositions } from "@/lib/queries";
 
 export default async function PositionsPage() {
-  const rows = await fetchPositions();
+  const rows: PositionRow[] = await listOpenPositions();
 
   return (
     <div>

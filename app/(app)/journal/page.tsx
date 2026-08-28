@@ -1,11 +1,9 @@
 import { EmptyState } from "@/components/shared/empty-state";
 import { JournalArchiveTable } from "@/components/journal/journal-archive-table";
-import { fetchInternalApi } from "@/lib/server-fetch";
+import { listJournalEntries } from "@/lib/queries";
 
 export default async function JournalArchivePage() {
-  const res = await fetchInternalApi("/api/journal");
-  const body = await res.json();
-  const entries = body.entries ?? [];
+  const entries = await listJournalEntries();
 
   return (
     <div>

@@ -270,7 +270,6 @@ look broken in confusing ways:
 | `SESSION_SECRET` | Same — the password matches but no session can be minted |
 | `SUPABASE_SERVICE_ROLE_KEY` | Login works, every page is empty or errors |
 | `OPENROUTER_API_KEY` | Everything loads, running a thesis fails |
-| `NEXT_PUBLIC_SITE_URL` | Falls back to `VERCEL_URL` automatically; only needed on a custom domain |
 
 The user-facing login error is deliberately generic so it can't be used to probe a
 deployment, but each of these logs a specific `[config]` line to the server. If login is

@@ -11,6 +11,7 @@ import { parseThesisResponse } from "@/lib/jarvis-thesis-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { listTheses } from "@/lib/queries";
 import type { ExchangeCode, ThesisInsert } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -206,13 +207,9 @@ export async function POST(request: NextRequest) {
 
 /** Screen HUB-3's thesis list (Task 21) — newest first. */
 export async function GET() {
-  const supabase = createAdminClient();
-  const { data: theses, error } = await supabase
-    .from("theses")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  try {
+    return NextResponse.json({ theses: await listTheses() });
+  } catch (err) {
+    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
   }
-  return NextResponse.json({ theses: theses ?? [] });
 }
