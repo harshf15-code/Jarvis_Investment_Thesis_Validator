@@ -94,6 +94,29 @@ export type ThesisCandidate = {
   bear_case: string | null;
   cmp: number | null;
   fundamentals: Record<string, string | number>;
+  /** Comparative-grid fields (migration 0012): model-written except the range,
+   *  which is mirrored from Yahoo so the range bar plots real numbers. */
+  tagline: string | null;
+  operational_share: string | null;
+  valuation_metric: string | null;
+  market_cap: string | null;
+  range_low: number | null;
+  range_high: number | null;
+};
+
+/** `thesis_memorandums` — see `lib/jarvis-memorandum.ts` for `document`'s shape. */
+export type ThesisMemorandum = {
+  id: string;
+  created_at: string;
+  thesis_id: string;
+  sector_theme: string | null;
+  memo_title: string | null;
+  data_source: string | null;
+  primary_candidate_id: string | null;
+  secondary_candidate_id: string | null;
+  conviction_score: number | null;
+  document: Json;
+  raw_llm_response: string | null;
 };
 
 /** One measurable thesis condition tracked on a locked trade plan (spec US-15). */
@@ -292,8 +315,32 @@ export type ThesisCandidateInsert = Pick<
       | "bear_case"
       | "cmp"
       | "fundamentals"
+      | "tagline"
+      | "operational_share"
+      | "valuation_metric"
+      | "market_cap"
+      | "range_low"
+      | "range_high"
     >
   >;
+
+export type ThesisMemorandumInsert = Pick<ThesisMemorandum, "thesis_id" | "document"> &
+  Partial<
+    Pick<
+      ThesisMemorandum,
+      | "id"
+      | "created_at"
+      | "sector_theme"
+      | "memo_title"
+      | "data_source"
+      | "primary_candidate_id"
+      | "secondary_candidate_id"
+      | "conviction_score"
+      | "raw_llm_response"
+    >
+  >;
+
+export type ThesisMemorandumUpdate = Partial<ThesisMemorandumInsert>;
 
 export type ThesisCandidateUpdate = Partial<ThesisCandidateInsert>;
 
@@ -441,6 +488,12 @@ export interface Database {
         Row: ThesisCandidate;
         Insert: ThesisCandidateInsert;
         Update: ThesisCandidateUpdate;
+        Relationships: [];
+      };
+      thesis_memorandums: {
+        Row: ThesisMemorandum;
+        Insert: ThesisMemorandumInsert;
+        Update: ThesisMemorandumUpdate;
         Relationships: [];
       };
       trade_plans: { Row: TradePlan; Insert: TradePlanInsert; Update: TradePlanUpdate; Relationships: [] };
