@@ -1457,7 +1457,7 @@ Run: `mcp__claude_ai_Supabase__deploy_edge_function` for `poll-prices` and `dail
 
 - [ ] **Step 5: Smoke-test against the live project**
 
-Run: `curl -X POST "https://qwlugjxsgfgobiytpynm.supabase.co/functions/v1/poll-prices?market=NSE" -H "Authorization: Bearer $SERVICE_ROLE_KEY"` — expect `{"processed":0}` (no positions exist yet, correct until Task 14 ships) rather than a 500 referencing a dropped table.
+Run: `curl -X POST "https://<your-project-ref>.supabase.co/functions/v1/poll-prices?market=NSE" -H "Authorization: Bearer $SERVICE_ROLE_KEY"` — expect `{"processed":0}` (no positions exist yet, correct until Task 14 ships) rather than a 500 referencing a dropped table.
 
 - [ ] **Step 6: Commit**
 

@@ -81,7 +81,7 @@ export function RecommendationsTable({ rows }: { rows: Row[] }) {
                   </td>
                   <td className={`p-3 ${status ? STATUS_STYLE[status] : ""}`}>
                     {status === "t1_hit" ? "T1 Hit ✓" : status === "t2_hit" ? "T2 Hit ✓" : status === "stop_hit" ? "Stop Hit ✗" : status === "open" ? "Open" : "—"}
-                    {missedWin && <div className="text-xs text-status-green/80">Jarvis was right — you didn't take this one</div>}
+                    {missedWin && <div className="text-xs text-status-green/80">Jarvis was right — you didn&apos;t take this one</div>}
                     {missedLoss && <div className="text-xs text-on-surface/50">Missed bullet — stop would have hit</div>}
                   </td>
                   <td className="p-3">

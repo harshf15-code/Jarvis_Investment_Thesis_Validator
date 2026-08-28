@@ -14,21 +14,26 @@ import { useCallback, useState } from "react";
 export function usePriceRefresh(stockIds: string[], onRefreshed?: () => void) {
   const [refreshing, setRefreshing] = useState(false);
 
+  // Callers pass a fresh array literal on every render, so depending on
+  // `stockIds` directly would rebuild `refresh` each time. Depending on the
+  // joined key instead makes the identity track the actual contents.
+  const stockIdsKey = stockIds.join(",");
+
   const refresh = useCallback(async () => {
-    if (stockIds.length === 0) return;
+    const ids = stockIdsKey ? stockIdsKey.split(",") : [];
+    if (ids.length === 0) return;
     setRefreshing(true);
     try {
       await fetch("/api/prices/refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stockIds }),
+        body: JSON.stringify({ stockIds: ids }),
       });
       onRefreshed?.();
     } finally {
       setRefreshing(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stockIds.join(","), onRefreshed]);
+  }, [stockIdsKey, onRefreshed]);
 
   return { refresh, refreshing };
 }

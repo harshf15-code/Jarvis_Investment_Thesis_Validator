@@ -11,7 +11,7 @@ import { parseThesisResponse } from "@/lib/jarvis-thesis-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { ExchangeCode, Json, ThesisInsert } from "@/lib/types";
+import type { ExchangeCode, ThesisInsert } from "@/lib/types";
 
 export const maxDuration = 60;
 

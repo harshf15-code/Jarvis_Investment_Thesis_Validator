@@ -5,7 +5,7 @@ import {
   sanitizeTradePlanGeometry,
   type TradePlanLevels,
 } from "@/lib/jarvis-thesis-parser";
-import { normalizeMemorandum, parseMemorandum, type Memorandum } from "@/lib/jarvis-memorandum";
+import { parseMemorandum, type Memorandum } from "@/lib/jarvis-memorandum";
 
 function fence(obj: unknown): string {
   return "some prose\n\n```json\n" + JSON.stringify(obj) + "\n```";

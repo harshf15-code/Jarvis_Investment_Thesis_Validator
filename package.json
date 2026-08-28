@@ -1,5 +1,5 @@
 {
-  "name": "jarvis-watchlist-tracker",
+  "name": "jarvis-decision-cockpit",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -44,5 +44,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^5",
     "vitest": "^4.1.11"
-  }
+  },
+  "description": "Turn a plain-English trading thesis into a full investment memorandum: candidates compared head-to-head, stress-tested, with a costed trade plan and exit discipline.",
+  "license": "MIT"
 }

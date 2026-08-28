@@ -1,87 +1,283 @@
-# Jarvis Watchlist Tracker
+# Jarvis Decision Cockpit
 
-A single-user Next.js app for tracking a stock watchlist/holdings, running an
-LLM ("Jarvis") thesis/stress-test/trade-plan analysis per ticker, and getting
-alerted (dashboard status + a daily email digest) when price crosses an
-entry zone, stop loss, trim target, or a reassessment/earnings date comes
-due.
+A self-hosted decision-support system for discretionary stock traders. You give it a
+thesis in plain English — *"NBFCs have all-time-low NPAs, I think they run this year"* —
+and it returns a complete investment memorandum: every candidate priced and compared
+head-to-head, a winner, four ways the trade could fail, a costed trade plan, and the exit
+rules. Then it watches the market and emails you when a level is hit.
+
+> **This is decision support, not a broker.** It never places an order, never touches a
+> brokerage account, and never moves money. It is not investment advice. Every number it
+> produces comes from a language model and should be treated as a starting point for your
+> own judgement, not an answer. See [Disclaimer](#disclaimer).
+
+---
+
+## What it actually does
+
+Most "AI trading" tools either give you a chat window or a black-box signal. This does
+neither. It runs a fixed analytical workflow — thesis → stress test → trade plan → exit
+discipline — and makes the model show its work at every step.
+
+**The core loop:**
+
+```mermaid
+flowchart LR
+    A["You type a thesis<br/>(a stock, a market view, or both)"] --> B[Jarvis shortlists<br/>3-5 candidates]
+    B --> C[Live price + fundamentals<br/>fetched for every name]
+    C --> D[One comparative call:<br/>rank them, pick a winner]
+    D --> E["Memorandum<br/>Thesis · Stress Test · Trade Plan · Exit"]
+    E --> F{Back the trade?}
+    F -->|Yes| G[Position opened<br/>with your real fill]
+    F -->|No| H[Costs nothing]
+    G --> I[Background poller<br/>watches your levels]
+    I --> J[Daily email digest<br/>when something is hit]
+```
+
+The key design decision: **you never pick from a list of names the system hasn't
+analysed.** A macro thesis gets a basket Jarvis chooses and prices. A thesis that already
+names a stock gets that stock *plus its closest peers* — because "should I buy this one"
+is only answerable against the alternatives.
+
+### The memorandum
+
+One screen, four tabs, produced in a single pass:
+
+| Tab | Contains |
+|---|---|
+| **Thesis** | Market view, the mispricing, catalysts, *why not the others* (per-peer teardown), time horizon and invalidation, conviction score, secondary pick |
+| **Stress Test** | Four concrete failure modes, each paired with an honest counter-argument — and a verdict on whether the bear case holds |
+| **Trade Plan** | Nine-cell grid (CMP, entry zone, add tranche, stop, two targets, size, horizon, time exit), a thesis test calendar, and an optional parallel entry |
+| **Exit** | Five sequenced rules (trim, trim, runner, hard stop, time exit), the one *anchor metric* to track, and risk/reward, max drawdown, tier and PEG |
+
+Above them sits a comparative grid: up to five names side by side with live price,
+valuation multiple, 52-week range position, market cap, and a BUY/WATCH/AVOID call.
+
+### After you back a trade
+
+Backing a trade records your **actual fill** — price, quantity, date — not the entry zone
+the model proposed. From there the app tracks the position, computes weighted-average
+entry across tranches, logs exits, and keeps a trade journal so you can review whether
+the thesis was right for the reasons you thought.
+
+Two Supabase Edge Functions run on `pg_cron`:
+
+- **`poll-prices`** — refreshes quotes during market hours (NSE and US sessions handled
+  separately), evaluates every active position's entry/stop/target/time levels, and
+  writes alerts. De-duplicates so a persistently-breached stop doesn't spam you.
+- **`daily-digest`** — once a day after the US close, emails everything unsent.
+
+---
+
+## Screens
+
+| Route | What it is |
+|---|---|
+| `/` | Cockpit — portfolio state at a glance |
+| `/thesis` | Every thesis you've run |
+| `/thesis/[id]` | **The memorandum** |
+| `/positions` · `/positions/[id]` | Open positions, entries, exits |
+| `/feed` | Intelligence feed |
+| `/journal` | Trade journal and post-mortems |
+| `/discovery` | Opportunity discovery |
+| `/recommendations` | Recommendation tracker — did Jarvis's calls actually work? |
+
+---
+
+## Quick start
+
+**Prerequisites:** Node.js **22+** (`yahoo-finance2` requires it), a
+[Supabase](https://supabase.com) project (free tier is fine), and an
+[OpenRouter](https://openrouter.ai) API key.
+
+```bash
+git clone https://github.com/harshf15-code/Myticker.git
+cd Myticker
+npm install
+cp .env.local.example .env.local
+```
+
+Fill in `.env.local` — every variable is documented in the example file:
+
+| Variable | Where to get it |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Settings → API |
+| `SUPABASE_DB_URL` | Supabase → Settings → Database → Connection string (URI) |
+| `OPENROUTER_API_KEY` | openrouter.ai → Keys |
+| `OPENROUTER_MODEL_ID` | e.g. `anthropic/claude-sonnet-4.5` |
+| `APP_PASSWORD` | Any password — this is the only thing gating the app |
+| `SESSION_SECRET` | `openssl rand -base64 32` |
+
+Apply the schema, in order:
+
+```bash
+for f in supabase/migrations/0*.sql; do
+  node --env-file=.env.local scripts/apply-migration.mjs "$f"
+done
+```
+
+> `0003_pg_cron_jobs.sql.example` is skipped by that glob on purpose — it is a template
+> you edit and run by hand once, after deploying the Edge Functions.
+
+Then:
+
+```bash
+npm run dev     # http://localhost:3000
+```
+
+Log in with `APP_PASSWORD`, click **New Thesis**, and type a thesis.
+
+### Optional: background monitoring
+
+Alerts and the daily digest need the Edge Functions deployed. Without them everything
+else works — you just have to refresh prices by visiting a page.
+
+```bash
+supabase link --project-ref <your-project-ref>
+supabase functions deploy poll-prices
+supabase functions deploy daily-digest
+supabase secrets set AGENTMAIL_API_KEY=... AGENTMAIL_INBOX_ID=... DIGEST_RECIPIENT_EMAIL=...
+```
+
+Then schedule them: copy `supabase/migrations/0003_pg_cron_jobs.sql.example`, fill in your
+project ref, and run it in the SQL editor. It stores the service-role key in Supabase
+Vault rather than inlining it into the cron definition.
+
+---
+
+## Architecture
+
+```
+app/
+  (auth)/login/        Shared-password gate
+  (app)/               Everything behind the gate
+    thesis/[id]/       The memorandum
+    positions/         Position tracking
+  api/                 Route handlers — the only things that touch the DB
+components/
+  layout/              Header, icon rail, mobile nav, thesis drawer
+  thesis/              Memorandum: comparative grid, four tabs, back-trade dialog
+lib/
+  jarvis-memorandum.ts     Memorandum schema + prompt + normalizer  ← start here
+  jarvis-thesis-prompt.ts  Thesis structuring + candidate shortlist
+  jarvis-thesis-parser.ts  Fenced-JSON extraction, trade-plan geometry
+  market-data.ts           yahoo-finance2 wrapper (quotes, OHLCV, fundamentals)
+  supabase/admin.ts        Service-role client — the only DB access path
+supabase/
+  migrations/          Schema, applied in numeric order
+  functions/           Deno Edge Functions (poll-prices, daily-digest)
+styles/tokens.css      Design tokens — the single source of colour
+```
+
+**Auth is deliberately minimal.** One shared password, one signed HS256 cookie
+(`middleware.ts`). There are no user accounts because this is built to be run by one
+person on their own data. Row-level security is enabled with *no policies* on every
+table, so the anon key can read nothing; all access goes through the service-role client
+behind the password gate.
+
+### How the LLM pipeline stays honest
+
+Language models are unreliable in specific, predictable ways. Three defences:
+
+**1. Everything is parsed, never trusted.** Each prompt demands one trailing fenced JSON
+block. `extractTrailingJsonBlock` takes the *last* match (so an echoed example can't win),
+and a Zod schema validates it. Parsers never throw — a bad response degrades to a visible
+error with the raw text preserved, never to silently-null data.
+
+**2. Display strings and machine numbers are kept separate.** The memorandum carries both
+`cells` (`"₹1,050–1,090"`, for humans) and `numeric` (`1050`, `1090`). Only `numeric` is
+ever written to the database, so a formatted range can never be parsed into a stop-loss.
+
+**3. Structural invariants are repaired, not assumed.** `normalizeMemorandum` enforces
+exactly one primary pick agreeing with `primary_ticker`, and
+`sanitizeTradePlanGeometry` drops any level that contradicts the plan — a stop above the
+entry zone, a target below it, a `target_2` under `target_1`. A dropped cell is safer than
+a plausible-looking number nobody checked.
+
+Thin sections degrade individually: if the model returns nonsense for `catalysts`, that
+field becomes `[]` and the rest of the memo survives.
+
+### Data model
+
+```mermaid
+erDiagram
+    theses ||--o| thesis_memorandums : "has one"
+    theses ||--o{ thesis_candidates : "compared"
+    theses ||--o| trade_plans : "locks"
+    trade_plans ||--o{ positions : "opens"
+    positions ||--o{ entries : "filled by"
+    positions ||--o{ exits : "closed by"
+    positions ||--o{ position_alerts : "triggers"
+    stocks ||--o{ thesis_candidates : "priced as"
+```
+
+`thesis_memorandums.document` is one validated JSONB blob rather than forty columns: it is
+produced and replaced atomically by a single model call and only ever read whole. It is
+re-validated on read, so a row written by an older schema degrades to "re-run this"
+instead of crashing the page.
+
+---
+
+## Testing
+
+```bash
+npm test          # vitest, no network or API keys needed
+npm run lint
+npx tsc --noEmit
+```
+
+Tests cover the parts where being wrong is expensive: JSON extraction, schema validation
+and graceful degradation, trade-plan geometry, weighted-average entry maths, risk/reward
+calculations, and market-hours logic across timezones and DST boundaries.
+
+There are no tests that call the live model — those cost money and are non-deterministic.
+The prompts are exercised manually.
+
+---
+
+## Deploying
+
+Designed for [Vercel](https://vercel.com), but it is a standard Next.js app and will run
+anywhere Node does.
+
+```bash
+npx vercel
+```
+
+Set every variable from `.env.local` in your project settings, with
+`NEXT_PUBLIC_SITE_URL` pointing at the deployed URL. The Edge Functions and their cron
+schedules live on Supabase and deploy separately.
+
+**Before you deploy publicly:** the entire app is protected by one shared password. That
+is adequate for a single user on a private URL. It is *not* adequate for anything holding
+other people's data.
+
+---
 
 ## Tech stack
 
-- **Next.js 16** (App Router) + React 19, TypeScript, Tailwind CSS v4
-- **Supabase** (Postgres) for storage, accessed server-side only via a
-  service-role client (`lib/supabase/admin.ts`) — RLS is enabled with no
-  policies on every table, so the anon key has no direct table access
-- **Supabase Edge Functions** (Deno) for scheduled background work:
-  `poll-prices` (refreshes prices, evaluates alert triggers) and
-  `daily-digest` (emails unsent alerts via AgentMail), both meant to run on
-  `pg_cron`
-- **OpenRouter** (via the [Vercel AI SDK](https://ai-sdk.dev)) for the
-  Jarvis LLM analysis
-- **yahoo-finance2** for quotes, OHLCV history, and fundamentals
-- A single shared-password session (no per-user accounts), signed with
-  `jose` (HS256 JWT) — see `middleware.ts` and `app/(auth)/`
-- `vitest` for unit/integration tests
+Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 · Supabase (Postgres +
+Deno Edge Functions) · Vercel AI SDK via OpenRouter · yahoo-finance2 · Zod · jose ·
+lightweight-charts · Vitest
 
-## Local setup
+Design tokens come from a [Google Stitch](https://stitch.withgoogle.com) project and live
+in `styles/tokens.css`. Never hardcode a colour outside that file.
 
-1. Install dependencies:
+---
 
-   ```bash
-   npm install
-   ```
+## Disclaimer
 
-2. Copy `.env.local.example` to `.env.local` and fill in the values:
+This software is provided for informational and educational purposes only. It does not
+constitute investment advice, financial advice, trading advice, or a recommendation to
+buy or sell any security. The analysis it produces is generated by a large language model
+and **may be confidently wrong**. Market data comes from an unofficial Yahoo Finance
+endpoint and may be delayed, incorrect, or unavailable.
 
-   ```bash
-   cp .env.local.example .env.local
-   ```
+You are solely responsible for your own trading decisions and for any losses you incur.
+Nothing here is a substitute for a licensed financial advisor. Do your own research.
 
-   This covers the Next.js app's own env vars (Supabase project URL/keys,
-   `OPENROUTER_API_KEY`, `APP_PASSWORD`, `SESSION_SECRET`). Note the two
-   Supabase Edge Function secrets documented at the bottom of that file
-   (`AGENTMAIL_API_KEY`, `DIGEST_RECIPIENT_EMAIL`) are **not** read from
-   `.env.local` — they're set on the Supabase project itself (see
-   Deployment below).
+---
 
-3. Run the dev server:
+## License
 
-   ```bash
-   npm run dev
-   ```
-
-   Open [http://localhost:3000](http://localhost:3000).
-
-4. Run the test suite:
-
-   ```bash
-   npm run test
-   ```
-
-   Other useful commands: `npm run build`, `npm run lint`,
-   `npx tsc --noEmit`.
-
-## Deployment
-
-This repo's Next.js app deploys like any other Next.js app (e.g. to
-Vercel), but the Supabase side needs a few manual, one-time steps against a
-real Supabase project:
-
-1. **Apply the database migrations** — run every `supabase/migrations/*.sql`
-   file (in order) against the project, either via the Supabase CLI
-   (`supabase db push`) or the SQL editor. This creates the schema and
-   enables RLS on every table.
-2. **Deploy the Edge Functions** — `supabase functions deploy poll-prices`
-   and `supabase functions deploy daily-digest`, then set their secrets:
-
-   ```bash
-   supabase secrets set AGENTMAIL_API_KEY=... DIGEST_RECIPIENT_EMAIL=...
-   ```
-
-3. **Register the cron schedules** — copy
-   `supabase/migrations/0003_pg_cron_jobs.sql.example` to
-   `0003_pg_cron_jobs.sql`, fill in the `<PROJECT_REF>`/`<SERVICE_ROLE_KEY>`
-   placeholders (read that file's own comments first — it flags a real
-   security tradeoff around embedding the service-role key in a cron job
-   body), and apply it to schedule `poll-prices`/`daily-digest` via
-   `pg_cron`.
+[MIT](LICENSE)

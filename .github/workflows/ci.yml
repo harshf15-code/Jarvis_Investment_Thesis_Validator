@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # yahoo-finance2 requires Node >= 22.
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # No secrets are needed: the test suite never calls the model, the
+      # database, or a market-data endpoint. A build does not either — every
+      # page that reads data is dynamic, so nothing is fetched at build time.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
