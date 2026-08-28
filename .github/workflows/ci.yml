@@ -22,8 +22,15 @@ jobs:
       # No secrets are needed: the test suite never calls the model, the
       # database, or a market-data endpoint. A build does not either — every
       # page that reads data is dynamic, so nothing is fetched at build time.
+
+      # `next typegen` first, not decoration: Next generates the global
+      # `PageProps`/`LayoutProps`/`RouteContext` helpers into `.next/types/`
+      # (plus `next-env.d.ts`, which references them). Locally those exist
+      # because `next dev` has run; a clean CI checkout has no `.next/`, so a
+      # bare `tsc --noEmit` fails with "Cannot find name 'LayoutProps'".
+      # See node_modules/next/dist/docs/01-app/03-api-reference/06-cli/next.md.
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Lint
         run: npm run lint
