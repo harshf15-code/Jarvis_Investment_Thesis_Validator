@@ -2,17 +2,20 @@
 
 import { use, useEffect, useState } from "react";
 
+import { CandidateBakeoff } from "@/components/thesis/candidate-bakeoff";
 import { ConvictionBadge } from "@/components/thesis/conviction-badge";
 import { StressTestPanel } from "@/components/thesis/stress-test-panel";
 import { TradePlanGrid } from "@/components/thesis/trade-plan-grid";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
 import { LastUpdated } from "@/components/shared/last-updated";
-import type { BearCase, ConvictionTier, ExchangeCode } from "@/lib/types";
+import type { BearCase, ConvictionTier, ExchangeCode, ThesisMode } from "@/lib/types";
 
 type ThesisDetail = {
   id: string;
   stock_id: string | null;
   ticker: string | null;
+  mode: ThesisMode;
+  selected_candidate_id: string | null;
   conviction_tier: ConvictionTier | null;
   conviction_score: number | null;
   bear_cases: BearCase[];
@@ -148,6 +151,51 @@ export default function ThesisPlanPage({ params }: { params: Promise<{ id: strin
           convictionScore={thesis.conviction_score}
           onApproved={() => setStep(3)}
         />
+      ) : thesis.stock_id === null ? (
+        /*
+         * A macro thesis reaches Step 3 with no instrument, and every part of
+         * Step 3 needs one: the draft anchors its levels to CMP, and
+         * `POST /api/trade-plans` rejects a thesis with no `stock_id`. The
+         * guard lives here rather than only on the buttons that route here,
+         * because this page is also reachable by link, bookmark and reload.
+         *
+         * Showing the bake-off is the point — the missing instrument is a step
+         * the user hasn't taken yet, not an error, so this is the step itself
+         * rather than a dead end telling them to go back.
+         */
+        <div className="flex flex-col gap-4">
+          {thesis.mode === "thesis_only" ? (
+            <>
+              <p className="text-sm text-on-surface-variant">
+                This thesis doesn&apos;t name a stock yet. Back one of the candidates below and the
+                trade plan will build against it.
+              </p>
+              <CandidateBakeoff
+                thesisId={id}
+                selectedCandidateId={thesis.selected_candidate_id}
+                onPicked={retry}
+              />
+            </>
+          ) : (
+            /*
+             * The thesis names a stock but it never resolved to live market
+             * data — `POST /api/theses` keeps the ticker it extracted even when
+             * the Yahoo lookup misses on every exchange. Running a candidate
+             * shortlist here would be wrong: the instrument isn't undecided,
+             * it's unpriceable, usually because the ticker is misspelled or
+             * isn't listed on NSE or US.
+             */
+            <div className="rounded-lg bg-status-blue-container px-4 py-3 text-sm text-status-blue">
+              Couldn&apos;t price{" "}
+              <span className="font-mono font-medium">{thesis.ticker ?? "this thesis"}</span> — the
+              ticker didn&apos;t resolve on NSE or US, so there&apos;s no CMP to build a plan
+              against. Check the symbol and start a new thesis with the exact exchange ticker.{" "}
+              <button type="button" onClick={retry} className="underline">
+                Retry
+              </button>
+            </div>
+          )}
+        </div>
       ) : (
         <TradePlanGrid thesisId={id} cmp={cmp} exchange={exchange} />
       )}

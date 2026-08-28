@@ -224,7 +224,7 @@ export default function ThesisReviewPage({ params }: { params: Promise<{ id: str
       )}
 
       {thesis.mode === "thesis_only" && (
-        <div className="mb-6">
+        <div id="bake-off" className="mb-6 scroll-mt-24">
           {/*
             Re-surfaced here, not just in the creation drawer: a macro thesis
             saved as a draft has no instrument yet, and this is where the user
@@ -322,11 +322,16 @@ export default function ThesisReviewPage({ params }: { params: Promise<{ id: str
               </div>
             </>
           ) : (
+            /*
+             * Points at the bake-off instead of the wizard when the thesis has
+             * no instrument yet — following the plan link in that state used to
+             * land on a Step 3 that could only fail.
+             */
             <Link
-              href={`/thesis/${id}/plan`}
-              className="rounded-xl bg-primary px-4 py-2 text-center text-sm font-medium text-on-primary"
+              href={thesis.stock_id ? `/thesis/${id}/plan` : "#bake-off"}
+              className="rounded-full bg-primary px-5 py-2.5 text-center font-display text-sm font-bold text-on-primary shadow-ambient transition-all hover:bg-primary-dim active:scale-[0.97]"
             >
-              Build Trade Plan
+              {thesis.stock_id ? "Build Trade Plan" : "Pick a stock first"}
             </Link>
           )}
         </div>
