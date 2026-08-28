@@ -172,3 +172,179 @@ export function parseStressTestResponse(raw: string): StressTestExtraction {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+/* ------------------------------------------------------------------------- *
+ * Candidate bake-off parsing
+ * ------------------------------------------------------------------------- */
+
+export const CandidateShortlistSchema = z.object({
+  candidates: z
+    .array(
+      z.object({
+        ticker: z.string().min(1),
+        company_name: z.string().nullable().optional(),
+        why_shortlisted: z.string().nullable().optional(),
+      }),
+    )
+    .min(1),
+});
+
+export type CandidateShortlist = z.infer<typeof CandidateShortlistSchema>;
+
+export const CandidateAnalysisSchema = z.object({
+  candidates: z
+    .array(
+      z.object({
+        ticker: z.string().min(1),
+        rank: z.number().int().min(1),
+        verdict: z.enum(["bet", "watch", "avoid"]),
+        score: z.number().min(0).max(100),
+        fit_rationale: z.string().nullable(),
+        bull_case: z.string().nullable(),
+        bear_case: z.string().nullable(),
+      }),
+    )
+    .min(1),
+  comparative_verdict: z.string().nullable(),
+});
+
+export type CandidateAnalysis = z.infer<typeof CandidateAnalysisSchema>;
+
+export type ParseResult<T> = { ok: true; data: T } | { ok: false; error: string };
+
+/**
+ * Shared shape for both bake-off calls. Same never-throws contract as
+ * `parseThesisResponse` — the caller persists what it can and surfaces the
+ * error rather than 500-ing on a malformed model turn.
+ */
+function parseFencedJson<T>(raw: string, schema: z.ZodType<T>): ParseResult<T> {
+  try {
+    const rawJson = extractTrailingJsonBlock(raw);
+    if (rawJson === null) {
+      return { ok: false, error: "No valid ```json code block found in the response." };
+    }
+    const result = schema.safeParse(rawJson);
+    if (!result.success) {
+      return { ok: false, error: `JSON block failed schema validation: ${result.error.message}` };
+    }
+    return { ok: true, data: result.data };
+  } catch (err) {
+    return { ok: false, error: errorMessage(err) };
+  }
+}
+
+export function parseCandidateShortlist(raw: string): ParseResult<CandidateShortlist> {
+  return parseFencedJson(raw, CandidateShortlistSchema);
+}
+
+export function parseCandidateAnalysis(raw: string): ParseResult<CandidateAnalysis> {
+  return parseFencedJson(raw, CandidateAnalysisSchema);
+}
+
+/**
+ * The prompt asks for dense, unique ranks with exactly one "bet" at rank 1, but
+ * a model will occasionally hand back ties, gaps, or two winners. Rather than
+ * reject an otherwise-good analysis, re-derive the ordering from `score`
+ * (highest first) and keep only the top name as the bet.
+ *
+ * Ordering is by score alone; the model's own `rank` is used only to break
+ * ties, so a self-consistent response comes back through unchanged.
+ */
+export function normalizeCandidateRanks(
+  candidates: CandidateAnalysis["candidates"],
+): CandidateAnalysis["candidates"] {
+  return [...candidates]
+    .sort((a, b) => b.score - a.score || a.rank - b.rank)
+    .map((c, i) => ({
+      ...c,
+      rank: i + 1,
+      // Demote a duplicate winner, but never promote: if the model judged the
+      // top-scoring name only worth watching, that verdict stands.
+      verdict: i === 0 ? c.verdict : c.verdict === "bet" ? "watch" : c.verdict,
+    }));
+}
+
+/* ------------------------------------------------------------------------- *
+ * Trade-plan prefill parsing (US-12)
+ * ------------------------------------------------------------------------- */
+
+const nullableNumber = z.number().nullable().catch(null);
+
+export const TradePlanDraftSchema = z.object({
+  entry_zone_low: nullableNumber,
+  entry_zone_high: nullableNumber,
+  add_tranche_low: nullableNumber,
+  add_tranche_high: nullableNumber,
+  stop_loss: nullableNumber,
+  target_1: nullableNumber,
+  target_2: nullableNumber,
+  position_size_pct: nullableNumber,
+  // Kept as a loose string here and validated by `sanitizeTradePlanDraft` —
+  // a model that returns "2026-13-01" should cost us the one field, not the
+  // whole draft.
+  time_exit_date: z.string().nullable().catch(null),
+  time_exit_condition: z.string().nullable().catch(null),
+  notes: z.string().nullable().catch(null),
+});
+
+export type TradePlanDraft = z.infer<typeof TradePlanDraftSchema>;
+
+export function parseTradePlanDraft(raw: string): ParseResult<TradePlanDraft> {
+  return parseFencedJson(raw, TradePlanDraftSchema);
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Drops values that are structurally valid JSON but not usable as a trade plan.
+ * The grid is the trader's starting point, so a level that contradicts the plan's
+ * own geometry (a stop above the entry, a target below it) is worse than a blank
+ * cell — it invites locking in a plan nobody checked.
+ */
+export function sanitizeTradePlanDraft(draft: TradePlanDraft): TradePlanDraft {
+  const out: TradePlanDraft = { ...draft };
+
+  const positive = (v: number | null) => (v != null && Number.isFinite(v) && v > 0 ? v : null);
+  out.entry_zone_low = positive(out.entry_zone_low);
+  out.entry_zone_high = positive(out.entry_zone_high);
+  out.add_tranche_low = positive(out.add_tranche_low);
+  out.add_tranche_high = positive(out.add_tranche_high);
+  out.stop_loss = positive(out.stop_loss);
+  out.target_1 = positive(out.target_1);
+  out.target_2 = positive(out.target_2);
+
+  // Swap a reversed zone rather than discarding both bounds — the levels are
+  // still the ones the model chose, only the labels came out backwards.
+  if (out.entry_zone_low != null && out.entry_zone_high != null && out.entry_zone_low > out.entry_zone_high) {
+    [out.entry_zone_low, out.entry_zone_high] = [out.entry_zone_high, out.entry_zone_low];
+  }
+  if (
+    out.add_tranche_low != null &&
+    out.add_tranche_high != null &&
+    out.add_tranche_low > out.add_tranche_high
+  ) {
+    [out.add_tranche_low, out.add_tranche_high] = [out.add_tranche_high, out.add_tranche_low];
+  }
+
+  const floor = out.add_tranche_low ?? out.entry_zone_low;
+  if (out.stop_loss != null && floor != null && out.stop_loss >= floor) out.stop_loss = null;
+
+  const ceiling = out.entry_zone_high ?? out.entry_zone_low;
+  if (out.target_1 != null && ceiling != null && out.target_1 <= ceiling) out.target_1 = null;
+  if (out.target_2 != null && ceiling != null && out.target_2 <= ceiling) out.target_2 = null;
+  if (out.target_1 != null && out.target_2 != null && out.target_2 <= out.target_1) out.target_2 = null;
+
+  if (
+    out.position_size_pct != null &&
+    (!Number.isFinite(out.position_size_pct) || out.position_size_pct <= 0 || out.position_size_pct > 100)
+  ) {
+    out.position_size_pct = null;
+  }
+
+  if (out.time_exit_date != null) {
+    const d = out.time_exit_date.trim();
+    out.time_exit_date = ISO_DATE.test(d) && !Number.isNaN(Date.parse(d)) ? d : null;
+  }
+
+  return out;
+}

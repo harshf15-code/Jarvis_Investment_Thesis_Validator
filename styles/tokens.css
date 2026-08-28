@@ -1,43 +1,57 @@
 /**
- * Design tokens for "Neon Velocity v2" — the Jarvis Decision Cockpit's dark
- * terminal palette. Replaces the v1 green palette entirely (spec Section 1).
- * Dark-only. Every color used in the app must resolve through one of these
- * custom properties — never hardcode a hex value outside this file.
+ * Design tokens — "The Kinetic Terminal".
+ *
+ * These are lifted verbatim from the Stitch project "Jarvis Decision Cockpit"
+ * (projects/5066478431085256622), screen "Jarvis Trading Cockpit". The app was
+ * previously built against an unrelated amber-gold palette ("Neon Velocity"),
+ * which is why it looked nothing like the Stitch mocks. Any change here must be
+ * mirrored back into the Stitch design system, not invented locally.
+ *
+ * Dark-only. Every color in the app resolves through one of these custom
+ * properties — never hardcode a hex outside this file.
  */
 
 :root {
-  /* --- Surface --- */
-  --color-surface: #080808; /* exact: near-black base canvas per spec */
-  --color-surface-container-lowest: #050505; /* judgment: recessed tier below base (page gutters) */
-  --color-surface-container-low: #101010; /* judgment: default card body */
-  --color-surface-container-high: #1a1a1a; /* judgment: card hover state / separator band fill */
-  --color-surface-container-highest: #242424; /* judgment: input field body / secondary button fill */
-  --color-surface-variant: #2b2b2b; /* judgment: glassmorphism base, used at 0.8 opacity + blur */
+  /* --- Surface: layers of polished obsidian, no borders (the "No-Line" rule) --- */
+  --color-surface: #0b0f14;
+  --color-surface-dim: #0a0e13; /* chrome (header + icon rail) sits *below* the canvas */
+  --color-surface-container-lowest: #000000;
+  --color-surface-container-low: #11161d;
+  --color-surface-container: #1a1f26;
+  --color-surface-container-high: #1b2027;
+  --color-surface-container-highest: #21262e;
+  --color-surface-variant: #21262e;
+  --color-surface-bright: #262d35;
 
-  /* --- Brand / accent --- */
-  --color-primary: #e8b339; /* exact: amber-gold, CTAs/active states/labels */
-  --color-primary-container: #3d2f0f; /* judgment: dark muted-gold tonal container behind primary text/badges */
-  --color-on-primary: #201702; /* judgment: near-black text on amber-gold fill, never white */
+  /* --- Brand: Robinhood green. Used for BOTH "user/market" accents and gains. --- */
+  --color-primary: #00c805;
+  --color-primary-dim: #00b304;
+  --color-primary-container: #003802;
+  --color-on-primary: #003802;
+
+  /* --- Secondary: deep purple, reserved for AI/system-generated content --- */
+  --color-secondary: #a68cff;
+  --color-secondary-container: #2a1d5c;
 
   /* --- Text --- */
-  --color-on-surface: #f4f2ec; /* judgment: warm off-white, pairs with the amber accent better than pure white */
+  --color-on-surface: #f4f6fe;
+  --color-on-surface-variant: #a8abb2;
 
-  /* --- Status (exact hexes per spec) --- */
-  --color-status-red: #f87171; /* exact: stop/danger */
-  --color-status-red-container: #3a1616; /* judgment: dark muted-red container at 10% use */
-  --color-status-green: #4ade80; /* exact: gain/confirm */
-  --color-status-green-container: #123a20; /* judgment: dark muted-green container */
-  --color-status-blue: #60a5fa; /* exact: watch/info */
-  --color-status-blue-container: #12233a; /* judgment: dark muted-blue container */
-
-  /* --- Secondary (kept distinct from status-blue for non-status accents, e.g. tags) --- */
-  --color-secondary: #60a5fa;
-  --color-secondary-container: #12233a;
+  /* --- Status. green/red intentionally alias primary/error: one loss color, one gain color. --- */
+  --color-status-green: #00c805;
+  --color-status-green-container: #00380266;
+  --color-status-red: #ff5000;
+  --color-status-red-container: #3d1200;
+  --color-status-blue: #60a5fa;
+  --color-status-blue-container: #12233a;
+  --color-status-amber: #ffe483; /* tertiary — caution/pending, never gain or loss */
+  --color-status-amber-container: #433700;
 
   /* --- Error (alias of status-red, kept for shadcn primitive compatibility) --- */
-  --color-error: #f87171;
-  --color-error-container: #3a1616;
+  --color-error: #ff5000;
+  --color-error-container: #3d1200;
 
-  /* --- Outline (ghost border, accessibility fallback only — never a default) --- */
-  --color-outline-variant: #5c5c5c; /* judgment: mid-grey, only ever applied at 10% opacity per the No-Line Rule's one exception */
+  /* --- Outline: ghost borders only, always at low opacity --- */
+  --color-outline: #72767c;
+  --color-outline-variant: #44484e;
 }

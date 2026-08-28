@@ -4,16 +4,26 @@ import { use, useEffect, useState } from "react";
 import Link from "next/link";
 
 import { computeRiskReward, computeMaxDrawdownPct } from "@/lib/risk-reward";
+import { CandidateBakeoff } from "@/components/thesis/candidate-bakeoff";
 import { ConvictionBadge } from "@/components/thesis/conviction-badge";
 import { PriceBadge } from "@/components/shared/price-badge";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
 import { LastUpdated } from "@/components/shared/last-updated";
-import type { BearCase, ConvictionTier, ExchangeCode, Json, TradePlan } from "@/lib/types";
+import type {
+  BearCase,
+  ConvictionTier,
+  ExchangeCode,
+  Json,
+  ThesisMode,
+  TradePlan,
+} from "@/lib/types";
 
 type ThesisDetail = {
   id: string;
   stock_id: string | null;
   ticker: string | null;
+  mode: ThesisMode;
+  selected_candidate_id: string | null;
   market_view: string | null;
   mispricing: string | null;
   catalyst: string | null;
@@ -209,6 +219,22 @@ export default function ThesisReviewPage({ params }: { params: Promise<{ id: str
           <div
             className="h-full bg-primary transition-all"
             style={{ width: `${thesis.conviction_score}%` }}
+          />
+        </div>
+      )}
+
+      {thesis.mode === "thesis_only" && (
+        <div className="mb-6">
+          {/*
+            Re-surfaced here, not just in the creation drawer: a macro thesis
+            saved as a draft has no instrument yet, and this is where the user
+            comes back to resolve it into one.
+          */}
+          <CandidateBakeoff
+            thesisId={id}
+            selectedCandidateId={thesis.selected_candidate_id}
+            autoRun={false}
+            onPicked={refresh}
           />
         </div>
       )}

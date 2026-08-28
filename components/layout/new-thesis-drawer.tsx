@@ -17,11 +17,11 @@ export function NewThesisDrawer() {
         onClick={close}
         aria-hidden
       />
-      <div className="relative flex h-full w-full max-w-xl flex-col overflow-y-auto bg-surface-container-low p-6 shadow-ambient">
+      <div className="custom-scrollbar relative flex h-full w-full max-w-2xl flex-col overflow-y-auto bg-surface-container-low p-6 pt-16 shadow-panel">
         <button
           type="button"
           onClick={close}
-          className="absolute right-4 top-4 rounded-full p-1.5 text-on-surface/60 hover:text-on-surface"
+          className="absolute right-4 top-4 z-10 rounded-full bg-white/5 p-2 text-on-surface-variant transition-colors hover:bg-white/10 hover:text-on-surface"
           aria-label="Close"
         >
           <X className="size-5" />

@@ -17,6 +17,14 @@ const CreateTradePlanSchema = z.object({
   max_portfolio_pct: z.number().nullable().optional(),
   time_exit_date: z.iso.date().nullable().optional(),
   time_exit_condition: z.string().nullable().optional(),
+  /**
+   * What Jarvis proposed before the trader edited it, from
+   * `POST /api/theses/:id/trade-plan-draft`. Recorded so the review screen's
+   * "Reset to AI suggestion" restores Jarvis's number rather than the number
+   * that was submitted — which is what it did when this fell back to
+   * `planFields`.
+   */
+  ai_suggested: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
 const RECOMMENDATION_TIERS: ConvictionTier[] = ["I", "II"];
@@ -33,7 +41,7 @@ export async function POST(request: Request) {
   }
 
   const supabase = createAdminClient();
-  const { thesis_id, ...planFields } = parsed.data;
+  const { thesis_id, ai_suggested, ...planFields } = parsed.data;
 
   const { data: thesis, error: thesisError } = await supabase
     .from("theses")
@@ -70,7 +78,7 @@ export async function POST(request: Request) {
   const insert: TradePlanInsert = {
     thesis_id,
     ...planFields,
-    ai_suggested: planFields as Json,
+    ai_suggested: (ai_suggested ?? planFields) as Json,
     edited_fields: [],
   };
 

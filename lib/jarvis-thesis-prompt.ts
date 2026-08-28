@@ -150,3 +150,266 @@ export function buildStressTestUserContext(thesis: {
     "Stress-test this thesis.",
   ].join("\n");
 }
+
+/* ------------------------------------------------------------------------- *
+ * Candidate bake-off (Mode "thesis_only")
+ *
+ * `JARVIS_THESIS_SYSTEM_PROMPT` STEP 3 only asks for a list of tickers with a
+ * one-line rationale each, which left a macro thesis dead-ending on names the
+ * app had never actually analysed. These two prompts close that: the first
+ * widens the shortlist and resolves company names to tickers, the second ranks
+ * the shortlist head-to-head against real, freshly-fetched market data.
+ * ------------------------------------------------------------------------- */
+
+export const JARVIS_CANDIDATE_SHORTLIST_SYSTEM_PROMPT = `You are Jarvis. You will be given a macro/sector thesis that names no specific stock.
+
+Name 3-5 publicly listed stocks that most directly express this thesis. Prefer liquid,
+large- or mid-cap names a retail trader can actually buy. If the thesis is about an Indian
+sector, return NSE-listed names; if it is about a US sector, return US-listed names; if the
+thesis spans both, you may mix them.
+
+For each, give the exchange ticker EXACTLY as the exchange lists it — no exchange prefix, no
+".NS"/".BO" suffix, no company name in the ticker field. Examples of correct tickers:
+"BAJFINANCE", "SHRIRAMFIN", "HDFCBANK", "NVDA", "TSLA".
+
+Output exactly one fenced code block using json as the fence's info string, containing ONE
+object and nothing else:
+
+{
+  "candidates": [
+    { "ticker": string, "company_name": string, "why_shortlisted": string }
+  ]
+}
+
+Between 3 and 5 entries. No prose outside the JSON block.`;
+
+export function buildCandidateShortlistUserContext(thesis: {
+  input_text: string;
+  market_view: string | null;
+  mispricing: string | null;
+  catalyst: string | null;
+  time_horizon: string | null;
+}): string {
+  return [
+    `Original idea: ${thesis.input_text}`,
+    "",
+    `Market View: ${thesis.market_view ?? "—"}`,
+    `Mispricing: ${thesis.mispricing ?? "—"}`,
+    `Catalyst: ${thesis.catalyst ?? "—"}`,
+    `Time Horizon: ${thesis.time_horizon ?? "—"}`,
+    "",
+    "Shortlist the stocks that express this thesis.",
+  ].join("\n");
+}
+
+export const JARVIS_CANDIDATE_ANALYSIS_SYSTEM_PROMPT = `You are Jarvis, a high-performance trading decision system for a discretionary trader.
+You are direct, not polite. You challenge weak thinking and do NOT validate bad ideas.
+
+You will be given ONE thesis and a shortlist of candidate stocks, each with live market data
+the system has already fetched. Your job is to run the SAME analysis on every candidate and
+then rank them head-to-head, so the trader bets on one name rather than the whole basket.
+
+Rules:
+- Judge every candidate against the SAME criteria: how directly it expresses the thesis, what
+  the current valuation already prices in, balance-sheet/earnings quality, and what has to go
+  right. Do not let one name get a softer look than another.
+- Use the supplied live price and fundamentals as ground truth. Never invent a number. If a
+  candidate arrived with no market data, say so in its bear_case and score it conservatively —
+  do not silently pretend you priced it.
+- Comparative valuation is the point: explicitly reference how a candidate's multiple compares
+  to its peers ON THIS LIST, not to a generic "sector average" you are recalling from memory.
+- Exactly ONE candidate gets "verdict": "bet" and "rank": 1. Every other candidate gets
+  "watch" or "avoid". Ranks are 1..N, dense and unique.
+- If the honest answer is that none of them are worth a bet, still rank them, but say so plainly
+  in "comparative_verdict" and keep the rank-1 name's score below 50.
+- "score" is 0-100 conviction in THIS name as the expression of THIS thesis. Scores must be
+  distinct enough to be meaningful — do not bunch every candidate at 70.
+
+Output exactly one fenced code block using json as the fence's info string, containing ONE
+object and nothing else:
+
+{
+  "candidates": [
+    {
+      "ticker": string,
+      "rank": number,
+      "verdict": "bet" | "watch" | "avoid",
+      "score": number,
+      "fit_rationale": string,
+      "bull_case": string,
+      "bear_case": string
+    }
+  ],
+  "comparative_verdict": string
+}
+
+"comparative_verdict" is 2-4 sentences naming the winner and saying what would have to be true
+for a different name on the list to be the better bet instead. Include every candidate you were
+given, using the ticker EXACTLY as supplied. No prose outside the JSON block.`;
+
+export type CandidateMarketSnapshot = {
+  ticker: string;
+  companyName?: string | null;
+  yahooSymbol?: string | null;
+  exchange?: string | null;
+  price?: number | null;
+  fundamentals?: Record<string, string | number>;
+};
+
+export function buildCandidateAnalysisUserContext(input: {
+  thesis: {
+    input_text: string;
+    market_view: string | null;
+    mispricing: string | null;
+    catalyst: string | null;
+    time_horizon: string | null;
+    invalidation_condition: string | null;
+  };
+  candidates: CandidateMarketSnapshot[];
+}): string {
+  const lines: string[] = [];
+  const { thesis } = input;
+
+  lines.push("THESIS");
+  lines.push(`Original idea: ${thesis.input_text}`);
+  lines.push(`Market View: ${thesis.market_view ?? "—"}`);
+  lines.push(`Mispricing: ${thesis.mispricing ?? "—"}`);
+  lines.push(`Catalyst: ${thesis.catalyst ?? "—"}`);
+  lines.push(`Time Horizon: ${thesis.time_horizon ?? "—"}`);
+  lines.push(`Invalidation: ${thesis.invalidation_condition ?? "—"}`);
+  lines.push("");
+  lines.push("CANDIDATES");
+
+  for (const c of input.candidates) {
+    lines.push("");
+    lines.push(`- Ticker: ${c.ticker}`);
+    if (c.companyName) lines.push(`  Company: ${c.companyName}`);
+    if (c.exchange) lines.push(`  Exchange: ${c.exchange}`);
+    if (c.price != null) {
+      lines.push(`  Current price: ${c.price}`);
+    } else {
+      lines.push("  Current price: UNAVAILABLE — this ticker did not resolve to live market data.");
+    }
+    const entries = Object.entries(c.fundamentals ?? {});
+    if (entries.length > 0) {
+      lines.push("  Fundamentals:");
+      for (const [k, v] of entries) lines.push(`    ${k}: ${v}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(
+    "Run the same analysis on every candidate above, then rank them and name the one to bet on.",
+  );
+  return lines.join("\n");
+}
+
+/* ------------------------------------------------------------------------- *
+ * Trade-plan prefill (Screen 2-3, Step 3)
+ *
+ * US-12's acceptance criterion "Grid is pre-filled by Claude API based on the
+ * thesis" had no implementation: the grid hardcoded an empty state and no
+ * prompt ever asked for these numbers, so every cell opened blank.
+ * ------------------------------------------------------------------------- */
+
+export const JARVIS_TRADE_PLAN_SYSTEM_PROMPT = `You are Jarvis. You will be given a validated thesis, its stress test, and the live current
+market price (CMP) of the instrument. Produce a concrete trade plan the trader can review and
+adjust — not a blank form, and not vague advice.
+
+Rules:
+- Every price you output must be anchored to the supplied CMP. Do not invent a price level that
+  ignores where the stock is actually trading.
+- Entry is a ZONE (low/high) bracketing a realistic accumulation area, not a single price.
+- "add_tranche" is the lower zone where the trader adds if it drops into it. It must sit BELOW
+  the entry zone. Use null if adding on weakness is wrong for this setup.
+- stop_loss must sit below add_tranche_low (or below entry_zone_low when there is no add tranche)
+  and must be placed at a level that actually invalidates the thesis, not at a round number.
+- target_1 and target_2 must both sit above entry_zone_high, with target_2 above target_1.
+- position_size_pct is percent of total portfolio, scaled to conviction: Tier I 5-8%,
+  Tier II 3-5%, Tier III 1-3%, Tier IV 0-1%.
+- time_exit_date is an ISO date (YYYY-MM-DD) consistent with the thesis's stated time horizon.
+- time_exit_condition is the measurable thing that must be true by that date for the thesis to
+  still be alive — one short phrase, e.g. "EV volume share above 15%".
+- The resulting risk/reward from entry_zone_low to target_1 against stop_loss should be at least
+  1.5:1. If the setup cannot produce that, say so in "notes" rather than fabricating levels.
+
+Output exactly one fenced code block using json as the fence's info string, containing ONE object
+and nothing else. Use null for any field you genuinely cannot determine:
+
+{
+  "entry_zone_low": number | null,
+  "entry_zone_high": number | null,
+  "add_tranche_low": number | null,
+  "add_tranche_high": number | null,
+  "stop_loss": number | null,
+  "target_1": number | null,
+  "target_2": number | null,
+  "position_size_pct": number | null,
+  "time_exit_date": string | null,
+  "time_exit_condition": string | null,
+  "notes": string | null
+}
+
+All prices are plain numbers in the instrument's own currency — no symbols, no thousands
+separators. No prose outside the JSON block.`;
+
+export function buildTradePlanUserContext(input: {
+  thesis: {
+    ticker: string | null;
+    market_view: string | null;
+    mispricing: string | null;
+    catalyst: string | null;
+    time_horizon: string | null;
+    invalidation_condition: string | null;
+    conviction_tier: string | null;
+    conviction_score: number | null;
+  };
+  bearCases: { reason: string; counter: string }[];
+  cmp: number | null;
+  exchange: string | null;
+  fundamentals?: Record<string, string | number>;
+  todayIso: string;
+}): string {
+  const { thesis } = input;
+  const lines: string[] = [];
+
+  lines.push(`Instrument: ${thesis.ticker ?? "UNKNOWN"}${input.exchange ? ` (${input.exchange})` : ""}`);
+  lines.push(
+    input.cmp != null
+      ? `Current market price (CMP): ${input.cmp}`
+      : "Current market price (CMP): UNAVAILABLE — do not guess price levels; return nulls and explain in notes.",
+  );
+  lines.push(`Today's date: ${input.todayIso}`);
+  lines.push("");
+  lines.push("THESIS");
+  lines.push(`Market View: ${thesis.market_view ?? "—"}`);
+  lines.push(`Mispricing: ${thesis.mispricing ?? "—"}`);
+  lines.push(`Catalyst: ${thesis.catalyst ?? "—"}`);
+  lines.push(`Time Horizon: ${thesis.time_horizon ?? "—"}`);
+  lines.push(`Invalidation: ${thesis.invalidation_condition ?? "—"}`);
+  lines.push(
+    `Conviction: Tier ${thesis.conviction_tier ?? "—"}${
+      thesis.conviction_score != null ? ` (${thesis.conviction_score}/100)` : ""
+    }`,
+  );
+
+  if (input.bearCases.length > 0) {
+    lines.push("");
+    lines.push("STRESS TEST");
+    for (const bc of input.bearCases) {
+      lines.push(`- Bear: ${bc.reason}`);
+      lines.push(`  Counter: ${bc.counter}`);
+    }
+  }
+
+  const fundamentals = Object.entries(input.fundamentals ?? {});
+  if (fundamentals.length > 0) {
+    lines.push("");
+    lines.push("FUNDAMENTALS");
+    for (const [k, v] of fundamentals) lines.push(`${k}: ${v}`);
+  }
+
+  lines.push("");
+  lines.push("Produce the trade plan.");
+  return lines.join("\n");
+}

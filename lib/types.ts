@@ -65,6 +65,35 @@ export type Thesis = {
   status: ThesisStatus;
   bear_cases: BearCase[];
   raw_llm_response: string | null;
+  /** Set once a macro thesis's bake-off is resolved to one name (see `ThesisCandidate`). */
+  selected_candidate_id: string | null;
+};
+
+/**
+ * One name Jarvis weighed when a thesis named no stock of its own. See
+ * migration 0011 — these persist the head-to-head so a macro thesis resolves
+ * to a concrete ticker instead of dead-ending on a list of suggestions.
+ */
+export type CandidateVerdict = "bet" | "watch" | "avoid";
+
+/** `thesis_candidates` */
+export type ThesisCandidate = {
+  id: string;
+  created_at: string;
+  thesis_id: string;
+  stock_id: string | null;
+  ticker: string;
+  company_name: string | null;
+  yahoo_symbol: string | null;
+  exchange: ExchangeCode | null;
+  rank: number;
+  verdict: CandidateVerdict;
+  score: number | null;
+  fit_rationale: string | null;
+  bull_case: string | null;
+  bear_case: string | null;
+  cmp: number | null;
+  fundamentals: Record<string, string | number>;
 };
 
 /** One measurable thesis condition tracked on a locked trade plan (spec US-15). */
@@ -240,8 +269,33 @@ export type ThesisInsert = Pick<Thesis, "input_text" | "mode"> &
       | "status"
       | "bear_cases"
       | "raw_llm_response"
+      | "selected_candidate_id"
     >
   >;
+
+export type ThesisCandidateInsert = Pick<
+  ThesisCandidate,
+  "thesis_id" | "ticker" | "rank" | "verdict"
+> &
+  Partial<
+    Pick<
+      ThesisCandidate,
+      | "id"
+      | "created_at"
+      | "stock_id"
+      | "company_name"
+      | "yahoo_symbol"
+      | "exchange"
+      | "score"
+      | "fit_rationale"
+      | "bull_case"
+      | "bear_case"
+      | "cmp"
+      | "fundamentals"
+    >
+  >;
+
+export type ThesisCandidateUpdate = Partial<ThesisCandidateInsert>;
 
 export type TradePlanInsert = Pick<TradePlan, "thesis_id"> &
   Partial<
@@ -383,6 +437,12 @@ export interface Database {
     Tables: {
       stocks: { Row: Stock; Insert: StockInsert; Update: StockUpdate; Relationships: [] };
       theses: { Row: Thesis; Insert: ThesisInsert; Update: ThesisUpdate; Relationships: [] };
+      thesis_candidates: {
+        Row: ThesisCandidate;
+        Insert: ThesisCandidateInsert;
+        Update: ThesisCandidateUpdate;
+        Relationships: [];
+      };
       trade_plans: { Row: TradePlan; Insert: TradePlanInsert; Update: TradePlanUpdate; Relationships: [] };
       positions: { Row: Position; Insert: PositionInsert; Update: PositionUpdate; Relationships: [] };
       entries: { Row: Entry; Insert: EntryInsert; Update: EntryUpdate; Relationships: [] };
@@ -424,6 +484,7 @@ export interface Database {
       exchange_code: ExchangeCode;
       conviction_tier: ConvictionTier;
       thesis_mode: ThesisMode;
+      candidate_verdict: CandidateVerdict;
       thesis_status: ThesisStatus;
       position_status: PositionStatus;
       entry_tranche: EntryTranche;

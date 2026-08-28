@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { ThesisUpdate } from "@/lib/types";
 
 /**
  * The thesis-detail read path: the thesis itself, its single trade plan (if
@@ -39,6 +40,13 @@ const UpdateThesisSchema = z.object({
     .array(z.object({ reason: z.string(), counter: z.string(), modified: z.boolean() }))
     .optional(),
   conviction_score: z.number().min(0).max(100).optional(),
+  /**
+   * Resolves a macro thesis onto one of its bake-off candidates. The client
+   * sends only the candidate id; `ticker` and `stock_id` are copied from that
+   * row server-side rather than trusted from the request, so the thesis can
+   * never end up pointing at a ticker the bake-off never actually priced.
+   */
+  selected_candidate_id: z.string().uuid().nullable().optional(),
 });
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -49,9 +57,38 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
   }
   const supabase = createAdminClient();
+
+  const { selected_candidate_id, ...rest } = parsed.data;
+  const patch: ThesisUpdate = { ...rest };
+
+  if (selected_candidate_id !== undefined) {
+    patch.selected_candidate_id = selected_candidate_id;
+    if (selected_candidate_id === null) {
+      patch.ticker = null;
+      patch.stock_id = null;
+    } else {
+      const { data: candidate, error: candidateError } = await supabase
+        .from("thesis_candidates")
+        .select("ticker, stock_id, thesis_id")
+        .eq("id", selected_candidate_id)
+        .single();
+      if (candidateError || !candidate) {
+        return NextResponse.json({ error: "Candidate not found" }, { status: 404 });
+      }
+      if (candidate.thesis_id !== id) {
+        return NextResponse.json(
+          { error: "Candidate belongs to a different thesis" },
+          { status: 400 },
+        );
+      }
+      patch.ticker = candidate.ticker;
+      patch.stock_id = candidate.stock_id;
+    }
+  }
+
   const { data: thesis, error } = await supabase
     .from("theses")
-    .update(parsed.data)
+    .update(patch)
     .eq("id", id)
     .select("*")
     .single();

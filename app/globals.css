@@ -62,6 +62,45 @@ a {
   text-decoration: none;
 }
 
+/*
+ * "Glass panel" — the module surface from the Stitch mocks. Depth comes from a
+ * translucent fill + blur over the canvas, plus a hairline top-highlight, NOT
+ * from a border (the design system's No-Line Rule). Use it for every content
+ * module; use nothing for the page background.
+ */
+@layer components {
+  .glass-panel {
+    background-color: color-mix(in srgb, var(--color-surface-container) 55%, transparent);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.04),
+      0 8px 32px rgb(0 0 0 / 0.45);
+  }
+
+  /* Sunken input well: an inner layer darker than its parent module. */
+  .sunken {
+    background-color: color-mix(in srgb, var(--color-surface-container-lowest) 60%, transparent);
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.4);
+  }
+}
+
+/* Thin, self-effacing scrollbars — the default macOS/Windows bars break the HUD. */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgb(255 255 255 / 0.1);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(255 255 255 / 0.2);
+}
+
 @layer base {
   /*
    * shadcn/ui's own base tokens (neutral style), left as generated — the
