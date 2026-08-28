@@ -45,7 +45,29 @@ export async function login(formData: FormData): Promise<LoginState> {
   const submitted = formData.get("password");
   const appPassword = process.env.APP_PASSWORD;
 
-  if (typeof submitted !== "string" || !appPassword) {
+  if (!appPassword) {
+    // The user-facing message stays deliberately generic (see GENERIC_ERROR),
+    // but the operator needs to be able to tell "wrong password" apart from
+    // "this deployment has no password configured" — otherwise a missing env
+    // var on a fresh deploy is indistinguishable from a typo, and the correct
+    // password appears to be rejected. This line goes to the server log only.
+    console.error(
+      "[config] APP_PASSWORD is not set, so every login attempt will be rejected. " +
+        "Set it in your hosting provider's environment variables — .env.local is " +
+        "never uploaded.",
+    );
+    return { error: GENERIC_ERROR };
+  }
+
+  if (typeof submitted !== "string") {
+    return { error: GENERIC_ERROR };
+  }
+
+  if (!process.env.SESSION_SECRET) {
+    console.error(
+      "[config] SESSION_SECRET is not set. Even a correct password cannot mint " +
+        "a session cookie. Generate one with `openssl rand -base64 32`.",
+    );
     return { error: GENERIC_ERROR };
   }
 

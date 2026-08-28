@@ -260,13 +260,47 @@ anywhere Node does.
 npx vercel
 ```
 
-Set every variable from `.env.local` in your project settings, with
-`NEXT_PUBLIC_SITE_URL` pointing at the deployed URL. The Edge Functions and their cron
-schedules live on Supabase and deploy separately.
+**`.env.local` is never uploaded — it is gitignored, and Vercel does not read it.** Every
+variable has to be set again in your hosting provider's dashboard, or the deployment will
+look broken in confusing ways:
 
-**Before you deploy publicly:** the entire app is protected by one shared password. That
-is adequate for a single user on a private URL. It is *not* adequate for anything holding
-other people's data.
+| Missing variable | What you see |
+|---|---|
+| `APP_PASSWORD` | Login rejects the correct password with "Incorrect password." |
+| `SESSION_SECRET` | Same — the password matches but no session can be minted |
+| `SUPABASE_SERVICE_ROLE_KEY` | Login works, every page is empty or errors |
+| `OPENROUTER_API_KEY` | Everything loads, running a thesis fails |
+| `NEXT_PUBLIC_SITE_URL` | Falls back to `VERCEL_URL` automatically; only needed on a custom domain |
+
+The user-facing login error is deliberately generic so it can't be used to probe a
+deployment, but each of these logs a specific `[config]` line to the server. If login is
+refusing a password you know is right, check your runtime logs first:
+
+```bash
+vercel env ls           # what is actually set, per environment
+vercel logs <url>       # look for [config] lines
+```
+
+Remember to redeploy after adding variables — they are baked in at build time.
+
+The Edge Functions and their cron schedules live on Supabase and deploy separately.
+
+### There are no user accounts
+
+This is worth being explicit about, because it surprises people. Authentication is **one
+shared password**, not a login system:
+
+- There is no sign-up, no username, no per-user data. The login screen asks for a password
+  and nothing else.
+- Anyone with the password sees and can edit **the same** theses, positions and journal.
+  A second person logging in is not a second account — it is the same workspace.
+
+That is a deliberate fit for the intended use (one trader, own data, private URL). If you
+want someone else to try it without touching your book, **deploy a second instance with
+its own Supabase project** — no code change, complete separation.
+
+Turning this into genuine multi-tenant software means real work: accounts, a `user_id` on
+every table, Supabase RLS policies, and a data migration. It is not a config flag.
 
 ---
 
