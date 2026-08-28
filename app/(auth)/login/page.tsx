@@ -3,14 +3,14 @@
 import { useId, useState, useTransition } from "react";
 
 import { Label } from "@/components/ui/label";
+import { Logo } from "@/components/layout/logo";
 
 import { login } from "./actions";
 
 /**
  * Single shared-password login gate. No accounts, no "forgot password" —
- * just one field. Styled per the Neon Velocity "bottom-heavy" input rule
- * (flat field body, no border except a 2px primary highlight on focus) and
- * the gradient primary button rule from Global Constraints.
+ * just one field. Keeps the design system's "bottom-heavy" input rule (flat
+ * field body, no border except a 2px primary highlight on focus).
  */
 export default function LoginPage() {
   const passwordId = useId();
@@ -31,11 +31,12 @@ export default function LoginPage() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center px-6 py-24">
-      <div className="w-full max-w-sm rounded-xl bg-surface-container-low p-8">
-        <h1 className="font-display text-2xl font-bold text-on-surface">
-          Jarvis Watchlist Tracker
+      <div className="glass-panel w-full max-w-sm rounded-xl p-8">
+        <Logo className="size-14" />
+        <h1 className="mt-4 font-display text-2xl font-extrabold tracking-tight text-on-surface">
+          Jarvis Decision Cockpit
         </h1>
-        <p className="mt-1 text-sm text-on-surface/70">
+        <p className="mt-1 text-sm text-on-surface-variant">
           Enter the password to continue.
         </p>
 
@@ -68,7 +69,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={isPending}
-            className="mt-2 h-11 rounded-xl bg-gradient-to-br from-primary to-primary-container text-sm font-medium text-on-primary transition-opacity disabled:opacity-60"
+            className="mt-2 h-11 rounded-full bg-primary text-sm font-bold tracking-tight text-on-primary shadow-ambient transition-all hover:bg-primary-dim active:scale-[0.98] disabled:opacity-60"
           >
             {isPending ? "Checking…" : "Continue"}
           </button>

@@ -1,10 +1,26 @@
-# Jarvis Decision Cockpit
+<p align="center">
+  <img src="public/logo.svg" alt="" width="104" height="104" />
+</p>
 
-A self-hosted decision-support system for discretionary stock traders. You give it a
-thesis in plain English — *"NBFCs have all-time-low NPAs, I think they run this year"* —
-and it returns a complete investment memorandum: every candidate priced and compared
-head-to-head, a winner, four ways the trade could fail, a costed trade plan, and the exit
-rules. Then it watches the market and emails you when a level is hit.
+<h1 align="center">Jarvis Decision Cockpit</h1>
+
+<p align="center">
+  <em>Turn a plain-English trading thesis into a full investment memorandum.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/harshf15-code/Myticker/actions/workflows/ci.yml"><img src="https://github.com/harshf15-code/Myticker/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license" /></a>
+  <img src="https://img.shields.io/badge/Next.js-16-black.svg" alt="Next.js 16" />
+  <img src="https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg" alt="Node 22+" />
+</p>
+
+---
+
+You give it a thesis in plain English — *"NBFCs have all-time-low NPAs, I think they run
+this year"* — and it returns a complete investment memorandum: every candidate priced and
+compared head-to-head, a winner, four ways the trade could fail, a costed trade plan, and
+the exit rules. Then it watches the market and emails you when a level is hit.
 
 > **This is decision support, not a broker.** It never places an order, never touches a
 > brokerage account, and never moves money. It is not investment advice. Every number it

@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Plus } from "lucide-react";
 
+import { Logo } from "./logo";
 import { LogoutButton } from "./logout-button";
 import { activeNavItem } from "./nav-items";
 import { useNewThesisDrawer } from "./new-thesis-context";
@@ -21,11 +22,11 @@ export function AppHeader() {
   return (
     <header className="fixed inset-x-0 top-0 z-50 flex h-16 items-center justify-between bg-surface-dim px-4 shadow-[0_1px_0_0_rgba(255,255,255,0.05)] sm:px-6">
       <div className="flex items-baseline gap-4 sm:gap-6">
-        <Link
-          href="/"
-          className="font-display text-xl font-extrabold tracking-tighter text-primary sm:text-2xl"
-        >
-          JARVIS
+        <Link href="/" className="flex items-center gap-2">
+          <Logo className="size-7 shrink-0 sm:size-8" />
+          <span className="font-display text-xl font-extrabold tracking-tighter text-on-surface sm:text-2xl">
+            JARVIS
+          </span>
         </Link>
         {active && (
           <span className="font-display text-xs font-bold uppercase tracking-widest text-on-surface-variant">
