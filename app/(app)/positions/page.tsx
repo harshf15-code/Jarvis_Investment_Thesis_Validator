@@ -3,6 +3,16 @@ import { PositionsPageClient } from "@/components/positions/positions-page-clien
 import type { PositionRow } from "@/components/positions/positions-table";
 import { listOpenPositions } from "@/lib/queries";
 
+/**
+ * Never prerendered: this reads the live database on every request. Next used
+ * to infer that from the `cookies()` call inside the old self-fetch helper;
+ * querying Supabase directly is not a dynamic signal, so the intent has to be
+ * stated. Without it the build tries to render this page and fails wherever
+ * the Supabase env vars are absent (CI), or bakes in stale rows where they
+ * are present.
+ */
+export const dynamic = "force-dynamic";
+
 export default async function PositionsPage() {
   const rows: PositionRow[] = await listOpenPositions();
 
