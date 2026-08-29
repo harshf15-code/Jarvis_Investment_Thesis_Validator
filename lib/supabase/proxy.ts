@@ -1,8 +1,23 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-/** Paths reachable without a session. Everything else redirects to /login. */
-const PUBLIC_PATHS = ["/login", "/signup"];
+/**
+ * Paths reachable without a session.
+ *
+ * `/` is the public landing page, so it is listed here but behaves differently
+ * from the two auth pages: a signed-in visitor is bounced off /login and
+ * /signup (there is nothing there for them) but may still read the landing
+ * page, which offers them the cockpit instead of a sign-up button.
+ */
+const AUTH_PATHS = ["/login", "/signup"];
+const PUBLIC_PATHS = ["/", ...AUTH_PATHS];
+
+/** Where a signed-in user lands: the cockpit, not the marketing page. */
+const HOME_PATH = "/dashboard";
+
+function matches(pathname: string, paths: string[]): boolean {
+  return paths.some((p) => pathname === p || (p !== "/" && pathname.startsWith(`${p}/`)));
+}
 
 /**
  * Refreshes the Supabase session cookie and gates every request on it.
@@ -47,19 +62,16 @@ export async function updateSession(request: NextRequest) {
   const user = data?.claims;
 
   const { pathname } = request.nextUrl;
-  const isPublic = PUBLIC_PATHS.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
 
-  if (!user && !isPublic) {
+  if (!user && !matches(pathname, PUBLIC_PATHS)) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
   }
 
-  if (user && isPublic) {
+  if (user && matches(pathname, AUTH_PATHS)) {
     const url = request.nextUrl.clone();
-    url.pathname = "/";
+    url.pathname = HOME_PATH;
     return NextResponse.redirect(url);
   }
 

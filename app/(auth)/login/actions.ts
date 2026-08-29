@@ -50,7 +50,7 @@ export async function login(formData: FormData): Promise<AuthState> {
   // The layout is cached per-request; without this the first render after
   // signing in can still be the logged-out tree.
   revalidatePath("/", "layout");
-  redirect("/");
+  redirect("/dashboard");
 }
 
 export async function signup(formData: FormData): Promise<AuthState> {
@@ -85,7 +85,7 @@ export async function signup(formData: FormData): Promise<AuthState> {
   }
 
   revalidatePath("/", "layout");
-  redirect("/");
+  redirect("/dashboard");
 }
 
 export async function logout(): Promise<void> {

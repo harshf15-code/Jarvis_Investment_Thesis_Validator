@@ -89,7 +89,9 @@ Two Supabase Edge Functions run on `pg_cron`:
 
 | Route | What it is |
 |---|---|
-| `/` | Cockpit — portfolio state at a glance |
+| `/` | Landing page — public, the only route you can reach signed out besides the two below |
+| `/signup` · `/login` | Create an account, or sign in |
+| `/dashboard` | Cockpit — portfolio state at a glance |
 | `/thesis` | Every thesis you've run |
 | `/thesis/[id]` | **The memorandum** |
 | `/positions` · `/positions/[id]` | Open positions, entries, exits |
@@ -167,11 +169,14 @@ Vault rather than inlining it into the cron definition.
 
 ```
 app/
-  (auth)/login/        Shared-password gate
-  (app)/               Everything behind the gate
+  page.tsx             Public landing page
+  (auth)/              Sign-up and sign-in
+  (app)/               Everything behind the session gate
+    dashboard/         The cockpit
     thesis/[id]/       The memorandum
     positions/         Position tracking
-  api/                 Route handlers — the only things that touch the DB
+  api/                 Route handlers
+proxy.ts               Session gate (was middleware.ts)
 components/
   layout/              Header, icon rail, mobile nav, thesis drawer
   thesis/              Memorandum: comparative grid, four tabs, back-trade dialog
@@ -180,7 +185,8 @@ lib/
   jarvis-thesis-prompt.ts  Thesis structuring + candidate shortlist
   jarvis-thesis-parser.ts  Fenced-JSON extraction, trade-plan geometry
   market-data.ts           yahoo-finance2 wrapper (quotes, OHLCV, fundamentals)
-  supabase/admin.ts        Service-role client — the only DB access path
+  supabase/server.ts       Request-scoped client — what almost everything uses
+  supabase/admin.ts        Service-role client — bypasses RLS, for jobs only
 supabase/
   migrations/          Schema, applied in numeric order
   functions/           Deno Edge Functions (poll-prices, daily-digest)
@@ -189,7 +195,7 @@ styles/tokens.css      Design tokens — the single source of colour
 
 **Auth is Supabase Auth, and isolation is enforced by Postgres.** Sign-up is open: email
 and password, no invite. `proxy.ts` refreshes the session and redirects anyone without one
-to `/login`.
+to `/login`, except on the public landing page at `/`.
 
 What keeps one account's data away from another's is **row-level security**, not
 application code. Every table except `stocks` carries a `user_id` that defaults to

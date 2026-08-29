@@ -24,7 +24,7 @@ export type NavItem = {
  * the list and drift apart.
  */
 export const NAV_ITEMS: NavItem[] = [
-  { href: "/", label: "Cockpit", short: "Cockpit", icon: LayoutDashboard },
+  { href: "/dashboard", label: "Cockpit", short: "Cockpit", icon: LayoutDashboard },
   { href: "/positions", label: "Active Positions", short: "Positions", icon: Wallet },
   { href: "/thesis", label: "Stress Test & Plan", short: "Thesis", icon: FlaskConical },
   { href: "/feed", label: "Intelligence Feed", short: "Feed", icon: Radio },
@@ -35,8 +35,7 @@ export const NAV_ITEMS: NavItem[] = [
 
 /** Longest-prefix match, so `/thesis/<id>/plan` still highlights "Stress Test & Plan". */
 export function activeNavItem(pathname: string): NavItem | undefined {
-  if (pathname === "/") return NAV_ITEMS[0];
-  return NAV_ITEMS.filter((item) => item.href !== "/" && pathname.startsWith(item.href)).sort(
-    (a, b) => b.href.length - a.href.length,
-  )[0];
+  return NAV_ITEMS.filter(
+    (item) => pathname === item.href || pathname.startsWith(`${item.href}/`),
+  ).sort((a, b) => b.href.length - a.href.length)[0];
 }
