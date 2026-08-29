@@ -13,12 +13,12 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.102",
+    "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "ai": "^6.0.268",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns-tz": "^3.2.0",
-    "jose": "^6.2.10",
     "lightweight-charts": "^5.2.1",
     "lucide-react": "^1.34.0",
     "next": "16.3.3",

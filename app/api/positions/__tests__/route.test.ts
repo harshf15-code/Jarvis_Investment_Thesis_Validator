@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
-import { createAdminClient } from "@/lib/supabase/admin";
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
 function buildSupabaseMock() {
@@ -37,7 +37,7 @@ describe("POST /api/positions", () => {
 
   it("creates a position + first entry and links a recommendation when provided", async () => {
     const mock = buildSupabaseMock();
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
 
     const req = new Request("http://test", {
       method: "POST",

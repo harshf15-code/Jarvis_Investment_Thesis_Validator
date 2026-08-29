@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 
 /**
  * Screen 5–6's single read: one position with everything the exit-discipline
@@ -15,7 +15,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
  */
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: position, error: positionError } = await supabase
     .from("positions")

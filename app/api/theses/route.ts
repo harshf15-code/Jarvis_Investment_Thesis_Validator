@@ -10,7 +10,7 @@ import {
 import { parseThesisResponse } from "@/lib/jarvis-thesis-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { listTheses } from "@/lib/queries";
 import type { ExchangeCode, ThesisInsert } from "@/lib/types";
 
@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
   }
   const { input_text } = parsedInput.data;
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   // Heuristic resolution — a context-fetching optimization, not the final
   // mode/ticker answer (see Task 7's design note).

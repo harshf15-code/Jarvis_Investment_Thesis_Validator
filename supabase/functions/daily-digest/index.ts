@@ -45,6 +45,45 @@ function chunk<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
+/**
+ * Resolves each owner's email address from `auth.users`. Runs on the
+ * service-role key, which is what makes the admin auth API available here.
+ * A user who has since been deleted resolves to `null` and falls back to
+ * `DIGEST_RECIPIENT_EMAIL`, so their alerts are still seen by someone rather
+ * than silently dropped.
+ */
+async function resolveRecipients(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  userIds: string[],
+): Promise<Map<string, string>> {
+  const byUserId = new Map<string, string>();
+  for (const userId of userIds) {
+    try {
+      const { data, error } = await supabase.auth.admin.getUserById(userId);
+      if (error || !data?.user?.email) {
+        console.error(`daily-digest: no email for user ${userId}`, error);
+        continue;
+      }
+      byUserId.set(userId, data.user.email as string);
+    } catch (err) {
+      console.error(`daily-digest: failed to look up user ${userId}`, err);
+    }
+  }
+  return byUserId;
+}
+
+/**
+ * One digest per account.
+ *
+ * This used to send a single email to a `DIGEST_RECIPIENT_EMAIL` secret,
+ * which was correct while the app had one shared login. With real accounts
+ * that would mail every user's stop-loss and trim alerts to whoever owns that
+ * address — a data leak, and useless to the people whose positions they are.
+ * Alerts are therefore grouped by owner and sent separately, and a user's rows
+ * are marked emailed only after *their* send succeeds, so one failed recipient
+ * never suppresses another's alerts on the next run.
+ */
 Deno.serve(async (_req: Request) => {
   const supabase = createAdminClient();
 
@@ -54,7 +93,7 @@ Deno.serve(async (_req: Request) => {
 
   const { data: alertRows, error: alertError } = await supabase
     .from("position_alerts")
-    .select("id, position_id, alert_type, triggered_at, details")
+    .select("id, position_id, user_id, alert_type, triggered_at, details")
     .is("emailed_at", null)
     .gt("triggered_at", lookbackFloor)
     .order("triggered_at", { ascending: true });
@@ -78,73 +117,91 @@ Deno.serve(async (_req: Request) => {
     (positionRows ?? []).map((p: { id: string; ticker: string }) => [p.id, p.ticker]),
   );
 
-  const enrichedRows = alertRows.map((row) => ({
-    stock_id: row.position_id as string, // `groupAlertsByStock` groups on this key name; semantics is now "position"
-    ticker: tickerByPositionId.get(row.position_id as string) ?? "UNKNOWN",
-    trigger_type: row.alert_type as string,
-    triggered_at: row.triggered_at as string,
-    details: row.details,
-  }));
-
-  const groups = groupAlertsByStock(enrichedRows);
-  const html = renderDigestHtml(groups);
-  const text = renderDigestText(groups);
-
-  const to = Deno.env.get("DIGEST_RECIPIENT_EMAIL");
-  if (!to) {
-    return jsonResponse(
-      { error: "DIGEST_RECIPIENT_EMAIL environment variable is not set" },
-      500,
-    );
+  // Alerts predating accounts (and any whose owner has been deleted) group
+  // under this key and go to the fallback address.
+  const UNOWNED = "__unowned__";
+  const alertsByUser = new Map<string, typeof alertRows>();
+  for (const row of alertRows) {
+    const key = (row.user_id as string | null) ?? UNOWNED;
+    const list = alertsByUser.get(key) ?? [];
+    list.push(row);
+    alertsByUser.set(key, list);
   }
 
-  try {
-    await sendDigestEmail(html, text, to);
-  } catch (err) {
-    console.error("daily-digest: sendDigestEmail failed", err);
-    return jsonResponse(
-      {
-        error: `Failed to send digest email: ${err instanceof Error ? err.message : String(err)}`,
-      },
-      502,
-    );
-  }
+  const fallbackTo = Deno.env.get("DIGEST_RECIPIENT_EMAIL") ?? null;
+  const emailByUserId = await resolveRecipients(
+    supabase,
+    [...alertsByUser.keys()].filter((k) => k !== UNOWNED),
+  );
 
-  // Only mark rows emailed AFTER a confirmed successful send — if the send
-  // failed above, we return before reaching here and every row stays
-  // `emailed_at is null`, so the next scheduled run retries them (rather
-  // than silently dropping alerts on a transient AgentMail failure).
-  //
-  // Chunked (`EMAILED_UPDATE_BATCH_SIZE` ids per `.in(...)` call) rather
-  // than one call with every id, so a large backlog can never produce a
-  // single request whose URL is too long for PostgREST.
-  const alertLogIds = alertRows.map((r) => r.id);
   const emailedAt = new Date().toISOString();
-  for (const idBatch of chunk(alertLogIds, EMAILED_UPDATE_BATCH_SIZE)) {
-    const { error: updateError } = await supabase
-      .from("position_alerts")
-      .update({ emailed_at: emailedAt })
-      .in("id", idBatch);
+  let sentCount = 0;
+  const failures: string[] = [];
 
-    if (updateError) {
-      // The email already went out at this point; failing to mark rows
-      // emailed means the next run may re-send the same alerts. Surface it
-      // loudly rather than silently swallowing it.
+  for (const [userKey, rows] of alertsByUser) {
+    const to = userKey === UNOWNED ? fallbackTo : (emailByUserId.get(userKey) ?? fallbackTo);
+    if (!to) {
       console.error(
-        "daily-digest: email sent but failed to mark alert_log rows emailed",
-        updateError,
+        `daily-digest: no recipient for ${userKey} and DIGEST_RECIPIENT_EMAIL is unset; ` +
+          `${rows.length} alert(s) left unemailed for the next run`,
       );
-      return jsonResponse(
-        {
-          error: `Email sent but failed to mark alert_log rows emailed: ${updateError.message}`,
-        },
-        500,
-      );
+      failures.push(userKey);
+      continue;
     }
+
+    const enrichedRows = rows.map((row) => ({
+      stock_id: row.position_id as string, // `groupAlertsByStock` groups on this key name; semantics is now "position"
+      ticker: tickerByPositionId.get(row.position_id as string) ?? "UNKNOWN",
+      trigger_type: row.alert_type as string,
+      triggered_at: row.triggered_at as string,
+      details: row.details,
+    }));
+
+    const groups = groupAlertsByStock(enrichedRows);
+
+    try {
+      await sendDigestEmail(renderDigestHtml(groups), renderDigestText(groups), to);
+    } catch (err) {
+      // Left `emailed_at is null` on purpose so the next scheduled run
+      // retries them, rather than dropping alerts on a transient failure.
+      console.error(`daily-digest: sendDigestEmail failed for ${userKey}`, err);
+      failures.push(userKey);
+      continue;
+    }
+
+    // Only mark rows emailed AFTER a confirmed successful send.
+    //
+    // Chunked (`EMAILED_UPDATE_BATCH_SIZE` ids per `.in(...)` call) rather
+    // than one call with every id, so a large backlog can never produce a
+    // single request whose URL is too long for PostgREST.
+    for (const idBatch of chunk(rows.map((r) => r.id), EMAILED_UPDATE_BATCH_SIZE)) {
+      const { error: updateError } = await supabase
+        .from("position_alerts")
+        .update({ emailed_at: emailedAt })
+        .in("id", idBatch);
+
+      if (updateError) {
+        // The email already went out at this point; failing to mark rows
+        // emailed means the next run may re-send them. Surface it loudly
+        // rather than silently swallowing it.
+        console.error(
+          `daily-digest: email sent to ${userKey} but failed to mark rows emailed`,
+          updateError,
+        );
+        failures.push(userKey);
+      }
+    }
+
+    sentCount++;
   }
 
   return jsonResponse(
-    { sent: true, alertCount: alertRows.length, stockCount: groups.length },
-    200,
+    {
+      sent: sentCount > 0,
+      recipients: sentCount,
+      alertCount: alertRows.length,
+      failures,
+    },
+    failures.length > 0 && sentCount === 0 ? 502 : 200,
   );
 });

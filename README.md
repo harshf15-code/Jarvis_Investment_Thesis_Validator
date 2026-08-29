@@ -121,8 +121,6 @@ Fill in `.env.local` — every variable is documented in the example file:
 | `SUPABASE_DB_URL` | Supabase → Settings → Database → Connection string (URI) |
 | `OPENROUTER_API_KEY` | openrouter.ai → Keys |
 | `OPENROUTER_MODEL_ID` | e.g. `anthropic/claude-sonnet-4.5` |
-| `APP_PASSWORD` | Any password — this is the only thing gating the app |
-| `SESSION_SECRET` | `openssl rand -base64 32` |
 
 Apply the schema, in order:
 
@@ -135,13 +133,17 @@ done
 > `0003_pg_cron_jobs.sql.example` is skipped by that glob on purpose — it is a template
 > you edit and run by hand once, after deploying the Edge Functions.
 
+Then, in **Supabase → Authentication → Providers → Email**, turn **"Confirm email" off**
+unless you want new users to verify by email first. It is on by default, and with it on a
+sign-up ends at "check your inbox" instead of signing you in.
+
 Then:
 
 ```bash
 npm run dev     # http://localhost:3000
 ```
 
-Log in with `APP_PASSWORD`, click **New Thesis**, and type a thesis.
+Create an account at `/signup`, click **New Thesis**, and type a thesis.
 
 ### Optional: background monitoring
 
@@ -185,11 +187,18 @@ supabase/
 styles/tokens.css      Design tokens — the single source of colour
 ```
 
-**Auth is deliberately minimal.** One shared password, one signed HS256 cookie
-(`middleware.ts`). There are no user accounts because this is built to be run by one
-person on their own data. Row-level security is enabled with *no policies* on every
-table, so the anon key can read nothing; all access goes through the service-role client
-behind the password gate.
+**Auth is Supabase Auth, and isolation is enforced by Postgres.** Sign-up is open: email
+and password, no invite. `proxy.ts` refreshes the session and redirects anyone without one
+to `/login`.
+
+What keeps one account's data away from another's is **row-level security**, not
+application code. Every table except `stocks` carries a `user_id` that defaults to
+`auth.uid()`, under a policy of `user_id = auth.uid()`. So inserts never pass an owner and
+selects never filter by one — Postgres does both. A query written without a `WHERE user_id`
+clause is still safe, which is the point: isolation cannot be forgotten at a call site.
+
+`stocks` is shared on purpose. It is a ticker/price cache with no personal data, and two
+users watching the same ticker should share one row and one price poll.
 
 ### How the LLM pipeline stays honest
 
@@ -266,14 +275,13 @@ look broken in confusing ways:
 
 | Missing variable | What you see |
 |---|---|
-| `APP_PASSWORD` | Login rejects the correct password with "Incorrect password." |
-| `SESSION_SECRET` | Same — the password matches but no session can be minted |
-| `SUPABASE_SERVICE_ROLE_KEY` | Login works, every page is empty or errors |
+| `NEXT_PUBLIC_SUPABASE_URL` / `..._ANON_KEY` | Sign-up and sign-in both fail — these *are* the auth config |
+| `SUPABASE_SERVICE_ROLE_KEY` | The app works; the Edge Functions (alerts, digest) do not |
 | `OPENROUTER_API_KEY` | Everything loads, running a thesis fails |
 
-The user-facing login error is deliberately generic so it can't be used to probe a
-deployment, but each of these logs a specific `[config]` line to the server. If login is
-refusing a password you know is right, check your runtime logs first:
+The login error is deliberately generic ("Incorrect email or password") so the form can't
+be used to find out which addresses have accounts. If something looks wrong, check the
+runtime logs rather than the message:
 
 ```bash
 vercel env ls           # what is actually set, per environment
@@ -284,22 +292,23 @@ Remember to redeploy after adding variables — they are baked in at build time.
 
 The Edge Functions and their cron schedules live on Supabase and deploy separately.
 
-### There are no user accounts
+### Accounts
 
-This is worth being explicit about, because it surprises people. Authentication is **one
-shared password**, not a login system:
+Anyone who can reach the deployment can create an account at `/signup`, and each account
+gets its own theses, positions, recommendations and journal. Nothing is shared between
+users except the `stocks` price cache.
 
-- There is no sign-up, no username, no per-user data. The login screen asks for a password
-  and nothing else.
-- Anyone with the password sees and can edit **the same** theses, positions and journal.
-  A second person logging in is not a second account — it is the same workspace.
+Two things are worth knowing:
 
-That is a deliberate fit for the intended use (one trader, own data, private URL). If you
-want someone else to try it without touching your book, **deploy a second instance with
-its own Supabase project** — no code change, complete separation.
+- **Sign up first on a fresh deployment.** Rows created before accounts existed have no
+  owner. A trigger assigns them to the *first* account created (`0013_user_accounts.sql`),
+  so if someone else signs up first, they inherit your book.
+- **Sign-up is open, and LLM calls are billed to your `OPENROUTER_API_KEY`.** Anyone who
+  finds the URL can create an account and spend against it. If that matters, gate sign-up
+  behind an invite code or turn on Vercel's Deployment Protection.
 
-Turning this into genuine multi-tenant software means real work: accounts, a `user_id` on
-every table, Supabase RLS policies, and a data migration. It is not a config flag.
+Not built: password reset, email verification flows, OAuth providers, and teams or sharing.
+Supabase supports all of them; none is wired up here.
 
 ---
 

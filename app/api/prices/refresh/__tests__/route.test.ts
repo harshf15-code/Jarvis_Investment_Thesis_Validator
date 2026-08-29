@@ -3,12 +3,12 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("@/lib/market-data", () => ({
   getQuote: vi.fn(),
 }));
-vi.mock("@/lib/supabase/admin", () => ({
-  createAdminClient: vi.fn(),
+vi.mock("@/lib/supabase/server", () => ({
+  createClient: vi.fn(),
 }));
 
 import { getQuote } from "@/lib/market-data";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
 function buildAdminClientMock(stocks: { id: string; yahoo_symbol: string }[]) {
@@ -36,7 +36,7 @@ describe("POST /api/prices/refresh", () => {
   });
 
   it("returns fresh prices for each resolvable stock and omits failures", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(
+    vi.mocked(createClient).mockResolvedValue(
       buildAdminClientMock([
         { id: "s1", yahoo_symbol: "AAPL" },
         { id: "s2", yahoo_symbol: "BROKEN" },

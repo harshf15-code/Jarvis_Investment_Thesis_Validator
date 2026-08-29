@@ -7,10 +7,10 @@ vi.mock("@/lib/market-data", () => ({
     exchange === "NSE" ? `${ticker}.NS` : ticker,
 }));
 vi.mock("ai", () => ({ generateText: vi.fn() }));
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 
 import { generateText } from "ai";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
 function buildSupabaseMock(opts: { existingTheses?: unknown[] } = {}) {
@@ -73,7 +73,7 @@ describe("POST /api/theses", () => {
   });
 
   it("generates and persists a thesis, no duplicate warning when none exists", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(buildSupabaseMock() as never);
+    vi.mocked(createClient).mockResolvedValue(buildSupabaseMock() as never);
     vi.mocked(generateText).mockResolvedValue({ text: RAW_RESPONSE } as never);
 
     const req = new Request("http://test/api/theses", {
@@ -89,7 +89,7 @@ describe("POST /api/theses", () => {
   });
 
   it("surfaces a duplicateWarning when an existing thesis matches the resolved ticker", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(
+    vi.mocked(createClient).mockResolvedValue(
       buildSupabaseMock({
         existingTheses: [{ id: "thesis-old", status: "active", created_at: "2026-06-01T00:00:00Z" }],
       }) as never,

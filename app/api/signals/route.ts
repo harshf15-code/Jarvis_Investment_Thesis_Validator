@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import type { IntelligenceSignalInsert } from "@/lib/types";
 
 const PRIORITY_ORDER: Record<string, number> = { red: 0, amber: 1, blue: 2, grey: 3 };
@@ -27,7 +27,7 @@ const CreateSignalSchema = z.object({
  * Also returns the "Today's Agenda" 14-day time-exit list.
  */
 export async function GET() {
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: signals, error } = await supabase
     .from("intelligence_signals")
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
   const parsed = CreateSignalSchema.safeParse(json);
   if (!parsed.success) return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
   const insert: IntelligenceSignalInsert = parsed.data;
   const { data: signal, error } = await supabase.from("intelligence_signals").insert(insert).select("*").single();
   if (error || !signal) return NextResponse.json({ error: error?.message ?? "Failed to create signal" }, { status: 500 });

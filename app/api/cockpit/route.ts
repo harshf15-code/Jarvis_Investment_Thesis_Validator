@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 import { computePositionPnl } from "@/lib/position-metrics";
 
@@ -21,7 +21,7 @@ import { computePositionPnl } from "@/lib/position-metrics";
  * a silent omission.
  */
 export async function GET() {
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: positions, error: positionsError } = await supabase
     .from("positions")

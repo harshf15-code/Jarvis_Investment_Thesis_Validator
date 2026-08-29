@@ -1,96 +1,96 @@
 "use server";
 
-import { timingSafeEqual } from "node:crypto";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
 
-import { createSessionToken } from "@/lib/auth/session";
+import { createClient } from "@/lib/supabase/server";
 
-const SESSION_COOKIE = "session";
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days, matches the JWT `exp`.
-const LOGIN_PATH = "/login";
-
-// Generic on purpose: never reveals *why* login failed (wrong password,
-// missing/misconfigured APP_PASSWORD, empty submission, etc.) — same message
-// for every failure mode.
-const GENERIC_ERROR = "Incorrect password.";
-
-export type LoginState = {
+export type AuthState = {
   error?: string;
 };
 
 /**
- * Constant-time string comparison. `timingSafeEqual` throws on a buffer
- * length mismatch, so unequal-length inputs are never passed to it directly
- * — that would both throw and (if merely caught) leak the length via
- * whichever code path executes. Instead, on a length mismatch, a same-length
- * dummy comparison is performed so the function takes comparable time on
- * both the "lengths differ" and "lengths match but content differs" paths,
- * and the real credential is never compared against attacker input in that
- * branch.
+ * Deliberately generic on the login path: a distinct "no such account" would
+ * turn the form into an account-enumeration oracle for a publicly reachable
+ * deployment. Sign-up cannot hide the same fact (it must reject a duplicate
+ * email to be usable at all), so it is allowed to be specific.
  */
-function constantTimeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
+const LOGIN_ERROR = "Incorrect email or password.";
 
-  if (bufA.length !== bufB.length) {
-    timingSafeEqual(bufA, bufA);
-    return false;
+const MIN_PASSWORD_LENGTH = 8;
+
+const CredentialsSchema = z.object({
+  email: z.string().trim().min(1).pipe(z.email()),
+  password: z.string().min(1),
+});
+
+const SignupSchema = z.object({
+  email: z.string().trim().min(1).pipe(z.email()),
+  password: z
+    .string()
+    .min(MIN_PASSWORD_LENGTH, `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`),
+});
+
+export async function login(formData: FormData): Promise<AuthState> {
+  const parsed = CredentialsSchema.safeParse({
+    email: formData.get("email"),
+    password: formData.get("password"),
+  });
+  if (!parsed.success) {
+    return { error: LOGIN_ERROR };
   }
 
-  return timingSafeEqual(bufA, bufB);
+  const supabase = await createClient();
+  const { error } = await supabase.auth.signInWithPassword(parsed.data);
+  if (error) {
+    return { error: LOGIN_ERROR };
+  }
+
+  // The layout is cached per-request; without this the first render after
+  // signing in can still be the logged-out tree.
+  revalidatePath("/", "layout");
+  redirect("/");
 }
 
-export async function login(formData: FormData): Promise<LoginState> {
-  const submitted = formData.get("password");
-  const appPassword = process.env.APP_PASSWORD;
-
-  if (!appPassword) {
-    // The user-facing message stays deliberately generic (see GENERIC_ERROR),
-    // but the operator needs to be able to tell "wrong password" apart from
-    // "this deployment has no password configured" — otherwise a missing env
-    // var on a fresh deploy is indistinguishable from a typo, and the correct
-    // password appears to be rejected. This line goes to the server log only.
-    console.error(
-      "[config] APP_PASSWORD is not set, so every login attempt will be rejected. " +
-        "Set it in your hosting provider's environment variables — .env.local is " +
-        "never uploaded.",
-    );
-    return { error: GENERIC_ERROR };
-  }
-
-  if (typeof submitted !== "string") {
-    return { error: GENERIC_ERROR };
-  }
-
-  if (!process.env.SESSION_SECRET) {
-    console.error(
-      "[config] SESSION_SECRET is not set. Even a correct password cannot mint " +
-        "a session cookie. Generate one with `openssl rand -base64 32`.",
-    );
-    return { error: GENERIC_ERROR };
-  }
-
-  const matches = constantTimeEqual(submitted, appPassword);
-  if (!matches) {
-    return { error: GENERIC_ERROR };
-  }
-
-  const token = await createSessionToken();
-  const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_MAX_AGE_SECONDS,
+export async function signup(formData: FormData): Promise<AuthState> {
+  const parsed = SignupSchema.safeParse({
+    email: formData.get("email"),
+    password: formData.get("password"),
   });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Check your details and try again." };
+  }
 
+  const confirm = formData.get("confirm_password");
+  if (parsed.data.password !== confirm) {
+    return { error: "The two passwords don't match." };
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.signUp(parsed.data);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  // No session means the project still has "Confirm email" switched on, so
+  // Supabase is waiting on a link in the user's inbox instead of signing them
+  // in. Say so plainly rather than bouncing them to a login that will fail.
+  if (!data.session) {
+    return {
+      error:
+        "Account created — check your email for a confirmation link, then sign in.",
+    };
+  }
+
+  revalidatePath("/", "layout");
   redirect("/");
 }
 
 export async function logout(): Promise<void> {
-  const cookieStore = await cookies();
-  cookieStore.delete(SESSION_COOKIE);
-  redirect(LOGIN_PATH);
+  const supabase = await createClient();
+  await supabase.auth.signOut();
+  revalidatePath("/", "layout");
+  redirect("/login");
 }

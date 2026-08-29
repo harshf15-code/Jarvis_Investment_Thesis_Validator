@@ -1,8 +1,8 @@
 // app/api/signals/__tests__/route.test.ts
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
-import { createAdminClient } from "@/lib/supabase/admin";
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+import { createClient } from "@/lib/supabase/server";
 import { GET, POST } from "../route";
 
 type Signal = { id: string; priority: string; created_at: string; headline: string; archived_at?: string | null };
@@ -59,7 +59,7 @@ describe("GET /api/signals", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("sorts red before blue regardless of recency", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(buildMock() as never);
+    vi.mocked(createClient).mockResolvedValue(buildMock() as never);
     const res = await GET();
     const body = await res.json();
     expect(body.signals[0].priority).toBe("red");
@@ -73,7 +73,7 @@ describe("GET /api/signals", () => {
         { id: "a2", priority: "red", created_at: "2026-08-15", headline: "newer archived", archived_at: "2026-08-20" },
       ],
     });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const res = await GET();
     const body = await res.json();
     const ids = body.signals.map((s: Signal) => s.id);
@@ -95,7 +95,7 @@ describe("GET /api/signals", () => {
         { id: "tp2", time_exit_date: daysFromNow(30) },
       ],
     });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const res = await GET();
     const body = await res.json();
     expect(body.agenda).toEqual([{ ticker: "AAA", timeExitDate: daysFromNow(5) }]);
@@ -113,7 +113,7 @@ describe("POST /api/signals", () => {
 
   it("creates a manual signal", async () => {
     const mock = buildMock();
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const req = new Request("http://test", { method: "POST", body: JSON.stringify({ priority: "red", headline: "Margin miss" }) });
     const res = await POST(req as never);
     expect(res.status).toBe(201);

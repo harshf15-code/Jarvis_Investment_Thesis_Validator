@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
-import { createAdminClient } from "@/lib/supabase/admin";
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+import { createClient } from "@/lib/supabase/server";
 import { PATCH } from "../route";
 
 /**
@@ -48,7 +48,7 @@ describe("PATCH /api/trade-plans/[id]", () => {
       ai_suggested: { stop_loss: 90 },
       edited_fields: [],
     });
-    vi.mocked(createAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
 
     const req = new Request("http://test", { method: "PATCH", body: JSON.stringify({ stop_loss: 95 }) });
     const res = await PATCH(req as never, { params: Promise.resolve({ id: "tp1" }) });
@@ -73,7 +73,7 @@ describe("PATCH /api/trade-plans/[id]", () => {
       ai_suggested: { stop_loss: 90, target_1: 120 },
       edited_fields: ["stop_loss"],
     });
-    vi.mocked(createAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
 
     const req = new Request("http://test", {
       method: "PATCH",
@@ -99,7 +99,7 @@ describe("PATCH /api/trade-plans/[id]", () => {
       ai_suggested: {},
       edited_fields: [],
     });
-    vi.mocked(createAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
 
     const req = new Request("http://test", {
       method: "PATCH",

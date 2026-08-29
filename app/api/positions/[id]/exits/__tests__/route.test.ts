@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
-import { createAdminClient } from "@/lib/supabase/admin";
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
 function buildMock(opts: { entries: { quantity: number }[]; existingExits: { quantity: number }[] }) {
@@ -42,7 +42,7 @@ describe("POST /api/positions/[id]/exits", () => {
 
   it("sets position status to partial_exit when quantity remains", async () => {
     const mock = buildMock({ entries: [{ quantity: 100 }], existingExits: [] });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const req = new Request("http://test", {
       method: "POST",
       body: JSON.stringify({ date: "2026-08-27", quantity: 30, price: 180, type: "trim_t1" }),
@@ -59,7 +59,7 @@ describe("POST /api/positions/[id]/exits", () => {
 
   it("sets position status to closed and prompts a journal entry when quantity reaches zero", async () => {
     const mock = buildMock({ entries: [{ quantity: 100 }], existingExits: [{ quantity: 30 }] });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const req = new Request("http://test", {
       method: "POST",
       body: JSON.stringify({ date: "2026-08-27", quantity: 70, price: 210, type: "trim_t2" }),
@@ -75,7 +75,7 @@ describe("POST /api/positions/[id]/exits", () => {
 
   it("rejects an override without a reason of at least 40 characters", async () => {
     const mock = buildMock({ entries: [{ quantity: 100 }], existingExits: [] });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const req = new Request("http://test", {
       method: "POST",
       body: JSON.stringify({ date: "2026-08-27", quantity: 100, price: 80, type: "stop_hit", override: true, override_reason: "too short" }),
@@ -86,7 +86,7 @@ describe("POST /api/positions/[id]/exits", () => {
 
   it("rejects an exit quantity greater than what remains on the position, without writing anything", async () => {
     const mock = buildMock({ entries: [{ quantity: 100 }], existingExits: [{ quantity: 30 }] });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const req = new Request("http://test", {
       method: "POST",
       body: JSON.stringify({ date: "2026-08-27", quantity: 100, price: 180, type: "trim_t1" }),

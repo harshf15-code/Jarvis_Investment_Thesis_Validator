@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
-import { createAdminClient } from "@/lib/supabase/admin";
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
 /**
@@ -100,7 +100,7 @@ describe("POST /api/trade-plans", () => {
 
   it("creates a jarvis_recommendation for a Tier I thesis, copying the plan's levels and the live price", async () => {
     const mock = buildMock({ convictionTier: "I" });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
 
     const res = await post(VALID_BODY);
     const body = await res.json();
@@ -126,7 +126,7 @@ describe("POST /api/trade-plans", () => {
 
   it("records the submitted grid as the plan's ai_suggested baseline with no edited fields", async () => {
     const mock = buildMock({ convictionTier: "II" });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
 
     const res = await post(VALID_BODY);
     const body = await res.json();
@@ -143,7 +143,7 @@ describe("POST /api/trade-plans", () => {
 
   it("skips jarvis_recommendation creation for a Tier III thesis", async () => {
     const mock = buildMock({ convictionTier: "III" });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
 
     const res = await post(VALID_BODY);
     const body = await res.json();
@@ -155,7 +155,7 @@ describe("POST /api/trade-plans", () => {
 
   it("rejects a macro thesis with no stock_id", async () => {
     const mock = buildMock({ convictionTier: "I", stockId: null });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
 
     const res = await post(VALID_BODY);
 
@@ -165,7 +165,7 @@ describe("POST /api/trade-plans", () => {
 
   it("refuses to create a second trade plan for a thesis that already has one", async () => {
     const mock = buildMock({ convictionTier: "I", existingPlan: { id: "tp-existing" } });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
 
     const res = await post(VALID_BODY);
     const body = await res.json();

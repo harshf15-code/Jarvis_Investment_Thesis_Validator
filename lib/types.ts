@@ -3,6 +3,11 @@
 // and 0007_thesis_cockpit_indexes.sql exactly. See that file's header comment
 // (preserved from v1) for the `type` vs `interface` rule and the numeric/jsonb
 // mapping notes — both still apply unchanged.
+//
+// Since 0013_user_accounts.sql every table except `stocks` also carries a
+// `user_id`. It is absent from the Insert types deliberately: the column
+// defaults to `auth.uid()` and row-level security rejects any other value,
+// so application code neither sets nor filters on it.
 
 export type ExchangeCode = "NSE" | "BSE" | "US";
 export type ConvictionTier = "I" | "II" | "III" | "IV";
@@ -50,6 +55,14 @@ export type BearCase = {
 /** `theses` */
 export type Thesis = {
   id: string;
+  /**
+   * Owner, from `auth.users`. Nullable only because rows created before
+   * accounts existed are backfilled to the first signup by a trigger (see
+   * `0013_user_accounts.sql`); every new row gets it from the column's
+   * `default auth.uid()`. Absent from the Insert types on purpose —
+   * application code must never set it, and RLS would reject it anyway.
+   */
+  user_id: string | null;
   created_at: string;
   input_text: string;
   mode: ThesisMode;
@@ -79,6 +92,8 @@ export type CandidateVerdict = "bet" | "watch" | "avoid";
 /** `thesis_candidates` */
 export type ThesisCandidate = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   created_at: string;
   thesis_id: string;
   stock_id: string | null;
@@ -107,6 +122,8 @@ export type ThesisCandidate = {
 /** `thesis_memorandums` — see `lib/jarvis-memorandum.ts` for `document`'s shape. */
 export type ThesisMemorandum = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   created_at: string;
   thesis_id: string;
   sector_theme: string | null;
@@ -129,6 +146,8 @@ export type ThesisCondition = {
 /** `trade_plans` */
 export type TradePlan = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   thesis_id: string;
   entry_zone_low: number | null;
   entry_zone_high: number | null;
@@ -152,6 +171,8 @@ export type TradePlan = {
 /** `positions` */
 export type Position = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   thesis_id: string;
   trade_plan_id: string;
   stock_id: string;
@@ -163,6 +184,8 @@ export type Position = {
 /** `entries` */
 export type Entry = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   position_id: string;
   date: string;
   quantity: number;
@@ -175,6 +198,8 @@ export type Entry = {
 /** `exits` */
 export type Exit = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   position_id: string;
   date: string;
   quantity: number;
@@ -189,6 +214,8 @@ export type Exit = {
 /** `jarvis_recommendations` */
 export type JarvisRecommendation = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   thesis_id: string;
   trade_plan_id: string | null;
   stock_id: string;
@@ -210,6 +237,8 @@ export type JarvisRecommendation = {
 /** `trade_journal_entries` */
 export type TradeJournalEntry = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   position_id: string;
   ticker: string;
   entry_dates: string[];
@@ -234,6 +263,8 @@ export type TradeJournalEntry = {
 /** `position_alerts` (v2 replacement for the old `alert_log`) */
 export type PositionAlert = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   position_id: string;
   alert_type: PositionAlertType;
   triggered_at: string;
@@ -244,6 +275,8 @@ export type PositionAlert = {
 /** `intelligence_signals` */
 export type IntelligenceSignal = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   created_at: string;
   priority: "red" | "amber" | "blue" | "grey";
   ticker: string | null;
@@ -256,6 +289,8 @@ export type IntelligenceSignal = {
 /** `opportunities` */
 export type Opportunity = {
   id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string | null;
   created_at: string;
   ticker: string;
   sector: string | null;

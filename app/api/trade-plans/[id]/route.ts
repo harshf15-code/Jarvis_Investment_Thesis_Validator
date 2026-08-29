@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 
 const EDITABLE_FIELDS = [
   "entry_zone_low", "entry_zone_high", "add_tranche_low", "add_tranche_high",
@@ -27,7 +27,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
   }
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
   const { data: existing, error: fetchError } = await supabase
     .from("trade_plans")
     .select("*")

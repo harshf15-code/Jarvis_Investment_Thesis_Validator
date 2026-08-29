@@ -12,9 +12,10 @@ import { useNewThesisDrawer } from "./new-thesis-context";
 /**
  * Fixed top chrome — the Stitch mock's `<header class="h-16">`. Carries the
  * wordmark, the current section's name (so the icon rail never leaves you
- * guessing where you are), and the one global action.
+ * guessing where you are), the one global action, and who you are signed in
+ * as — which matters now that the same URL serves more than one account.
  */
-export function AppHeader() {
+export function AppHeader({ email }: { email: string | null }) {
   const pathname = usePathname();
   const { open } = useNewThesisDrawer();
   const active = activeNavItem(pathname);
@@ -44,6 +45,14 @@ export function AppHeader() {
           <Plus className="size-4" strokeWidth={2.5} />
           New Thesis
         </button>
+        {email ? (
+          <span
+            title={email}
+            className="hidden max-w-[16ch] truncate text-xs text-on-surface-variant sm:inline"
+          >
+            {email}
+          </span>
+        ) : null}
         <LogoutButton />
       </div>
     </header>

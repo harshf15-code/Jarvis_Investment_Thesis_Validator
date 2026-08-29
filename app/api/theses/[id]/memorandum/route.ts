@@ -15,7 +15,7 @@ import {
 import { parseCandidateShortlist } from "@/lib/jarvis-thesis-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import type { ExchangeCode, ThesisCandidateInsert } from "@/lib/types";
 
 // Two model calls plus up to five live Yahoo lookups.
@@ -96,7 +96,7 @@ async function resolveCandidate(ticker: string, companyName: string | null): Pro
  */
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: thesis, error: thesisError } = await supabase
     .from("theses")
@@ -317,7 +317,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 /** Reads a previously-generated memorandum without spending model calls. */
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: memorandum } = await supabase
     .from("thesis_memorandums")

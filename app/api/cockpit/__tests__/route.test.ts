@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
-import { createAdminClient } from "@/lib/supabase/admin";
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+import { createClient } from "@/lib/supabase/server";
 import { GET } from "../route";
 
 const OVERDUE = "2020-01-01";
@@ -51,7 +51,7 @@ describe("GET /api/cockpit", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("aggregates positions, total open P&L, and overdue theses", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(
+    vi.mocked(createClient).mockResolvedValue(
       buildMock({
         positions: [POSITION],
         entries: [{ position_id: "p1", quantity: 10, price: 100 }],
@@ -77,7 +77,7 @@ describe("GET /api/cockpit", () => {
   });
 
   it("prices only the quantity still held after a partial exit", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(
+    vi.mocked(createClient).mockResolvedValue(
       buildMock({
         positions: [{ ...POSITION, status: "partial_exit" }],
         entries: [{ position_id: "p1", quantity: 10, price: 100 }],
@@ -98,7 +98,7 @@ describe("GET /api/cockpit", () => {
   });
 
   it("excludes a position with no quoted price from the P&L totals", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(
+    vi.mocked(createClient).mockResolvedValue(
       buildMock({
         positions: [POSITION, { ...POSITION, id: "p2", ticker: "MSFT", stock_id: "s2" }],
         entries: [
@@ -127,7 +127,7 @@ describe("GET /api/cockpit", () => {
   });
 
   it("lists an overdue ticker once even when two positions share it", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(
+    vi.mocked(createClient).mockResolvedValue(
       buildMock({
         positions: [POSITION, { ...POSITION, id: "p2" }],
         entries: [],
@@ -153,7 +153,7 @@ describe("GET /api/cockpit", () => {
         { id: "r1", stock_id: "s9", ticker: "INFY", converted_to_position: false },
       ],
     });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
 
     const res = await GET();
     const body = await res.json();
@@ -168,7 +168,7 @@ describe("GET /api/cockpit", () => {
   });
 
   it("returns 500 when the positions read fails", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(buildMock({ _positionsError: [1] }) as never);
+    vi.mocked(createClient).mockResolvedValue(buildMock({ _positionsError: [1] }) as never);
 
     const res = await GET();
     const body = await res.json();

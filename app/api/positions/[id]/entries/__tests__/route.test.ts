@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
-import { createAdminClient } from "@/lib/supabase/admin";
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
 function buildSupabaseMock(existingEntries: { quantity: number; price: number }[]) {
@@ -35,7 +35,7 @@ describe("POST /api/positions/[id]/entries", () => {
   });
 
   it("inserts the entry and returns the recomputed weighted average", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(
+    vi.mocked(createClient).mockResolvedValue(
       buildSupabaseMock([{ quantity: 100, price: 100 }, { quantity: 50, price: 120 }]) as never,
     );
     const req = new Request("http://test", {

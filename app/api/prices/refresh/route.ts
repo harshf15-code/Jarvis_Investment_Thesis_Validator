@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getQuote } from "@/lib/market-data";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 
 /**
  * On-demand price refresh for a set of stocks, called on page load and the
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ prices: {} });
   }
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
   const { data: stocks, error } = await supabase
     .from("stocks")
     .select("id, yahoo_symbol")

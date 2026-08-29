@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 
 const AddEntrySchema = z.object({
   date: z.string().date(),
@@ -30,7 +30,7 @@ export async function POST(
     );
   }
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: entry, error: insertError } = await supabase
     .from("entries")

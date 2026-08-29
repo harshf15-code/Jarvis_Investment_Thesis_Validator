@@ -1,8 +1,8 @@
 // app/api/opportunities/__tests__/route.test.ts
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
-import { createAdminClient } from "@/lib/supabase/admin";
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+import { createClient } from "@/lib/supabase/server";
 import { GET, POST } from "../route";
 
 type Opportunity = {
@@ -87,7 +87,7 @@ describe("GET /api/opportunities", () => {
       ],
       stocks: [{ ticker: "AAA", exchange: "NSE", last_price: 100, last_price_at: "2026-08-20T10:00:00Z" }],
     });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const res = await GET();
     const body = await res.json();
     const rowA = body.opportunities.find((r: { opportunity: { ticker: string } }) => r.opportunity.ticker === "AAA");
@@ -106,7 +106,7 @@ describe("GET /api/opportunities", () => {
       ],
       positions: [{ ticker: "AAA" }],
     });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const res = await GET();
     const body = await res.json();
     const rowA = body.opportunities.find((r: { opportunity: { ticker: string } }) => r.opportunity.ticker === "AAA");
@@ -123,7 +123,7 @@ describe("GET /api/opportunities", () => {
       ],
       theses: [{ ticker: "AAA", status: "draft" }],
     });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const res = await GET();
     const body = await res.json();
     const rowA = body.opportunities.find((r: { opportunity: { ticker: string } }) => r.opportunity.ticker === "AAA");
@@ -144,7 +144,7 @@ describe("POST /api/opportunities", () => {
 
   it("creates an opportunity", async () => {
     const mock = buildMock();
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     const req = new Request("http://test", {
       method: "POST",
       body: JSON.stringify({ ticker: "AAA", market: "NSE", watching_only: true }),

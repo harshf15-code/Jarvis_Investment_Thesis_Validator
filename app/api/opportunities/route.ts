@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import type { OpportunityInsert } from "@/lib/types";
 
 const CreateOpportunitySchema = z.object({
@@ -20,7 +20,7 @@ const CreateOpportunitySchema = z.object({
 
 /** Spec US-20/US-21. Resolves each row's CMP + HELD/DRAFT badges by cross-referencing `stocks`/`positions`/`theses` on `ticker` — no FK exists between `opportunities` and those tables (Decision #2's denormalized-ticker pattern). */
 export async function GET() {
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: opportunities, error } = await supabase
     .from("opportunities")
@@ -61,7 +61,7 @@ export async function POST(request: Request) {
   const parsed = CreateOpportunitySchema.safeParse(json);
   if (!parsed.success) return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
   const insert: OpportunityInsert = parsed.data;
   const { data: opportunity, error } = await supabase.from("opportunities").insert(insert).select("*").single();
   if (error || !opportunity) return NextResponse.json({ error: error?.message ?? "Failed to create opportunity" }, { status: 500 });

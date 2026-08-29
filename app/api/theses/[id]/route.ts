@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import type { ThesisUpdate } from "@/lib/types";
 
 /**
@@ -10,7 +10,7 @@ import type { ThesisUpdate } from "@/lib/types";
  */
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: thesis, error } = await supabase.from("theses").select("*").eq("id", id).single();
   if (error || !thesis) {
@@ -56,7 +56,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
   }
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { selected_candidate_id, ...rest } = parsed.data;
   const patch: ThesisUpdate = { ...rest };

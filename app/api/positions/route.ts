@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { listOpenPositions } from "@/lib/queries";
 import { z } from "zod";
 
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   }
   const { jarvis_recommendation_id, date, quantity, price, tranche, ...positionFields } = parsed.data;
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: position, error: positionError } = await supabase
     .from("positions")

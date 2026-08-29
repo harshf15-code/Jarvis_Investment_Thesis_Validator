@@ -1,10 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("ai", () => ({ generateText: vi.fn() }));
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 
 import { generateText } from "ai";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
 const VERDICT_RAW = `\`\`\`json
@@ -34,7 +34,7 @@ describe("POST /api/journal", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("generate_only returns a preview without persisting", async () => {
-    vi.mocked(createAdminClient).mockReturnValue(buildMock() as never);
+    vi.mocked(createClient).mockResolvedValue(buildMock() as never);
     vi.mocked(generateText).mockResolvedValue({ text: VERDICT_RAW } as never);
     const req = new Request("http://test", { method: "POST", body: JSON.stringify({ position_id: "p1", generate_only: true }) });
     const res = await POST(req as never);
@@ -46,7 +46,7 @@ describe("POST /api/journal", () => {
 
   it("persists the review, appends Discipline Break for an overridden exit, and closes the position", async () => {
     const mock = buildMock({ overrideExit: true });
-    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(mock as never);
     vi.mocked(generateText).mockResolvedValue({ text: VERDICT_RAW } as never);
     const req = new Request("http://test", {
       method: "POST",

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import type { ConvictionTier, JarvisRecommendationInsert, Json, TradePlanInsert } from "@/lib/types";
 
 const CreateTradePlanSchema = z.object({
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
   }
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
   const { thesis_id, ai_suggested, ...planFields } = parsed.data;
 
   const { data: thesis, error: thesisError } = await supabase

@@ -103,6 +103,8 @@ type PositionRow = {
   ticker: string;
   stock_id: string;
   trade_plan_id: string;
+  /** Carried onto every alert this position produces — see `logPositionAlerts`. */
+  user_id: string | null;
 };
 
 type TradePlanRow = {
@@ -178,10 +180,21 @@ function isWithinDedupWindow(lastTriggeredAt: string, now: Date, windowHours = 2
 // deno-lint-ignore no-explicit-any
 type SupabaseClientAny = any;
 
-/** Inserts one `position_alerts` row per event not already logged within the dedup window. */
+/**
+ * Inserts one `position_alerts` row per event not already logged within the
+ * dedup window.
+ *
+ * `userId` has to be passed in and written explicitly. Every other writer of
+ * this table gets the owner from the column's `default auth.uid()`, but this
+ * function runs on the service-role key with no session, where `auth.uid()`
+ * is NULL — and an alert with a NULL owner is one no RLS policy will ever
+ * match and no digest will ever send. The value is carried down from the
+ * position that produced the alert.
+ */
 async function logPositionAlerts(
   supabase: SupabaseClientAny,
   positionId: string,
+  userId: string | null,
   events: PositionAlertEvent[],
   now: Date,
 ): Promise<void> {
@@ -205,6 +218,7 @@ async function logPositionAlerts(
 
     const { error: insertError } = await supabase.from("position_alerts").insert({
       position_id: positionId,
+      user_id: userId,
       alert_type: event.type,
       triggered_at: now.toISOString(),
       details: event.details,
@@ -233,7 +247,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: activePositions, error: positionsError } = await supabase
     .from("positions")
-    .select("id, ticker, stock_id, trade_plan_id")
+    .select("id, ticker, stock_id, trade_plan_id, user_id")
     .eq("status", "active");
 
   if (positionsError) {
@@ -291,7 +305,7 @@ Deno.serve(async (req: Request) => {
         .eq("id", stock.id);
 
       const events = evaluatePositionTriggers(tradePlan, quote.price, now);
-      await logPositionAlerts(supabase, position.id, events, now);
+      await logPositionAlerts(supabase, position.id, position.user_id ?? null, events, now);
       processed++;
     } catch (err) {
       // Isolation guarantee, same as v1: one position's failure must never

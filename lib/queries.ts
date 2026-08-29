@@ -1,4 +1,4 @@
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 
 /**
@@ -29,7 +29,7 @@ function fail(message: string): never {
 }
 
 export async function listJournalEntries() {
-  const supabase = createAdminClient();
+  const supabase = await createClient();
   const { data, error } = await supabase
     .from("trade_journal_entries")
     .select("*")
@@ -39,7 +39,7 @@ export async function listJournalEntries() {
 }
 
 export async function listTheses() {
-  const supabase = createAdminClient();
+  const supabase = await createClient();
   const { data, error } = await supabase
     .from("theses")
     .select("*")
@@ -49,7 +49,7 @@ export async function listTheses() {
 }
 
 export async function listRecommendations() {
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: recommendations, error } = await supabase
     .from("jarvis_recommendations")
@@ -73,7 +73,7 @@ export async function listRecommendations() {
 }
 
 export async function listOpenPositions() {
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: positions, error: positionsError } = await supabase
     .from("positions")

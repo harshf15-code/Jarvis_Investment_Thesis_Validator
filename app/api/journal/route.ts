@@ -6,7 +6,7 @@ import { JARVIS_JOURNAL_SYSTEM_PROMPT, buildJournalUserContext } from "@/lib/jar
 import { parseJournalVerdict } from "@/lib/jarvis-journal-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { listJournalEntries } from "@/lib/queries";
 import type { TradeJournalEntryInsert } from "@/lib/types";
 
@@ -46,7 +46,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const supabase = createAdminClient();
+  const supabase = await createClient();
 
   const { data: position, error: positionError } = await supabase
     .from("positions")
