@@ -307,8 +307,10 @@ users except the `stocks` price cache.
 Two things are worth knowing:
 
 - **Sign up first on a fresh deployment.** Rows created before accounts existed have no
-  owner. A trigger assigns them to the *first* account created (`0013_user_accounts.sql`),
-  so if someone else signs up first, they inherit your book.
+  owner, and `0013_user_accounts.sql` installs a one-shot trigger that assigns them to the
+  *first* account created — so if someone else signs up first, they inherit your book.
+  `0015_finish_user_accounts.sql` drops that trigger and makes `user_id` NOT NULL; run it
+  once the first account is in place, after which ownerless rows are impossible.
 - **Sign-up is open, and LLM calls are billed to your `OPENROUTER_API_KEY`.** Anyone who
   finds the URL can create an account and spend against it. If that matters, gate sign-up
   behind an invite code or turn on Vercel's Deployment Protection.

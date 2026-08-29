@@ -5,9 +5,9 @@
 // mapping notes — both still apply unchanged.
 //
 // Since 0013_user_accounts.sql every table except `stocks` also carries a
-// `user_id`. It is absent from the Insert types deliberately: the column
-// defaults to `auth.uid()` and row-level security rejects any other value,
-// so application code neither sets nor filters on it.
+// `user_id` (NOT NULL as of 0015). It is absent from the Insert types
+// deliberately: the column defaults to `auth.uid()` and row-level security
+// rejects any other value, so application code neither sets nor filters on it.
 
 export type ExchangeCode = "NSE" | "BSE" | "US";
 export type ConvictionTier = "I" | "II" | "III" | "IV";
@@ -56,13 +56,13 @@ export type BearCase = {
 export type Thesis = {
   id: string;
   /**
-   * Owner, from `auth.users`. Nullable only because rows created before
-   * accounts existed are backfilled to the first signup by a trigger (see
-   * `0013_user_accounts.sql`); every new row gets it from the column's
-   * `default auth.uid()`. Absent from the Insert types on purpose —
-   * application code must never set it, and RLS would reject it anyway.
+   * Owner, from `auth.users`. NOT NULL since `0015`: the column defaults to
+   * `auth.uid()`, so a writer with no session fails the insert rather than
+   * creating a row no RLS policy can ever match. Absent from the Insert types
+   * on purpose — application code must never set it, and RLS rejects any
+   * value but the caller's own.
    */
-  user_id: string | null;
+  user_id: string;
   created_at: string;
   input_text: string;
   mode: ThesisMode;
@@ -93,7 +93,7 @@ export type CandidateVerdict = "bet" | "watch" | "avoid";
 export type ThesisCandidate = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   created_at: string;
   thesis_id: string;
   stock_id: string | null;
@@ -123,7 +123,7 @@ export type ThesisCandidate = {
 export type ThesisMemorandum = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   created_at: string;
   thesis_id: string;
   sector_theme: string | null;
@@ -147,7 +147,7 @@ export type ThesisCondition = {
 export type TradePlan = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   thesis_id: string;
   entry_zone_low: number | null;
   entry_zone_high: number | null;
@@ -172,7 +172,7 @@ export type TradePlan = {
 export type Position = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   thesis_id: string;
   trade_plan_id: string;
   stock_id: string;
@@ -185,7 +185,7 @@ export type Position = {
 export type Entry = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   position_id: string;
   date: string;
   quantity: number;
@@ -199,7 +199,7 @@ export type Entry = {
 export type Exit = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   position_id: string;
   date: string;
   quantity: number;
@@ -215,7 +215,7 @@ export type Exit = {
 export type JarvisRecommendation = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   thesis_id: string;
   trade_plan_id: string | null;
   stock_id: string;
@@ -238,7 +238,7 @@ export type JarvisRecommendation = {
 export type TradeJournalEntry = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   position_id: string;
   ticker: string;
   entry_dates: string[];
@@ -264,7 +264,7 @@ export type TradeJournalEntry = {
 export type PositionAlert = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   position_id: string;
   alert_type: PositionAlertType;
   triggered_at: string;
@@ -276,7 +276,7 @@ export type PositionAlert = {
 export type IntelligenceSignal = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   created_at: string;
   priority: "red" | "amber" | "blue" | "grey";
   ticker: string | null;
@@ -290,7 +290,7 @@ export type IntelligenceSignal = {
 export type Opportunity = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
-  user_id: string | null;
+  user_id: string;
   created_at: string;
   ticker: string;
   sector: string | null;

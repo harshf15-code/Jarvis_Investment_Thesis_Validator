@@ -104,7 +104,7 @@ type PositionRow = {
   stock_id: string;
   trade_plan_id: string;
   /** Carried onto every alert this position produces — see `logPositionAlerts`. */
-  user_id: string | null;
+  user_id: string;
 };
 
 type TradePlanRow = {
@@ -187,14 +187,15 @@ type SupabaseClientAny = any;
  * `userId` has to be passed in and written explicitly. Every other writer of
  * this table gets the owner from the column's `default auth.uid()`, but this
  * function runs on the service-role key with no session, where `auth.uid()`
- * is NULL — and an alert with a NULL owner is one no RLS policy will ever
- * match and no digest will ever send. The value is carried down from the
- * position that produced the alert.
+ * is NULL. Since 0015 the column is NOT NULL, so omitting it fails the insert
+ * outright rather than creating an alert no RLS policy can match and no digest
+ * will ever send. The value is carried down from the position that produced
+ * the alert.
  */
 async function logPositionAlerts(
   supabase: SupabaseClientAny,
   positionId: string,
-  userId: string | null,
+  userId: string,
   events: PositionAlertEvent[],
   now: Date,
 ): Promise<void> {
@@ -305,7 +306,7 @@ Deno.serve(async (req: Request) => {
         .eq("id", stock.id);
 
       const events = evaluatePositionTriggers(tradePlan, quote.price, now);
-      await logPositionAlerts(supabase, position.id, position.user_id ?? null, events, now);
+      await logPositionAlerts(supabase, position.id, position.user_id, events, now);
       processed++;
     } catch (err) {
       // Isolation guarantee, same as v1: one position's failure must never
