@@ -15,6 +15,7 @@ import {
 import { parseCandidateShortlist } from "@/lib/jarvis-thesis-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { ExchangeCode, ThesisCandidateInsert } from "@/lib/types";
 
@@ -210,6 +211,11 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   }
 
   // --- 4. Persist --------------------------------------------------------
+  // Candidate rows go through `supabase` (the user's client) so RLS stamps and
+  // checks their owner. The `stocks` writes below cannot: it is a shared cache
+  // that `authenticated` may only read (0014), so maintaining it is a
+  // service-role job.
+  const stocksAdmin = createAdminClient();
   const stockIdByTicker = new Map<string, string>();
   for (const r of resolved) {
     if (!r.yahooSymbol || !r.exchange) continue;
@@ -220,13 +226,13 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       .maybeSingle();
     if (existing) {
       stockIdByTicker.set(r.ticker, existing.id);
-      await supabase
+      await stocksAdmin
         .from("stocks")
         .update({ last_price: r.price, last_price_at: r.priceAsOf?.toISOString() ?? null })
         .eq("id", existing.id);
       continue;
     }
-    const { data: created } = await supabase
+    const { data: created } = await stocksAdmin
       .from("stocks")
       .insert({
         ticker: r.ticker,

@@ -10,6 +10,7 @@ import {
 import { parseThesisResponse } from "@/lib/jarvis-thesis-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { listTheses } from "@/lib/queries";
 import type { ExchangeCode, ThesisInsert } from "@/lib/types";
@@ -86,7 +87,10 @@ export async function POST(request: NextRequest) {
     if (existingStock) {
       stockId = existingStock.id;
     } else {
-      const { data: newStock, error: stockInsertError } = await supabase
+      // `stocks` is a shared market-data cache that `authenticated` may read
+      // but not write (0014) — otherwise one account could rewrite the price
+      // every account sees. Maintaining it is a service-role job.
+      const { data: newStock, error: stockInsertError } = await createAdminClient()
         .from("stocks")
         .insert({
           ticker: heuristicTicker!,
