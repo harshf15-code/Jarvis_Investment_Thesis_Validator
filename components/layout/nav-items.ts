@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   ListChecks,
   Radio,
+  Settings,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -31,6 +32,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/journal", label: "Journal", short: "Journal", icon: BookOpen },
   { href: "/discovery", label: "Discovery", short: "Discover", icon: Compass },
   { href: "/recommendations", label: "Recommendation Tracker", short: "Tracker", icon: ListChecks },
+  { href: "/settings", label: "Settings", short: "Settings", icon: Settings },
 ];
 
 /** Longest-prefix match, so `/thesis/<id>/plan` still highlights "Stress Test & Plan". */

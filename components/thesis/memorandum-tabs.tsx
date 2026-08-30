@@ -20,8 +20,11 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
  * A labelled prose block. The left accent rule is the one place the design
  * system's No-Line Rule gives way — it is an accent, not a boundary, and it is
  * what makes a wall of memo text scannable.
+ *
+ * Exported so the Council tab shares the memo's visual language rather than
+ * inventing a second one three tabs to the right.
  */
-function Block({
+export function Block({
   label,
   tone = "primary",
   children,

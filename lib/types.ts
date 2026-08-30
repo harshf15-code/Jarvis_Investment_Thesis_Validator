@@ -156,6 +156,54 @@ export type ThesisMemorandum = {
   raw_llm_response: string | null;
 };
 
+/**
+ * `council_members` (0017) — one Investment Council roster per user.
+ *
+ * `source` is a LABEL, not a lock. A built-in is an ordinary row the user owns
+ * and may edit or delete; the roster caps at 7 total, so a trader who wants
+ * four custom voices has to be able to free the slot.
+ */
+export type CouncilMemberSource = "builtin" | "custom";
+
+export type CouncilMember = {
+  id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string;
+  created_at: string;
+  name: string;
+  /**
+   * What actually grounds this persona's system prompt. A bare name gives the
+   * model nothing to imitate, so the column is NOT NULL with a 40-char floor.
+   */
+  philosophy: string;
+  source: CouncilMemberSource;
+  sort_order: number;
+};
+
+/**
+ * `thesis_council_reports` (0017) — one council report per (thesis, market).
+ *
+ * `document` is the whole report as one validated blob (see
+ * `lib/jarvis-council.ts`), replaced on every re-run — the same discipline as
+ * `ThesisMemorandum.document`.
+ */
+export type ThesisCouncilReport = {
+  id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string;
+  created_at: string;
+  thesis_id: string;
+  market: MarketCode;
+  /**
+   * Which memorandum the council actually read. The memo is replaced on every
+   * re-run, so without this a report would read as a verdict on the current
+   * memo when it may have judged a different pick entirely.
+   */
+  memorandum_id: string | null;
+  document: Json;
+  raw_llm_response: string | null;
+};
+
 /** One measurable thesis condition tracked on a locked trade plan (spec US-15). */
 export type ThesisCondition = {
   label: string;
@@ -397,6 +445,22 @@ export type ThesisMemorandumInsert = Pick<ThesisMemorandum, "thesis_id" | "marke
 
 export type ThesisMemorandumUpdate = Partial<ThesisMemorandumInsert>;
 
+/** `user_id`, `source` and `sort_order` all have server-side defaults. */
+export type CouncilMemberInsert = Pick<CouncilMember, "name" | "philosophy"> &
+  Partial<Pick<CouncilMember, "id" | "created_at" | "source" | "sort_order">>;
+
+export type CouncilMemberUpdate = Partial<CouncilMemberInsert>;
+
+export type ThesisCouncilReportInsert = Pick<
+  ThesisCouncilReport,
+  "thesis_id" | "market" | "document"
+> &
+  Partial<
+    Pick<ThesisCouncilReport, "id" | "created_at" | "memorandum_id" | "raw_llm_response">
+  >;
+
+export type ThesisCouncilReportUpdate = Partial<ThesisCouncilReportInsert>;
+
 export type ThesisCandidateUpdate = Partial<ThesisCandidateInsert>;
 
 export type TradePlanInsert = Pick<TradePlan, "thesis_id"> &
@@ -551,6 +615,18 @@ export interface Database {
         Update: ThesisMemorandumUpdate;
         Relationships: [];
       };
+      council_members: {
+        Row: CouncilMember;
+        Insert: CouncilMemberInsert;
+        Update: CouncilMemberUpdate;
+        Relationships: [];
+      };
+      thesis_council_reports: {
+        Row: ThesisCouncilReport;
+        Insert: ThesisCouncilReportInsert;
+        Update: ThesisCouncilReportUpdate;
+        Relationships: [];
+      };
       trade_plans: { Row: TradePlan; Insert: TradePlanInsert; Update: TradePlanUpdate; Relationships: [] };
       positions: { Row: Position; Insert: PositionInsert; Update: PositionUpdate; Relationships: [] };
       entries: { Row: Entry; Insert: EntryInsert; Update: EntryUpdate; Relationships: [] };
@@ -600,6 +676,7 @@ export interface Database {
       recommendation_status: RecommendationStatus;
       thesis_outcome: ThesisOutcome;
       position_alert_type: PositionAlertType;
+      council_member_source: CouncilMemberSource;
     };
     CompositeTypes: Record<string, never>;
   };

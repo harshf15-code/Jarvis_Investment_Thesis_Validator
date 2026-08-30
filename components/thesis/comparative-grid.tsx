@@ -5,13 +5,14 @@ import { formatMarketPrice } from "@/lib/markets";
 import type { MarketCode, ThesisCandidate } from "@/lib/types";
 import type { MemoCandidate } from "@/lib/jarvis-memorandum";
 
-const VERDICT_STYLE = {
+/** Shared with the Council tab so a verdict reads identically wherever it appears. */
+export const VERDICT_STYLE = {
   BUY: "bg-primary/10 text-primary",
   WATCH: "bg-status-blue-container text-status-blue",
   AVOID: "bg-error-container text-error",
 } as const;
 
-const DOT_COLOR = {
+export const DOT_COLOR = {
   BUY: "bg-primary",
   WATCH: "bg-status-blue",
   AVOID: "bg-error",

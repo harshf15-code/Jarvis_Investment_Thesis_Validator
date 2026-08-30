@@ -271,7 +271,7 @@ export type MemoCandidateInput = {
 };
 
 /** Fields worth putting in front of the model, in a fixed, readable order. */
-const SHOWN_FUNDAMENTALS: [key: string, label: string][] = [
+export const SHOWN_FUNDAMENTALS: [key: string, label: string][] = [
   ["trailingPE", "Trailing P/E"],
   ["forwardPE", "Forward P/E"],
   ["pegRatio", "PEG"],

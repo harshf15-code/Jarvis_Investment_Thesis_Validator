@@ -1,9 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, XCircle } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { RefreshCw, Users, XCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { CouncilReportSchema, type CouncilReport } from "@/lib/jarvis-council";
+import { CouncilTab } from "@/components/council/council-tab";
+import { ConsultDialog } from "@/components/council/consult-dialog";
 import { MemorandumSchema, type Memorandum } from "@/lib/jarvis-memorandum";
 import { MARKETS } from "@/lib/markets";
 import type { MarketCode, ThesisCandidate, ThesisMemorandum } from "@/lib/types";
@@ -11,14 +14,19 @@ import { BackTradeDialog } from "./back-trade-dialog";
 import { ComparativeGrid } from "./comparative-grid";
 import { ExitTab, StressTab, ThesisTab, TradeTab } from "./memorandum-tabs";
 
-const TABS = [
+const BASE_TABS = [
   { id: "thesis", label: "Thesis" },
   { id: "stress", label: "Stress Test" },
   { id: "trade", label: "Trade Plan" },
   { id: "exit", label: "Exit" },
 ] as const;
 
-type TabId = (typeof TABS)[number]["id"];
+/**
+ * Council is appended only once a report exists, so the tab strip never offers
+ * a tab that opens on nothing. The consult button beside the title is the
+ * discoverability route until then.
+ */
+type TabId = (typeof BASE_TABS)[number]["id"] | "council";
 
 /**
  * The Jarvis memorandum — the whole decision in one screen.
@@ -45,6 +53,11 @@ export function MemorandumView({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [backing, setBacking] = useState(false);
+  /** The stored council report for the current market, and the memo it read. */
+  const [council, setCouncil] = useState<CouncilReport | null>(null);
+  const [councilMemoId, setCouncilMemoId] = useState<string | null>(null);
+  const [consulting, setConsulting] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   /**
    * Documents are validated on the way OUT of the database as well as in.
@@ -91,6 +104,43 @@ export function MemorandumView({
     [thesisId, market, adopt],
   );
 
+  /** Same validate-on-the-way-out discipline as `adopt` above. */
+  const adoptCouncil = useCallback((row: { document: unknown; memorandum_id: string | null } | null) => {
+    if (!row) {
+      setCouncil(null);
+      setCouncilMemoId(null);
+      return;
+    }
+    const parsed = CouncilReportSchema.safeParse(row.document);
+    setCouncil(parsed.success ? parsed.data : null);
+    setCouncilMemoId(row.memorandum_id);
+  }, []);
+
+  const consult = useCallback(
+    async (memberIds: string[]) => {
+      if (!market) return;
+      setPicking(false);
+      setConsulting(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/theses/${thesisId}/council?market=${market}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ member_ids: memberIds }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? "The Council could not be convened.");
+        adoptCouncil(body.report);
+        setTab("council");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Something went wrong.");
+      } finally {
+        setConsulting(false);
+      }
+    },
+    [thesisId, market, adoptCouncil],
+  );
+
   /**
    * Loads the memo for one market, and only spends model calls when there is
    * none — a run is two LLM calls plus five live quotes.
@@ -114,6 +164,16 @@ export function MemorandumView({
           setMarket(body.market as MarketCode);
         }
         const had = adopt(body.memorandum ?? null, body.candidates ?? []);
+
+        // The council is per-market too, so it is re-read on every switch
+        // rather than carried over from the market the trader just left.
+        const councilRes = await fetch(
+          `/api/theses/${thesisId}/council?market=${body.market ?? market}`,
+        );
+        const councilBody = await councilRes.json().catch(() => ({}));
+        if (cancelled) return;
+        adoptCouncil(councilRes.ok ? councilBody.report ?? null : null);
+
         const single = list.length <= 1;
         if (!had && !body.memorandum && autoRun && single && body.market) {
           void run(body.market as MarketCode);
@@ -125,7 +185,17 @@ export function MemorandumView({
     return () => {
       cancelled = true;
     };
-  }, [thesisId, market, autoRun, run, adopt]);
+  }, [thesisId, market, autoRun, run, adopt, adoptCouncil]);
+
+  const tabs = useMemo(
+    () => (council ? [...BASE_TABS, { id: "council" as const, label: "Council" }] : BASE_TABS),
+    [council],
+  );
+
+  // A market switch can take the Council tab out from under the trader mid-read.
+  // Derived rather than corrected in an effect: there is no state to repair,
+  // only a tab that is momentarily naming something that no longer exists.
+  const activeTab: TabId = tab === "council" && !council ? "thesis" : tab;
 
   /**
    * Market switcher. Rendered above every state — empty, running and complete —
@@ -142,7 +212,7 @@ export function MemorandumView({
           <button
             key={m}
             type="button"
-            disabled={running}
+            disabled={running || consulting}
             onClick={() => setMarket(m)}
             className={cn(
               "rounded-full border px-3 py-1 text-xs transition-colors disabled:opacity-50",
@@ -218,6 +288,16 @@ export function MemorandumView({
             {memo.header.title ?? "Pick A Winner"}
           </h1>
         </div>
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={() => setPicking(true)}
+            disabled={running || consulting}
+            className="flex items-center gap-2 rounded-full bg-white/5 px-4 py-2.5 font-display text-[10px] font-black uppercase tracking-widest text-on-surface-variant transition-colors hover:bg-white/10 hover:text-on-surface disabled:opacity-40"
+          >
+            <Users className="size-3.5" strokeWidth={2.5} />
+            {consulting ? "Deliberating…" : council ? "Consult again" : "Consult Investment Council"}
+          </button>
         <div className="text-right font-mono text-[10px] leading-relaxed text-on-surface-variant/50">
           {row?.created_at && (
             <div>
@@ -228,22 +308,31 @@ export function MemorandumView({
           )}
           {memo.header.data_source && <div>{memo.header.data_source}</div>}
         </div>
+        </div>
       </header>
+
+      {consulting && (
+        <p className="flex items-center gap-2 text-sm text-primary">
+          <RefreshCw className="size-4 animate-spin" strokeWidth={2.5} />
+          The Council is deliberating — each member is reading the memorandum and the whole priced
+          field.
+        </p>
+      )}
 
       <ComparativeGrid candidates={candidates} memoCandidates={memo.candidates} />
 
       {/* Tabs */}
       <div className="custom-scrollbar -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
         <div className="flex min-w-max gap-1 shadow-[inset_0_-1px_0_0_rgba(255,255,255,0.06)]">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => setTab(t.id)}
-              aria-current={tab === t.id ? "true" : undefined}
+              aria-current={activeTab === t.id ? "true" : undefined}
               className={cn(
                 "border-b-2 px-5 py-3 font-display text-[11px] font-black uppercase tracking-widest transition-colors",
-                tab === t.id
+                activeTab === t.id
                   ? "border-primary text-primary"
                   : "border-transparent text-on-surface-variant/50 hover:text-on-surface",
               )}
@@ -255,10 +344,18 @@ export function MemorandumView({
       </div>
 
       <div>
-        {tab === "thesis" && <ThesisTab memo={memo} />}
-        {tab === "stress" && <StressTab memo={memo} />}
-        {tab === "trade" && <TradeTab memo={memo} />}
-        {tab === "exit" && <ExitTab memo={memo} />}
+        {activeTab === "thesis" && <ThesisTab memo={memo} />}
+        {activeTab === "stress" && <StressTab memo={memo} />}
+        {activeTab === "trade" && <TradeTab memo={memo} />}
+        {activeTab === "exit" && <ExitTab memo={memo} />}
+        {activeTab === "council" && council && (
+          <CouncilTab
+            report={council}
+            stale={councilMemoId !== null && row !== null && councilMemoId !== row.id}
+            running={consulting}
+            onRerun={() => setPicking(true)}
+          />
+        )}
       </div>
 
       {/* The decision */}
@@ -288,6 +385,8 @@ export function MemorandumView({
       {error && memo && (
         <p className="rounded-lg bg-error-container px-4 py-3 text-sm text-error">{error}</p>
       )}
+
+      {picking && <ConsultDialog onClose={() => setPicking(false)} onConfirm={consult} />}
 
       {backing && primary && (
         <BackTradeDialog

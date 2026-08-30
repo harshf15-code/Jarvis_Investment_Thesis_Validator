@@ -48,6 +48,23 @@ export async function listTheses() {
   return data ?? [];
 }
 
+/**
+ * The signed-in trader's Investment Council roster, in display order.
+ *
+ * Built-ins seed at sort_order 1-3 and custom members default to 100, so the
+ * three defaults lead and additions follow in the order they were made.
+ */
+export async function listCouncilMembers() {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("council_members")
+    .select("*")
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) fail(error.message);
+  return data ?? [];
+}
+
 export async function listRecommendations() {
   const supabase = await createClient();
 
