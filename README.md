@@ -1,18 +1,19 @@
 <p align="center">
-  <img src="public/logo.svg" alt="" width="104" height="104" />
+  <img src="docs/cover.jpg" alt="Jarvis — turns a hunch into an investment plan you can hold for months, not minutes." width="880" />
 </p>
 
 <h1 align="center">Jarvis Decision Cockpit</h1>
 
 <p align="center">
-  <em>Turn a plain-English trading thesis into a full investment memorandum.</em>
+  <strong>Turns a hunch into an investment plan you can hold for months, not minutes.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/harshf15-code/Myticker/actions/workflows/ci.yml"><img src="https://github.com/harshf15-code/Myticker/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license" /></a>
-  <img src="https://img.shields.io/badge/Next.js-16-black.svg" alt="Next.js 16" />
-  <img src="https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg" alt="Node 22+" />
+  <img src="https://img.shields.io/badge/decision_support-never_execution-00c805?style=flat-square&labelColor=0b0f14" alt="Decision support, never execution" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-c6e315?style=flat-square&labelColor=0b0f14" alt="MIT license" /></a>
+  <img src="https://img.shields.io/badge/Next.js-16-f4f6fe?style=flat-square&labelColor=0b0f14" alt="Next.js 16" />
+  <img src="https://img.shields.io/badge/node-%E2%89%A522-f4f6fe?style=flat-square&labelColor=0b0f14" alt="Node 22+" />
 </p>
 
 ---
@@ -323,11 +324,37 @@ Supabase supports all of them; none is wired up here.
 ## Tech stack
 
 Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 · Supabase (Postgres +
-Deno Edge Functions) · Vercel AI SDK via OpenRouter · yahoo-finance2 · Zod · jose ·
-lightweight-charts · Vitest
+Deno Edge Functions, `@supabase/ssr`) · Vercel AI SDK via OpenRouter · yahoo-finance2 ·
+Zod · lightweight-charts · Vitest
+
+---
+
+## Brand
+
+<p align="center">
+  <img src="public/logo.svg" alt="" width="88" height="88" />
+</p>
+
+The mark is a single gem cut into **four facets** — the four passes a thesis makes before
+it becomes a position: *thesis, stress test, trade plan, exit.* Each facet catches the
+light differently because each pass asks a different question of the same idea. Pressure
+applied to a hunch is what turns it into something you can hold.
+
+The interface is a dark terminal by intent, not fashion. This is an instrument you consult
+on a decision worth money, and the palette keeps exactly one accent so the only thing that
+can shout on screen is a number that changed.
+
+| Colour | Name | Used for |
+|---|---|---|
+| ![](https://img.shields.io/badge/-c6e315-c6e315?style=flat-square) `#c6e315` | Mark lime | The gem, and only the gem |
+| ![](https://img.shields.io/badge/-00c805-00c805?style=flat-square) `#00c805` | Signal green | Gains, live state, the single UI accent |
+| ![](https://img.shields.io/badge/-ff5000-ff5000?style=flat-square) `#ff5000` | Loss red | Losses, breached stops |
+| ![](https://img.shields.io/badge/-0b0f14-0b0f14?style=flat-square) `#0b0f14` | Surface | The canvas |
+| ![](https://img.shields.io/badge/-f4f6fe-f4f6fe?style=flat-square) `#f4f6fe` | On surface | Type |
 
 Design tokens come from a [Google Stitch](https://stitch.withgoogle.com) project and live
-in `styles/tokens.css`. Never hardcode a colour outside that file.
+in `styles/tokens.css`. **Never hardcode a colour outside that file** — the accent earns
+its meaning by being scarce, and every hex written inline spends a little of it.
 
 ---
 
