@@ -19,9 +19,11 @@
 ---
 
 You give it a thesis in plain English — *"NBFCs have all-time-low NPAs, I think they run
-this year"* — and it returns a complete investment memorandum: every candidate priced and
-compared head-to-head, a winner, four ways the trade could fail, a costed trade plan, and
-the exit rules. Then it watches the market and emails you when a level is hit.
+this year"* — pick the markets to run it against, and it returns a complete investment
+memorandum: every candidate priced and compared head-to-head, a winner, four ways the trade
+could fail, a costed trade plan, and the exit rules. You can then convene a **council of
+investing personas** to argue with the result before you commit a rupee. Then it watches the
+market and emails you when a level is hit.
 
 > **This is decision support, not a broker.** It never places an order, never touches a
 > brokerage account, and never moves money. It is not investment advice. Every number it
@@ -40,10 +42,12 @@ discipline — and makes the model show its work at every step.
 
 ```mermaid
 flowchart LR
-    A["You type a thesis<br/>(a stock, a market view, or both)"] --> B[Jarvis shortlists<br/>3-5 candidates]
+    A["You type a thesis<br/>(a stock, a market view, or both)<br/>and pick markets"] --> B[Jarvis shortlists<br/>3-5 candidates<br/>listed in those markets]
     B --> C[Live price + fundamentals<br/>fetched for every name]
     C --> D[One comparative call:<br/>rank them, pick a winner]
-    D --> E["Memorandum<br/>Thesis · Stress Test · Trade Plan · Exit"]
+    D --> E["Memorandum, one per market<br/>Thesis · Stress · Trade · Exit"]
+    E --> K["Investment Council<br/>(optional, on demand)"]
+    K --> E
     E --> F{Back the trade?}
     F -->|Yes| G[Position opened<br/>with your real fill]
     F -->|No| H[Costs nothing]
@@ -56,9 +60,50 @@ analysed.** A macro thesis gets a basket Jarvis chooses and prices. A thesis tha
 names a stock gets that stock *plus its closest peers* — because "should I buy this one"
 is only answerable against the alternatives.
 
+### Markets
+
+A thesis is run against markets you choose, and **each market gets its own memorandum**.
+"The best robotics name in India" and "…in the US" are different questions with different
+answers, so they are asked separately and priced separately.
+
+| Market | Status | Exchanges |
+|---|---|---|
+| United States | Live | US |
+| India | Live | NSE, BSE |
+| China · Europe · Emerging Markets | Visible, disabled | — |
+
+The three disabled markets are deliberate, not unfinished. `stocks` has no currency column and
+the whole price path assumes every candidate's number is comparable to every other's — so a
+¥6,052 quote would render as ₹6,052 beside a $356 one, and feed into stop-loss geometry as if it
+were the same money. A half-priced report is worse than no report.
+
+The market you pick is also the **universe the shortlist is held to**. Every name the model
+returns is re-checked against that market's exchanges after the fact, and one retry names the
+rejected tickers so it cannot re-roll the same foreign listings. This is not decoration: a
+robotics thesis once came back comparing two US names against three unpriceable Japanese ones,
+and the winner was simply whoever survived.
+
+### The Investment Council
+
+A memorandum is one model's take, shown with total confidence. The Council is the second opinion
+— and deliberately several of them, so that **disagreement is visible rather than averaged away**.
+
+You keep a roster of up to seven personas in Settings (three ship by default), pick at least
+three at consult time, and each one reads the same memorandum and the same priced grid, then
+gives its own verdict — including naming a different winner, or none of the field. One further
+call synthesizes where they agreed and where they split.
+
+> Every persona is an **AI simulation** based on a publicly known investing philosophy — not the
+> real person's opinion, and not affiliated with or endorsed by them. That line appears on every
+> surface a persona's name shows up on.
+
+A consult costs **N + 1 model calls** and zero market-data lookups; the member calls run in
+parallel, so a seven-member panel takes about as long as a three-member one. If one member's call
+fails, its card says so and the rest of the report still renders.
+
 ### The memorandum
 
-One screen, four tabs, produced in a single pass:
+One screen, produced in a single pass:
 
 | Tab | Contains |
 |---|---|
@@ -66,6 +111,7 @@ One screen, four tabs, produced in a single pass:
 | **Stress Test** | Four concrete failure modes, each paired with an honest counter-argument — and a verdict on whether the bear case holds |
 | **Trade Plan** | Nine-cell grid (CMP, entry zone, add tranche, stop, two targets, size, horizon, time exit), a thesis test calendar, and an optional parallel entry |
 | **Exit** | Five sequenced rules (trim, trim, runner, hard stop, time exit), the one *anchor metric* to track, and risk/reward, max drawdown, tier and PEG |
+| **Council** | Appears once consulted: the combined verdict, where the panel agreed and split, then one card per member with their verdict, the name they'd own, and the single risk they'd flag |
 
 Above them sits a comparative grid: up to five names side by side with live price,
 valuation multiple, 52-week range position, market cap, and a BUY/WATCH/AVOID call.
@@ -100,6 +146,7 @@ Two Supabase Edge Functions run on `pg_cron`:
 | `/journal` | Trade journal and post-mortems |
 | `/discovery` | Opportunity discovery |
 | `/recommendations` | Recommendation tracker — did Jarvis's calls actually work? |
+| `/settings` | Council roster, and what your model calls have cost |
 
 ---
 
@@ -124,6 +171,7 @@ Fill in `.env.local` — every variable is documented in the example file:
 | `SUPABASE_DB_URL` | Supabase → Settings → Database → Connection string (URI) |
 | `OPENROUTER_API_KEY` | openrouter.ai → Keys |
 | `OPENROUTER_MODEL_ID` | e.g. `anthropic/claude-sonnet-4.5` |
+| `LLM_DAILY_BUDGET_USD`, `LLM_MONTHLY_BUDGET_USD` | Optional per-account spend caps — see [Cost](#cost). Omitting them does *not* mean unlimited |
 
 Apply the schema, in order:
 
@@ -180,12 +228,19 @@ app/
 proxy.ts               Session gate (was middleware.ts)
 components/
   layout/              Header, icon rail, mobile nav, thesis drawer
-  thesis/              Memorandum: comparative grid, four tabs, back-trade dialog
+  thesis/              Memorandum: comparative grid, tabs, back-trade dialog
+  council/             Roster, consult picker, council report tab
+  settings/            Spend panel
 lib/
   jarvis-memorandum.ts     Memorandum schema + prompt + normalizer  ← start here
+  jarvis-council.ts        Council schemas, persona prompts, normalizer
   jarvis-thesis-prompt.ts  Thesis structuring + candidate shortlist
   jarvis-thesis-parser.ts  Fenced-JSON extraction, trade-plan geometry
+  markets.ts               Market → exchanges/currency registry (one source of truth)
   market-data.ts           yahoo-finance2 wrapper (quotes, OHLCV, fundamentals)
+  llm/openrouter.ts        Provider + the fetch that reads OpenRouter's real cost
+  llm/meter.ts             The ONLY door to the model — spends and records together
+  llm/budget.ts            Pre-flight spend check
   supabase/server.ts       Request-scoped client — what almost everything uses
   supabase/admin.ts        Service-role client — bypasses RLS, for jobs only
 supabase/
@@ -226,6 +281,16 @@ exactly one primary pick agreeing with `primary_ticker`, and
 entry zone, a target below it, a `target_2` under `target_1`. A dropped cell is safer than
 a plausible-looking number nobody checked.
 
+**4. A name the model invents never gains authority.** `theses.ticker` decides whether a run
+compares one stock against its peers or builds a basket from scratch, and the peer path seeds
+that ticker and never drops it — so an invented name becomes the *premise* of the analysis rather
+than its conclusion. It happened: a robotics thesis came back anchored to a barcode-scanner
+company the trader had never mentioned. Two structural fixes, both enforced in code after the
+parse rather than requested in a prompt, because a prompt is a request and these are invariants:
+a `thesis_only` extraction has its ticker stripped (`normalizeExtract`), and a Council member's
+preferred ticker is dropped unless it is in the priced grid (`normalizeCouncilReport`) — the
+argument survives, the unbuyable recommendation does not.
+
 Thin sections degrade individually: if the model returns nonsense for `catalysts`, that
 field becomes `[]` and the rest of the memo survives.
 
@@ -233,8 +298,9 @@ field becomes `[]` and the rest of the memo survives.
 
 ```mermaid
 erDiagram
-    theses ||--o| thesis_memorandums : "has one"
+    theses ||--o{ thesis_memorandums : "one per market"
     theses ||--o{ thesis_candidates : "compared"
+    theses ||--o{ thesis_council_reports : "consulted"
     theses ||--o| trade_plans : "locks"
     trade_plans ||--o{ positions : "opens"
     positions ||--o{ entries : "filled by"
@@ -246,7 +312,13 @@ erDiagram
 `thesis_memorandums.document` is one validated JSONB blob rather than forty columns: it is
 produced and replaced atomically by a single model call and only ever read whole. It is
 re-validated on read, so a row written by an older schema degrades to "re-run this"
-instead of crashing the page.
+instead of crashing the page. `thesis_council_reports.document` follows the same discipline, which
+is why re-running a consult is a single upsert rather than a delete and an insert that could
+leave a synthesis pointing at opinions no longer there.
+
+Not in the diagram: `llm_usage`, the append-only spend ledger, and `llm_budgets`, a sparse table
+of per-account limit overrides. Both hang off `auth.users` rather than off anything above — see
+[Cost](#cost).
 
 ---
 
@@ -260,7 +332,8 @@ npx tsc --noEmit
 
 Tests cover the parts where being wrong is expensive: JSON extraction, schema validation
 and graceful degradation, trade-plan geometry, weighted-average entry maths, risk/reward
-calculations, and market-hours logic across timezones and DST boundaries.
+calculations, market-hours logic across timezones and DST boundaries, budget arithmetic, and the
+two invariants that stop a model-named ticker becoming a recommendation.
 
 There are no tests that call the live model — those cost money and are non-deterministic.
 The prompts are exercised manually.
@@ -270,11 +343,8 @@ The prompts are exercised manually.
 ## Deploying
 
 Designed for [Vercel](https://vercel.com), but it is a standard Next.js app and will run
-anywhere Node does.
-
-```bash
-npx vercel
-```
+anywhere Node does. Once the project is linked, **pushes to `main` deploy themselves** — there is
+no manual deploy step.
 
 **`.env.local` is never uploaded — it is gitignored, and Vercel does not read it.** Every
 variable has to be set again in your hosting provider's dashboard, or the deployment will
@@ -285,6 +355,7 @@ look broken in confusing ways:
 | `NEXT_PUBLIC_SUPABASE_URL` / `..._ANON_KEY` | Sign-up and sign-in both fail — these *are* the auth config |
 | `SUPABASE_SERVICE_ROLE_KEY` | The app works; the Edge Functions (alerts, digest) do not |
 | `OPENROUTER_API_KEY` | Everything loads, running a thesis fails |
+| `LLM_*_BUDGET_USD` | Nothing breaks — the app falls back to $1/day and $10/month rather than to unlimited, deliberately |
 
 The login error is deliberately generic ("Incorrect email or password") so the form can't
 be used to find out which addresses have accounts. If something looks wrong, check the
@@ -295,7 +366,8 @@ vercel env ls           # what is actually set, per environment
 vercel logs <url>       # look for [config] lines
 ```
 
-Remember to redeploy after adding variables — they are baked in at build time.
+Remember to redeploy after adding variables — they are baked in at build time. Pushing any commit
+to `main` is enough.
 
 The Edge Functions and their cron schedules live on Supabase and deploy separately.
 
@@ -312,12 +384,70 @@ Two things are worth knowing:
   *first* account created — so if someone else signs up first, they inherit your book.
   `0015_finish_user_accounts.sql` drops that trigger and makes `user_id` NOT NULL; run it
   once the first account is in place, after which ownerless rows are impossible.
-- **Sign-up is open, and LLM calls are billed to your `OPENROUTER_API_KEY`.** Anyone who
-  finds the URL can create an account and spend against it. If that matters, gate sign-up
-  behind an invite code or turn on Vercel's Deployment Protection.
+- **Sign-up is open, and LLM calls are billed to your `OPENROUTER_API_KEY`.** Every *account* is
+  capped — see [Cost](#cost) — so one account is bounded to $10 a month. But **account creation
+  itself is not limited**: there is no invite code, no email verification and no captcha, so
+  someone determined can register repeatedly and get a fresh allowance each time. The caps are a
+  guard against runaway use and casual abuse, not a total spend ceiling. For a real ceiling, gate
+  sign-up behind an invite code, turn on Vercel's Deployment Protection, or set a hard limit on
+  the OpenRouter key itself.
 
 Not built: password reset, email verification flows, OAuth providers, and teams or sharing.
 Supabase supports all of them; none is wired up here.
+
+---
+
+## Cost
+
+Every analysis is a model call billed to your own OpenRouter key. With Sonnet 4.5:
+
+| Action | Calls | Cost |
+|---|---|---|
+| Structure a thesis | 1 | $0.02 (measured) |
+| Memorandum (per market) | 2 | ~$0.10 (estimated — longer prompts, live fundamentals) |
+| Council consult | N + 1 | ~$0.05 per member (estimated) |
+
+`/settings` reports what *your* calls actually cost, which is the number to trust over this table.
+
+**Every account is capped by default: $1/day and $10/month.** The check runs before anything is
+spent, so an account over its limit costs exactly zero — it gets a 429 saying which window it hit
+and when it resets, not a failure part-way through a run. If spend cannot be read at all, the
+request is refused with a 503 rather than allowed: a guard that fails open is not a guard.
+
+Two limits on what this actually bounds, worth knowing before you rely on it:
+
+- **The cap is per account, and sign-up is open.** N accounts means N allowances. See
+  [Accounts](#accounts).
+- **The pre-flight check is not a reservation.** Requests issued in parallel can each read the
+  same under-limit ledger before any of them has recorded its spend, so a burst can overshoot.
+  Sequential use is bounded correctly; a scripted burst is not.
+
+Two tables do the work. `llm_usage` is an append-only ledger, one row per call, denominated in
+**money rather than tokens** — token prices change per model, so a token count is not a bill. The
+figure is OpenRouter's own reported charge, read off the raw HTTP response by a `fetch` wrapper in
+`lib/llm/openrouter.ts`; it has to be caught there because the AI SDK validates the response with
+a Zod schema that strips `usage.cost` before any application code sees it. When it is missing, the
+call is priced from a local table and the row is stamped `estimated`, which the UI shows as such.
+
+`llm_budgets` is sparse: **no row means the defaults apply**, so every account is capped from the
+moment it is created without anything having to create a row for it. A row exists only to
+override, and a null column means no limit for that window:
+
+```sql
+-- Uncap your own account
+insert into llm_budgets (user_id, daily_usd, monthly_usd, note)
+values ('<your-auth-uid>', null, null, 'owner')
+on conflict (user_id) do update set daily_usd = null, monthly_usd = null;
+```
+
+Both tables are **read-only to the user**: `authenticated` has `SELECT` and nothing else, and
+every write goes through the service-role client. A ledger its own subject can delete is not a
+limit, and a cap the user can raise is not a cap. `/settings` shows spend against limits and a
+per-feature breakdown; it does not let you edit either.
+
+Every model call in the app goes through `meteredGenerateText` in `lib/llm/meter.ts`, which is the
+only thing that imports the model — so spending money and recording it are the same action and
+cannot drift apart.
 
 ---
 

@@ -33,6 +33,25 @@ export type PositionAlertType =
   | "trim_target_2_reached"
   | "time_exit_due";
 
+/**
+ * Which part of the app spent a model call (0018). Used to attribute cost, so
+ * "the Council is what costs money" is answerable rather than assumed.
+ */
+export type LlmFeature =
+  | "thesis"
+  | "memorandum"
+  | "council_opinion"
+  | "council_synthesis"
+  | "journal";
+
+/**
+ * `reported` is OpenRouter's own charge for the call, read off the raw response
+ * before the AI SDK parses it. `estimated` is derived from token counts against
+ * a local price map, and is shown as such — a drifting price map should surface
+ * as visibly estimated money, never as quietly wrong money.
+ */
+export type LlmCostSource = "reported" | "estimated";
+
 export type Json =
   | string
   | number
@@ -586,6 +605,68 @@ export type OpportunityInsert = Pick<Opportunity, "ticker" | "market"> &
   >;
 
 // --- Update types ---
+/** `llm_usage` (0018) — append-only. One row per model call, denominated in money. */
+export type LlmUsage = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  feature: LlmFeature;
+  model: string;
+  /** OpenRouter's generation id — unique, so a retried write cannot double-count. */
+  generation_id: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  cost_source: LlmCostSource;
+  thesis_id: string | null;
+  /** False when the call threw. Still recorded: a failed call can still be billed. */
+  ok: boolean;
+};
+
+/**
+ * Written by the service-role client only. `authenticated` has SELECT and
+ * nothing else on this table — a ledger its subject can edit is not a limit.
+ */
+export type LlmUsageInsert = Pick<LlmUsage, "user_id" | "feature" | "model"> &
+  Partial<
+    Pick<
+      LlmUsage,
+      | "id"
+      | "created_at"
+      | "generation_id"
+      | "input_tokens"
+      | "output_tokens"
+      | "cost_usd"
+      | "cost_source"
+      | "thesis_id"
+      | "ok"
+    >
+  >;
+
+/**
+ * `llm_budgets` (0018) — sparse. NO ROW means the env defaults apply, so every
+ * account is capped from the moment it exists. A row exists only to override,
+ * and a null column means no limit for that window.
+ */
+export type LlmBudget = {
+  user_id: string;
+  daily_usd: number | null;
+  monthly_usd: number | null;
+  note: string | null;
+};
+
+export type LlmBudgetInsert = Pick<LlmBudget, "user_id"> &
+  Partial<Pick<LlmBudget, "daily_usd" | "monthly_usd" | "note">>;
+
+/** Return shape of the `llm_budget_status()` RPC. */
+export type LlmBudgetStatus = {
+  daily_spent: number;
+  monthly_spent: number;
+  daily_limit: number | null;
+  monthly_limit: number | null;
+  has_override: boolean;
+};
+
 export type StockUpdate = Partial<StockInsert>;
 export type ThesisUpdate = Partial<ThesisInsert>;
 export type TradePlanUpdate = Partial<TradePlanInsert>;
@@ -613,6 +694,18 @@ export interface Database {
         Row: ThesisMemorandum;
         Insert: ThesisMemorandumInsert;
         Update: ThesisMemorandumUpdate;
+        Relationships: [];
+      };
+      llm_usage: {
+        Row: LlmUsage;
+        Insert: LlmUsageInsert;
+        Update: Partial<LlmUsageInsert>;
+        Relationships: [];
+      };
+      llm_budgets: {
+        Row: LlmBudget;
+        Insert: LlmBudgetInsert;
+        Update: Partial<LlmBudgetInsert>;
         Relationships: [];
       };
       council_members: {
@@ -663,7 +756,21 @@ export interface Database {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      llm_budget_status: {
+        Args: Record<string, never>;
+        Returns: LlmBudgetStatus[];
+      };
+      llm_usage_by_feature: {
+        Args: Record<string, never>;
+        Returns: {
+          feature: LlmFeature;
+          cost_usd: number;
+          calls: number;
+          estimated_calls: number;
+        }[];
+      };
+    };
     Enums: {
       exchange_code: ExchangeCode;
       conviction_tier: ConvictionTier;
@@ -677,6 +784,7 @@ export interface Database {
       thesis_outcome: ThesisOutcome;
       position_alert_type: PositionAlertType;
       council_member_source: CouncilMemberSource;
+      llm_feature: LlmFeature;
     };
     CompositeTypes: Record<string, never>;
   };

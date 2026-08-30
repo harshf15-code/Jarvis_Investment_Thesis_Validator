@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { generateText } from "ai";
 import { z } from "zod";
 
 import {
@@ -16,8 +15,10 @@ import {
   type CouncilOpinion,
   type CouncilReport,
 } from "@/lib/jarvis-council";
+import { currentUser } from "@/lib/auth/user";
 import { MemorandumSchema } from "@/lib/jarvis-memorandum";
-import { jarvisModel } from "@/lib/llm/openrouter";
+import { checkBudget } from "@/lib/llm/budget";
+import { meteredGenerateText } from "@/lib/llm/meter";
 import { MARKETS, isLiveMarket } from "@/lib/markets";
 import { createClient } from "@/lib/supabase/server";
 import type { MarketCode } from "@/lib/types";
@@ -54,6 +55,18 @@ const ConsultInputSchema = z.object({
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
+
+  const user = await currentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
+  }
+  const budget = await checkBudget();
+  if (!budget.ok) {
+    // 503 when spend is unknown, 429 when it is known to be exhausted — a
+    // caller should retry the first and not the second.
+    const status = budget.window === "unavailable" ? 503 : 429;
+    return NextResponse.json({ error: budget.message }, { status });
+  }
 
   const json = await request.json().catch(() => null);
   const parsedInput = ConsultInputSchema.safeParse(json ?? {});
@@ -160,8 +173,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const settled = await Promise.allSettled(
     members.map(async (m): Promise<CouncilOpinion> => {
-      const result = await generateText({
-        model: jarvisModel,
+      const result = await meteredGenerateText({
+        userId: user.id,
+        feature: "council_opinion",
+        thesisId: id,
         system: buildCouncilOpinionSystemPrompt(m),
         prompt: sharedContext,
       });
@@ -211,8 +226,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   let synthesisRaw = "";
   if (answered.length >= 2) {
     try {
-      const result = await generateText({
-        model: jarvisModel,
+      const result = await meteredGenerateText({
+        userId: user.id,
+        feature: "council_synthesis",
+        thesisId: id,
         system: JARVIS_COUNCIL_SYNTHESIS_SYSTEM_PROMPT,
         prompt: buildCouncilSynthesisUserContext({
           jarvisPick: memo.primary_ticker,

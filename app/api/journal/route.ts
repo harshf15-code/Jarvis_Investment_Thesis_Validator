@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { generateText } from "ai";
 import { z } from "zod";
 
 import { JARVIS_JOURNAL_SYSTEM_PROMPT, buildJournalUserContext } from "@/lib/jarvis-journal-prompt";
 import { parseJournalVerdict } from "@/lib/jarvis-journal-parser";
-import { jarvisModel } from "@/lib/llm/openrouter";
+import { checkBudget } from "@/lib/llm/budget";
+import { meteredGenerateText } from "@/lib/llm/meter";
+import { currentUser } from "@/lib/auth/user";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 import { createClient } from "@/lib/supabase/server";
 import { listJournalEntries } from "@/lib/queries";
@@ -76,10 +77,21 @@ export async function POST(request: Request) {
 
   let verdict: string | null = input.jarvis_verdict ?? null;
   let suggestedTags: string[] = input.tags ?? [];
-  if (verdict === null && (input.tags === undefined || input.tags.length === 0)) {
+  // Unlike the thesis and memorandum routes, being over budget does NOT fail
+  // this request. The Jarvis verdict is a garnish on a review the trader has
+  // already written; refusing to save their words because an optional model
+  // call is unaffordable would be the wrong trade. It degrades to the same
+  // "no verdict" path a failed call already takes.
+  // `checkBudget` fails closed, so an unreadable budget lands here as
+  // unaffordable and the verdict is skipped — the review still saves.
+  const user = await currentUser();
+  const affordable = user !== null && (await checkBudget()).ok;
+
+  if (verdict === null && affordable && (input.tags === undefined || input.tags.length === 0)) {
     try {
-      const result = await generateText({
-        model: jarvisModel,
+      const result = await meteredGenerateText({
+        userId: user!.id,
+        feature: "journal",
         system: JARVIS_JOURNAL_SYSTEM_PROMPT,
         prompt: buildJournalUserContext({
           ticker: position.ticker,

@@ -8,6 +8,8 @@ vi.mock("@/lib/market-data", () => ({
 }));
 vi.mock("ai", () => ({ generateText: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/auth/user", () => ({ currentUser: vi.fn() }));
+vi.mock("@/lib/llm/budget", () => ({ checkBudget: vi.fn() }));
 // `stocks` is a shared cache that `authenticated` may only read (0014), so the
 // route writes it through the service-role client.
 vi.mock("@/lib/supabase/admin", () => ({
@@ -22,6 +24,8 @@ vi.mock("@/lib/supabase/admin", () => ({
 
 import { generateText } from "ai";
 import { getQuote } from "@/lib/market-data";
+import { currentUser } from "@/lib/auth/user";
+import { checkBudget } from "@/lib/llm/budget";
 import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
@@ -92,6 +96,8 @@ I
 describe("POST /api/theses", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+    vi.mocked(checkBudget).mockResolvedValue({ ok: true } as never);
     // Nothing resolves by default, so a ticker only survives when a test
     // explicitly makes the quote succeed.
     vi.mocked(getQuote).mockRejectedValue(new Error("not found"));
@@ -190,5 +196,50 @@ describe("POST /api/theses", () => {
       .map((x) => x.value)
       .find((v) => v?.insert?.mock?.calls?.length)?.insert.mock.calls[0][0];
     expect(insert.ticker).toBe(null);
+  });
+});
+
+describe("spend guard", () => {
+  // This block is a sibling of the suite above, so it needs its own reset —
+  // that suite's beforeEach does not reach here.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+    vi.mocked(checkBudget).mockResolvedValue({ ok: true } as never);
+    vi.mocked(createClient).mockResolvedValue(buildSupabaseMock() as never);
+  });
+
+  it("refuses with 429 and spends nothing when over budget", async () => {
+    // The point of the pre-flight check: an account that is over budget must
+    // cost zero, not "one more request's worth".
+    vi.mocked(checkBudget).mockResolvedValue({
+      ok: false,
+      window: "daily",
+      message: "You've used $1.00 of your $1.00 daily analysis budget.",
+    } as never);
+    const res = await POST(post({ input_text: "banks look cheap" }));
+    expect(res.status).toBe(429);
+    expect((await res.json()).error).toMatch(/daily analysis budget/);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("503s and spends nothing when the budget cannot be read", async () => {
+    // Fails closed. An RPC broken by a permission change or an unapplied
+    // migration must not silently remove the cap.
+    vi.mocked(checkBudget).mockResolvedValue({
+      ok: false,
+      window: "unavailable",
+      message: "Couldn't check your analysis budget just now — try again in a moment.",
+    } as never);
+    const res = await POST(post({ input_text: "banks look cheap" }));
+    expect(res.status).toBe(503);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("401s a request with no session", async () => {
+    vi.mocked(currentUser).mockResolvedValue(null as never);
+    const res = await POST(post({ input_text: "banks look cheap" }));
+    expect(res.status).toBe(401);
+    expect(generateText).not.toHaveBeenCalled();
   });
 });

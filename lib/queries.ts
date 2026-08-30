@@ -1,3 +1,4 @@
+import { limitsFor } from "@/lib/llm/budget";
 import { createClient } from "@/lib/supabase/server";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 
@@ -54,6 +55,51 @@ export async function listTheses() {
  * Built-ins seed at sort_order 1-3 and custom members default to 100, so the
  * three defaults lead and additions follow in the order they were made.
  */
+/**
+ * This account's LLM spend: both windows against their limits, plus a
+ * per-feature breakdown of the current month.
+ *
+ * Read-only by construction — `authenticated` has SELECT and nothing else on
+ * `llm_usage` (0018), because a ledger its subject can edit is not a limit.
+ */
+export async function getUsageSummary() {
+  const supabase = await createClient();
+
+  // Both reads throw on failure rather than degrading to zero. Reporting "$0
+  // spent" during a permission or schema failure would tell the trader they
+  // have room they may not have, and would quietly drop the Council dialog's
+  // over-budget warning.
+  const { data: statusRows, error: statusError } = await supabase.rpc("llm_budget_status");
+  if (statusError) fail(statusError.message);
+  const raw = statusRows?.[0];
+  const status = {
+    daily_spent: Number(raw?.daily_spent ?? 0),
+    monthly_spent: Number(raw?.monthly_spent ?? 0),
+    daily_limit: raw?.daily_limit == null ? null : Number(raw.daily_limit),
+    monthly_limit: raw?.monthly_limit == null ? null : Number(raw.monthly_limit),
+    has_override: raw?.has_override ?? false,
+  };
+
+  // Aggregated in SQL (0019), not by pulling every row and grouping here.
+  // PostgREST caps a response at 1000 rows, so the old approach silently
+  // understated any account past 1000 calls in a month — reachable precisely
+  // for the uncapped account this feature exists to support.
+  const { data: rows, error: featureError } = await supabase.rpc("llm_usage_by_feature");
+  if (featureError) fail(featureError.message);
+
+  return {
+    ...status,
+    limits: limitsFor(status),
+    byFeature: (rows ?? []).map((r) => ({
+      feature: r.feature,
+      costUsd: Number(r.cost_usd),
+      calls: Number(r.calls),
+    })),
+    /** Calls priced from the local table rather than OpenRouter's own number. */
+    estimatedCalls: (rows ?? []).reduce((n, r) => n + Number(r.estimated_calls), 0),
+  };
+}
+
 export async function listCouncilMembers() {
   const supabase = await createClient();
   const { data, error } = await supabase
