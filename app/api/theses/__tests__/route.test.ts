@@ -1,17 +1,37 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/market-data", () => ({
-  getQuote: vi.fn().mockRejectedValue(new Error("not found")),
+  getQuote: vi.fn(),
   getFundamentals: vi.fn().mockResolvedValue({}),
   resolveYahooSymbol: (ticker: string, exchange: string) =>
     exchange === "NSE" ? `${ticker}.NS` : ticker,
 }));
 vi.mock("ai", () => ({ generateText: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+// `stocks` is a shared cache that `authenticated` may only read (0014), so the
+// route writes it through the service-role client.
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => ({
+    from: () => ({
+      insert: () => ({
+        select: () => ({ single: async () => ({ data: { id: "stock-1" }, error: null }) }),
+      }),
+    }),
+  }),
+}));
 
 import { generateText } from "ai";
+import { getQuote } from "@/lib/market-data";
 import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
+
+/** Every request now has to name a market; India unless a test says otherwise. */
+function post(body: Record<string, unknown>) {
+  return new Request("http://test/api/theses", {
+    method: "POST",
+    body: JSON.stringify({ markets: ["IN"], ...body }),
+  }) as never;
+}
 
 function buildSupabaseMock(opts: { existingTheses?: unknown[] } = {}) {
   const insertedThesis = { id: "thesis-1", status: "draft" };
@@ -32,6 +52,15 @@ function buildSupabaseMock(opts: { existingTheses?: unknown[] } = {}) {
           insert: vi.fn().mockReturnValue({
             select: vi.fn().mockReturnValue({
               single: vi.fn().mockResolvedValue({ data: insertedThesis, error: null }),
+            }),
+          }),
+        };
+      }
+      if (table === "stocks") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
             }),
           }),
         };
@@ -61,14 +90,28 @@ I
 \`\`\``;
 
 describe("POST /api/theses", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Nothing resolves by default, so a ticker only survives when a test
+    // explicitly makes the quote succeed.
+    vi.mocked(getQuote).mockRejectedValue(new Error("not found"));
+  });
 
   it("rejects an empty input_text", async () => {
+    const res = await POST(post({ input_text: "" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a request with no market", async () => {
     const req = new Request("http://test/api/theses", {
       method: "POST",
-      body: JSON.stringify({ input_text: "" }),
+      body: JSON.stringify({ input_text: "Indian IT is bottoming" }),
     });
-    const res = await POST(req as never);
+    expect((await POST(req as never)).status).toBe(400);
+  });
+
+  it("rejects a market that is not live yet", async () => {
+    const res = await POST(post({ input_text: "China robotics", markets: ["CN"] }));
     expect(res.status).toBe(400);
   });
 
@@ -76,11 +119,7 @@ describe("POST /api/theses", () => {
     vi.mocked(createClient).mockResolvedValue(buildSupabaseMock() as never);
     vi.mocked(generateText).mockResolvedValue({ text: RAW_RESPONSE } as never);
 
-    const req = new Request("http://test/api/theses", {
-      method: "POST",
-      body: JSON.stringify({ input_text: "I think Indian IT is bottoming" }),
-    });
-    const res = await POST(req as never);
+    const res = await POST(post({ input_text: "I think Indian IT is bottoming" }));
     const body = await res.json();
 
     expect(res.status).toBe(201);
@@ -89,23 +128,67 @@ describe("POST /api/theses", () => {
   });
 
   it("surfaces a duplicateWarning when an existing thesis matches the resolved ticker", async () => {
-    vi.mocked(createClient).mockResolvedValue(
-      buildSupabaseMock({
-        existingTheses: [{ id: "thesis-old", status: "active", created_at: "2026-06-01T00:00:00Z" }],
-      }) as never,
-    );
+    const supabase = buildSupabaseMock({
+      existingTheses: [{ id: "thesis-old", status: "active", created_at: "2026-06-01T00:00:00Z" }],
+    });
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    vi.mocked(getQuote).mockResolvedValue({ price: 100, asOf: new Date() } as never);
     vi.mocked(generateText).mockResolvedValue({
-      text: RAW_RESPONSE.replace('"ticker":null', '"ticker":"TCS"'),
+      text: RAW_RESPONSE
+        .replace('"mode":"thesis_only"', '"mode":"stock_only"')
+        .replace('"ticker":null', '"ticker":"TCS"'),
     } as never);
 
-    const req = new Request("http://test/api/theses", {
-      method: "POST",
-      body: JSON.stringify({ input_text: "TCS looks interesting" }),
-    });
-    const res = await POST(req as never);
+    const res = await POST(post({ input_text: "TCS looks interesting", names_stocks: true }));
     const body = await res.json();
 
     expect(res.status).toBe(201);
     expect(body.duplicateWarning?.existingThesisId).toBe("thesis-old");
+  });
+
+  /**
+   * The robotics regression. A macro thesis came back as `thesis_only` while
+   * also naming ZBRA — a ticker absent from the trader's text. That field is
+   * what makes the memorandum route compare "this stock vs its peers" and seed
+   * the name so it can never be dropped, so an invented ticker became the
+   * premise of the analysis. It must not reach the row.
+   */
+  it("never persists a ticker the model invented for a thesis_only run", async () => {
+    const supabase = buildSupabaseMock();
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    vi.mocked(getQuote).mockResolvedValue({ price: 356, asOf: new Date() } as never);
+    vi.mocked(generateText).mockResolvedValue({
+      text: RAW_RESPONSE.replace('"ticker":null', '"ticker":"ZBRA"'),
+    } as never);
+
+    const res = await POST(
+      post({ input_text: "which companies benefit from robot actuators?", markets: ["US"] }),
+    );
+    expect(res.status).toBe(201);
+
+    const insert = supabase.from.mock.results
+      .map((x) => x.value)
+      .find((v) => v?.insert?.mock?.calls?.length)?.insert.mock.calls[0][0];
+    expect(insert.ticker).toBe(null);
+    expect(insert.markets).toEqual(["US"]);
+  });
+
+  it("ignores a model ticker when the trader did not tick 'naming stocks'", async () => {
+    const supabase = buildSupabaseMock();
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    vi.mocked(getQuote).mockResolvedValue({ price: 100, asOf: new Date() } as never);
+    vi.mocked(generateText).mockResolvedValue({
+      text: RAW_RESPONSE
+        .replace('"mode":"thesis_only"', '"mode":"stock_only"')
+        .replace('"ticker":null', '"ticker":"TCS"'),
+    } as never);
+
+    const res = await POST(post({ input_text: "Indian IT", names_stocks: false }));
+    expect(res.status).toBe(201);
+
+    const insert = supabase.from.mock.results
+      .map((x) => x.value)
+      .find((v) => v?.insert?.mock?.calls?.length)?.insert.mock.calls[0][0];
+    expect(insert.ticker).toBe(null);
   });
 });

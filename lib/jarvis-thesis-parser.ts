@@ -110,6 +110,30 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Repairs the one structural contradiction this schema cannot express: a
+ * `thesis_only` extraction that also names a ticker.
+ *
+ * This is not a style nit. A robotics/actuator thesis once came back as
+ * `mode: "thesis_only"` with `ticker: "ZBRA"` — a name found nowhere in the
+ * trader's text. `theses.ticker` is what the memorandum route branches on to
+ * decide between "compare this stock against its peers" and "build a basket
+ * from the thesis", and the peer path seeds that ticker first and never drops
+ * it. So an invented name silently became the premise of the whole analysis
+ * and won a comparison its real rivals were never entered into.
+ *
+ * A macro thesis names no stock by definition; suggestions belong in
+ * `stock_suggestions`, which is not load-bearing. Enforced here rather than
+ * asked for in the prompt, because a prompt is a request and this is an
+ * invariant.
+ */
+function normalizeExtract(data: ThesisExtract): ThesisExtract {
+  if (data.mode === "thesis_only" && data.ticker !== null) {
+    return { ...data, ticker: null };
+  }
+  return data;
+}
+
 export function parseThesisResponse(raw: string): ParsedThesisResponse {
   try {
     const sections = splitThesisSections(raw);
@@ -130,7 +154,7 @@ export function parseThesisResponse(raw: string): ParsedThesisResponse {
       };
     }
 
-    return { sections, extraction: { ok: true, data: result.data } };
+    return { sections, extraction: { ok: true, data: normalizeExtract(result.data) } };
   } catch (err) {
     return {
       sections: { ...EMPTY_SECTIONS },

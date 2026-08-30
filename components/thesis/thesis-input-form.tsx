@@ -5,6 +5,9 @@ import { useState } from "react";
 import { SendHorizontal } from "lucide-react";
 
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import { MARKETS, MARKET_ORDER } from "@/lib/markets";
+import { cn } from "@/lib/utils";
+import type { MarketCode } from "@/lib/types";
 
 /**
  * Screen 1 (spec US-09/US-10). Single free-text input, no dropdowns, no
@@ -27,18 +30,32 @@ export function ThesisInputForm({
 }) {
   const router = useRouter();
   const [inputText, setInputText] = useState(prefillTicker ?? "");
+  // Defaults to India alone rather than every live market: each extra market is
+  // a separate two-call analysis, so opting in should be deliberate.
+  const [markets, setMarkets] = useState<MarketCode[]>(["IN"]);
+  // Unticked by default. Ticking it is the ONLY way a ticker reaches
+  // `theses.ticker`, which is what anchors the whole comparison to one name.
+  const [namesStocks, setNamesStocks] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  function toggleMarket(m: MarketCode) {
+    setMarkets((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
+  }
+
   async function handleSubmit() {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || markets.length === 0) return;
     setLoading(true);
     setError(null);
     try {
       const res = await fetch("/api/theses", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input_text: inputText }),
+        body: JSON.stringify({
+          input_text: inputText,
+          markets,
+          names_stocks: namesStocks,
+        }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -64,6 +81,44 @@ export function ThesisInputForm({
         </p>
       </div>
 
+      <div>
+        <p className="font-mono text-[10px] tracking-widest text-on-surface-variant uppercase">
+          Markets
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {MARKET_ORDER.map((code) => {
+            const meta = MARKETS[code];
+            const selected = markets.includes(code);
+            return (
+              <button
+                key={code}
+                type="button"
+                disabled={!meta.live || loading}
+                aria-pressed={selected}
+                onClick={() => toggleMarket(code)}
+                title={meta.live ? undefined : "Coming soon"}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-xs transition-colors",
+                  !meta.live
+                    ? "cursor-not-allowed border-white/5 text-on-surface-variant/40"
+                    : selected
+                      ? "border-primary/60 bg-primary/10 text-primary"
+                      : "border-white/10 text-on-surface-variant hover:border-white/25 hover:text-on-surface",
+                )}
+              >
+                {meta.label}
+                {!meta.live && <span className="ml-1.5 text-[9px] opacity-70">soon</span>}
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-2 text-[11px] text-on-surface-variant/70">
+          {markets.length > 1
+            ? `One separate memorandum per market — ${markets.length} analyses.`
+            : "Jarvis will only shortlist names listed in the market you pick."}
+        </p>
+      </div>
+
       <div className="relative">
         <textarea
           value={inputText}
@@ -84,13 +139,30 @@ export function ThesisInputForm({
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={loading || !inputText.trim()}
+          disabled={loading || !inputText.trim() || markets.length === 0}
           aria-label="Send to Jarvis"
           className="absolute right-3 bottom-3 flex size-10 items-center justify-center rounded-full bg-primary text-on-primary shadow-ambient transition-all hover:bg-primary-dim active:scale-95 disabled:opacity-40 disabled:shadow-none"
         >
           <SendHorizontal className="size-4" strokeWidth={2.5} />
         </button>
       </div>
+
+      <label className="flex cursor-pointer items-start gap-2.5 text-xs text-on-surface-variant">
+        <input
+          type="checkbox"
+          checked={namesStocks}
+          onChange={(e) => setNamesStocks(e.target.checked)}
+          disabled={loading}
+          className="mt-0.5 size-3.5 shrink-0 accent-[var(--color-primary)]"
+        />
+        <span>
+          I&apos;m naming specific stock(s) above.
+          <span className="block text-on-surface-variant/60">
+            Leave this off for a sector or macro view — Jarvis will build the field itself
+            instead of anchoring to one name.
+          </span>
+        </span>
+      </label>
 
       {loading && (
         <>

@@ -84,3 +84,75 @@ describe("parseThesisResponse", () => {
     }
   });
 });
+
+describe("parseThesisResponse — invented-ticker guard", () => {
+  const body = (json: string) => `## Market View
+V
+
+## Mispricing
+M
+
+## Catalyst
+C
+
+## Time Horizon
+T
+
+## Invalidation
+I
+
+\`\`\`json
+${json}
+\`\`\``;
+
+  const json = (over: Record<string, unknown>) =>
+    JSON.stringify({
+      mode: "thesis_only",
+      ticker: null,
+      market_view: "V",
+      mispricing: "M",
+      catalyst: "C",
+      time_horizon: "T",
+      invalidation_condition: "I",
+      conviction_tier: "II",
+      conviction_score: 60,
+      stock_suggestions: [],
+      ...over,
+    });
+
+  /**
+   * The robotics regression, at the layer that can actually prevent it. A
+   * `thesis_only` extraction that also names a ticker is self-contradictory,
+   * and downstream that ticker is treated as the trader's own conviction: the
+   * memorandum route seeds it first and never drops it. ZBRA reached a memo
+   * this way from a sector question that never mentioned it.
+   */
+  it("strips a ticker from a thesis_only extraction", () => {
+    const parsed = parseThesisResponse(body(json({ ticker: "ZBRA" })));
+    expect(parsed.extraction.ok).toBe(true);
+    if (!parsed.extraction.ok) return;
+    expect(parsed.extraction.data.ticker).toBe(null);
+    expect(parsed.extraction.data.mode).toBe("thesis_only");
+    // The rest of the extraction survives untouched.
+    expect(parsed.extraction.data.conviction_score).toBe(60);
+  });
+
+  it("leaves the ticker alone when the mode says a stock was named", () => {
+    for (const mode of ["stock_only", "stock_plus_thesis"]) {
+      const parsed = parseThesisResponse(body(json({ mode, ticker: "TCS" })));
+      expect(parsed.extraction.ok).toBe(true);
+      if (!parsed.extraction.ok) return;
+      expect(parsed.extraction.data.ticker).toBe("TCS");
+    }
+  });
+
+  it("keeps suggestions, which are not load-bearing", () => {
+    const parsed = parseThesisResponse(
+      body(json({ ticker: "ZBRA", stock_suggestions: [{ ticker: "ROK", rationale: "r" }] })),
+    );
+    expect(parsed.extraction.ok).toBe(true);
+    if (!parsed.extraction.ok) return;
+    expect(parsed.extraction.data.ticker).toBe(null);
+    expect(parsed.extraction.data.stock_suggestions).toHaveLength(1);
+  });
+});

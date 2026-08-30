@@ -1,7 +1,8 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import type { ThesisCandidate } from "@/lib/types";
+import { formatMarketPrice } from "@/lib/markets";
+import type { MarketCode, ThesisCandidate } from "@/lib/types";
 import type { MemoCandidate } from "@/lib/jarvis-memorandum";
 
 const VERDICT_STYLE = {
@@ -16,16 +17,16 @@ const DOT_COLOR = {
   AVOID: "bg-error",
 } as const;
 
-function currencySymbol(exchange: string | null): string {
-  return exchange === "US" ? "$" : "₹";
-}
-
-function formatPrice(cmp: number | null, exchange: string | null): string {
+/**
+ * Formatting comes from the candidate's own market (0016) rather than the old
+ * `exchange === "US" ? "$" : "₹"` ternary, which labelled every non-US price as
+ * rupees. That was harmless while the universe was NSE/BSE/US and actively
+ * misleading the moment it is not — a ¥6,052 quote rendered as ₹6,052 sits in
+ * the same column as a $356 one with nothing to say they are different money.
+ */
+function formatPrice(cmp: number | null, market: MarketCode): string {
   if (cmp == null) return "—";
-  return `${currencySymbol(exchange)}${cmp.toLocaleString(
-    exchange === "US" ? "en-US" : "en-IN",
-    { maximumFractionDigits: 2 },
-  )}`;
+  return formatMarketPrice(cmp, market);
 }
 
 /**
@@ -62,7 +63,6 @@ export function ComparativeGrid({
           const verdict = memo?.verdict ?? (c.verdict === "bet" ? "BUY" : c.verdict === "avoid" ? "AVOID" : "WATCH");
           const isPick = memo?.is_primary_pick ?? c.rank === 1;
           const pct = rangePercentile(c);
-          const locale = c.exchange === "US" ? "en-US" : "en-IN";
 
           return (
             <div
@@ -87,7 +87,7 @@ export function ComparativeGrid({
               </p>
 
               <p className="mt-2 font-mono text-lg text-on-surface">
-                {formatPrice(c.cmp, c.exchange)}
+                {formatPrice(c.cmp, c.market)}
               </p>
               <p
                 className={cn(
@@ -121,14 +121,10 @@ export function ComparativeGrid({
               </div>
               <div className="mt-1.5 flex justify-between font-mono text-[9px] text-on-surface-variant/40">
                 <span>
-                  {c.range_low != null
-                    ? `${currencySymbol(c.exchange)}${c.range_low.toLocaleString(locale, { maximumFractionDigits: 0 })}`
-                    : "—"}
+                  {c.range_low != null ? formatMarketPrice(c.range_low, c.market) : "—"}
                 </span>
                 <span>
-                  {c.range_high != null
-                    ? `${currencySymbol(c.exchange)}${c.range_high.toLocaleString(locale, { maximumFractionDigits: 0 })}`
-                    : "—"}
+                  {c.range_high != null ? formatMarketPrice(c.range_high, c.market) : "—"}
                 </span>
               </div>
 

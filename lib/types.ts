@@ -10,6 +10,13 @@
 // rejects any other value, so application code neither sets nor filters on it.
 
 export type ExchangeCode = "NSE" | "BSE" | "US";
+/**
+ * The universe a thesis is analysed against (migration 0016). Deliberately
+ * distinct from `ExchangeCode`: a market is what the trader picks, an exchange
+ * is where a listing lives, and India is one market across two exchanges.
+ * `CN`/`EU`/`EM` exist in the enum but are not selectable — see `lib/markets.ts`.
+ */
+export type MarketCode = "US" | "IN" | "CN" | "EU" | "EM";
 export type ConvictionTier = "I" | "II" | "III" | "IV";
 export type ThesisMode = "stock_only" | "thesis_only" | "stock_plus_thesis";
 export type ThesisStatus = "draft" | "active" | "closed" | "macro";
@@ -66,7 +73,16 @@ export type Thesis = {
   created_at: string;
   input_text: string;
   mode: ThesisMode;
+  /** Markets the trader chose to run this thesis against (0016). Never empty. */
+  markets: MarketCode[];
   stock_id: string | null;
+  /**
+   * Only ever set when the TRADER named a stock — never when the model
+   * merely mentioned one. See `app/api/theses/route.ts`: a `thesis_only`
+   * extraction has this forced to null, because this field grants a ticker
+   * the "seed it first, never drop it" treatment in the memorandum route and
+   * that authority belongs to the user alone.
+   */
   ticker: string | null;
   market_view: string | null;
   mispricing: string | null;
@@ -96,6 +112,8 @@ export type ThesisCandidate = {
   user_id: string;
   created_at: string;
   thesis_id: string;
+  /** Which market's run produced this row (0016). Unique per (thesis, market, ticker). */
+  market: MarketCode;
   stock_id: string | null;
   ticker: string;
   company_name: string | null;
@@ -126,6 +144,8 @@ export type ThesisMemorandum = {
   user_id: string;
   created_at: string;
   thesis_id: string;
+  /** Which market this memo analyses (0016). Unique per (thesis, market). */
+  market: MarketCode;
   sector_theme: string | null;
   memo_title: string | null;
   data_source: string | null;
@@ -309,7 +329,7 @@ export type Opportunity = {
 export type StockInsert = Pick<Stock, "ticker" | "yahoo_symbol" | "exchange"> &
   Partial<Pick<Stock, "id" | "last_price" | "last_price_at" | "created_at">>;
 
-export type ThesisInsert = Pick<Thesis, "input_text" | "mode"> &
+export type ThesisInsert = Pick<Thesis, "input_text" | "mode" | "markets"> &
   Partial<
     Pick<
       Thesis,
@@ -333,7 +353,7 @@ export type ThesisInsert = Pick<Thesis, "input_text" | "mode"> &
 
 export type ThesisCandidateInsert = Pick<
   ThesisCandidate,
-  "thesis_id" | "ticker" | "rank" | "verdict"
+  "thesis_id" | "market" | "ticker" | "rank" | "verdict"
 > &
   Partial<
     Pick<
@@ -359,7 +379,7 @@ export type ThesisCandidateInsert = Pick<
     >
   >;
 
-export type ThesisMemorandumInsert = Pick<ThesisMemorandum, "thesis_id" | "document"> &
+export type ThesisMemorandumInsert = Pick<ThesisMemorandum, "thesis_id" | "market" | "document"> &
   Partial<
     Pick<
       ThesisMemorandum,

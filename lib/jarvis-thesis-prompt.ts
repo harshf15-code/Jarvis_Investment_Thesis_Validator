@@ -1,3 +1,6 @@
+import { MARKETS } from "@/lib/markets";
+import type { MarketCode } from "@/lib/types";
+
 /**
  * v2 system prompt: replaces the v1 5-step narrative workflow
  * (`lib/jarvis-prompt.ts`, deleted in Task 3) with the spec's 6-field
@@ -40,6 +43,11 @@ thesis for that stock using whatever context is available — do not leave field
 STEP 3 — ONLY if mode is "thesis_only": after the thesis, suggest 2-3 specific stocks
 (ticker + one-sentence fit rationale each) that would express this macro thesis. If mode is
 NOT "thesis_only", this step is skipped and the JSON's "stock_suggestions" array must be empty.
+
+CRITICAL — when mode is "thesis_only", the JSON's "ticker" field MUST be null. The trader named
+no stock, so there is no stock to name. Any names you have in mind belong in
+"stock_suggestions". Putting one in "ticker" makes the system treat it as the trader's own
+conviction and anchor the entire downstream analysis to it.
 
 OUTPUT FORMAT (strict):
 Write full narrative prose, clearly headed "## Market View", "## Mispricing", "## Catalyst",
@@ -121,12 +129,18 @@ export function buildJarvisThesisUserContext(input: BuildThesisContextInput): st
  * itself is `lib/jarvis-memorandum.ts`, which prices every name and ranks them.
  * ------------------------------------------------------------------------- */
 
-export const JARVIS_CANDIDATE_SHORTLIST_SYSTEM_PROMPT = `You are Jarvis. You will be given a macro/sector thesis that names no specific stock.
+export const JARVIS_CANDIDATE_SHORTLIST_SYSTEM_PROMPT = `You are Jarvis. You will be given a macro/sector thesis that names no specific stock, together with ONE market to answer within.
 
 Name 3-5 publicly listed stocks that most directly express this thesis. Prefer liquid,
-large- or mid-cap names a retail trader can actually buy. If the thesis is about an Indian
-sector, return NSE-listed names; if it is about a US sector, return US-listed names; if the
-thesis spans both, you may mix them.
+large- or mid-cap names a retail trader can actually buy.
+
+HARD CONSTRAINT — the market you are given is the entire universe. Every name must be
+primarily listed on one of that market's exchanges. Do NOT name a company listed elsewhere,
+however well it fits the thesis: a name the system cannot price is worse than useless,
+because it cannot be compared, entered, or exited. If the best pure-play businesses for this
+thesis are listed outside the market, say so in "why_shortlisted" for the closest listed
+alternative and name that alternative instead — a domestic supplier, customer, licensee or
+diversified parent with real exposure. Never reach outside the market to fill a slot.
 
 For each, give the exchange ticker EXACTLY as the exchange lists it — no exchange prefix, no
 ".NS"/".BO" suffix, no company name in the ticker field. Examples of correct tickers:
@@ -143,14 +157,26 @@ object and nothing else:
 
 Between 3 and 5 entries. No prose outside the JSON block.`;
 
-export function buildCandidateShortlistUserContext(thesis: {
-  input_text: string;
-  market_view: string | null;
-  mispricing: string | null;
-  catalyst: string | null;
-  time_horizon: string | null;
-}): string {
-  return [
+export function buildCandidateShortlistUserContext(
+  thesis: {
+    input_text: string;
+    market_view: string | null;
+    mispricing: string | null;
+    catalyst: string | null;
+    time_horizon: string | null;
+  },
+  market: MarketCode,
+  /**
+   * Tickers a previous attempt returned that could not be resolved on this
+   * market's exchanges. Naming them back is what makes the retry productive
+   * rather than a re-roll of the same answer.
+   */
+  rejected?: string[],
+): string {
+  const meta = MARKETS[market];
+  const lines = [
+    `Market: ${meta.label} — listings on ${meta.exchanges.join(" or ")}, priced in ${meta.currency}.`,
+    "",
     `Original idea: ${thesis.input_text}`,
     "",
     `Market View: ${thesis.market_view ?? "—"}`,
@@ -158,6 +184,17 @@ export function buildCandidateShortlistUserContext(thesis: {
     `Catalyst: ${thesis.catalyst ?? "—"}`,
     `Time Horizon: ${thesis.time_horizon ?? "—"}`,
     "",
-    "Shortlist the stocks that express this thesis.",
-  ].join("\n");
+  ];
+
+  if (rejected?.length) {
+    lines.push(
+      `A previous attempt returned these, and NONE could be priced on ${meta.exchanges.join("/")}: ${rejected.join(", ")}.`,
+      "They are not listed in this market. Do not repeat them or any other foreign listing.",
+      `Name only ${meta.label}-listed companies with genuine exposure to this thesis.`,
+      "",
+    );
+  }
+
+  lines.push(`Shortlist the ${meta.label}-listed stocks that express this thesis.`);
+  return lines.join("\n");
 }

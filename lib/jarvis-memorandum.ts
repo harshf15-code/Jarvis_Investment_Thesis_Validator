@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import { MARKETS } from "@/lib/markets";
+import type { MarketCode } from "@/lib/types";
+
 /**
  * The Jarvis memorandum: the whole decision document, produced by one model
  * call and rendered as the reference deliverable
@@ -417,18 +420,25 @@ export function normalizeMemorandum(memo: Memorandum): Memorandum {
  * alternatives — so a named stock is seeded as a candidate and the model is
  * asked for its peers rather than for a fresh basket.
  */
-export function buildPeerShortlistUserContext(thesis: {
-  input_text: string;
-  ticker: string;
-  market_view: string | null;
-}): string {
+export function buildPeerShortlistUserContext(
+  thesis: {
+    input_text: string;
+    ticker: string;
+    market_view: string | null;
+  },
+  market: MarketCode,
+): string {
+  const meta = MARKETS[market];
   return [
+    `Market: ${meta.label} — listings on ${meta.exchanges.join(" or ")}, priced in ${meta.currency}.`,
+    "",
     `The trader is looking at ${thesis.ticker}.`,
     `Their idea: ${thesis.input_text}`,
     `Market View: ${thesis.market_view ?? "—"}`,
     "",
-    `Return ${thesis.ticker} FIRST, then 2-4 of its closest listed competitors — the names a`,
-    "trader would realistically weigh against it before committing capital. Same exchange where",
-    "possible.",
+    `Return ${thesis.ticker} FIRST, then 2-4 of its closest competitors listed in ${meta.label}`,
+    "— the names a trader would realistically weigh against it before committing capital.",
+    "Every peer must be listed on this market's exchanges; a peer the system cannot price is",
+    "worse than no peer at all, because it cannot be compared, entered or exited.",
   ].join("\n");
 }

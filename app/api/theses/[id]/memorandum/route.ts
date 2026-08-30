@@ -15,9 +15,10 @@ import {
 import { parseCandidateShortlist } from "@/lib/jarvis-thesis-parser";
 import { jarvisModel } from "@/lib/llm/openrouter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
+import { MARKETS, exchangesFor, isLiveMarket } from "@/lib/markets";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import type { ExchangeCode, ThesisCandidateInsert } from "@/lib/types";
+import type { ExchangeCode, MarketCode, ThesisCandidateInsert } from "@/lib/types";
 
 // Two model calls plus up to five live Yahoo lookups.
 export const maxDuration = 180;
@@ -46,13 +47,20 @@ type Resolved = {
 };
 
 /**
- * NSE then US, same fixed probe order the rest of the app uses (there is no
- * exchange-detection signal here). A miss is not fatal — the candidate is still
- * carried into the memo, flagged as unpriced, because "Jarvis weighed this and
- * couldn't price it" is a result the grid should show.
+ * Probes only the exchanges belonging to the market this run is for.
+ *
+ * A miss now means something specific and actionable: the model named a company
+ * that is not listed in the trader's chosen universe. Rather than carrying it
+ * into the memo as an unpriced column — which is how a robotics thesis ended up
+ * comparing two US names against three unpriceable Japanese ones, and picking
+ * from whichever happened to survive — the caller drops it and asks again.
  */
-async function resolveCandidate(ticker: string, companyName: string | null): Promise<Resolved> {
-  for (const exchange of ["NSE", "US"] as const) {
+async function resolveCandidate(
+  ticker: string,
+  companyName: string | null,
+  exchanges: readonly ExchangeCode[],
+): Promise<Resolved> {
+  for (const exchange of exchanges) {
     const yahooSymbol = resolveYahooSymbol(ticker, exchange);
     try {
       const [quote, fundamentals] = await Promise.all([
@@ -95,7 +103,7 @@ async function resolveCandidate(ticker: string, companyName: string | null): Pro
  * Replaces the memo on every run rather than versioning — the memo is a current
  * read on a live market, and a stale one is worse than none.
  */
-export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
 
@@ -108,57 +116,119 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ error: thesisError?.message ?? "Thesis not found" }, { status: 404 });
   }
 
+  // Re-bound after the guard above: the closures below are function
+  // declarations, and TypeScript widens `thesis` back to `| null` inside them.
+  const t = thesis;
+
+  // One run analyses exactly one market. A thesis selected for several markets
+  // produces one memorandum per market, each with its own shortlist, prices and
+  // pick — because "the best robotics name in India" and "…in the US" are
+  // different questions with different answers.
+  const requested = new URL(request.url).searchParams.get("market");
+  const market = (requested ?? t.markets?.[0] ?? "US") as MarketCode;
+  if (!isLiveMarket(market)) {
+    return NextResponse.json({ error: `Market "${market}" is not available yet.` }, { status: 400 });
+  }
+  if (!t.markets?.includes(market)) {
+    return NextResponse.json(
+      { error: `This thesis was not created for ${MARKETS[market].label}.` },
+      { status: 400 },
+    );
+  }
+  const exchanges = exchangesFor(market);
+
   // --- 1. Shortlist ------------------------------------------------------
-  let shortlistRaw: string;
-  try {
+  // Runs at most twice. The second attempt only happens when the first came
+  // back with too few names that are actually listed in this market, and it is
+  // told which tickers were rejected — otherwise it just re-rolls the same
+  // foreign names it already offered.
+  async function shortlistOnce(rejected?: string[]) {
     const result = await generateText({
       model: jarvisModel,
       system: JARVIS_CANDIDATE_SHORTLIST_SYSTEM_PROMPT,
-      prompt: thesis.ticker
-        ? buildPeerShortlistUserContext({
-            input_text: thesis.input_text,
-            ticker: thesis.ticker,
-            market_view: thesis.market_view,
-          })
-        : buildCandidateShortlistUserContext(thesis),
+      prompt: t.ticker
+        ? buildPeerShortlistUserContext(
+            { input_text: t.input_text, ticker: t.ticker, market_view: t.market_view },
+            market,
+          )
+        : buildCandidateShortlistUserContext(t, market, rejected),
     });
-    shortlistRaw = result.text;
-  } catch (err) {
-    return NextResponse.json(
-      { error: `Candidate shortlist call failed: ${errorMessage(err)}` },
-      { status: 502 },
-    );
+    return parseCandidateShortlist(result.text);
   }
 
-  const shortlist = parseCandidateShortlist(shortlistRaw);
-  if (!shortlist.ok) {
+  /**
+   * Turns a shortlist into priced candidates, dropping anything that will not
+   * resolve on this market's exchanges.
+   *
+   * `thesis.ticker` is seeded first and exempt from the drop — but only because
+   * `app/api/theses/route.ts` now guarantees it is a ticker the TRADER named
+   * and that already resolved. It is no longer possible for a name the model
+   * invented to claim this slot.
+   */
+  async function priceShortlist(
+    tickers: { ticker: string; company_name?: string | null }[],
+  ) {
+    const seen = new Set<string>();
+    const wanted: { ticker: string; company_name: string | null }[] = [];
+    if (t.ticker) {
+      seen.add(t.ticker.toUpperCase());
+      wanted.push({ ticker: t.ticker.toUpperCase(), company_name: null });
+    }
+    for (const c of tickers) {
+      const key = c.ticker.trim().toUpperCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      wanted.push({ ticker: key, company_name: c.company_name ?? null });
+    }
+    // The grid is built for five columns.
+    const all = await Promise.all(
+      wanted.slice(0, 5).map((c) => resolveCandidate(c.ticker, c.company_name, exchanges)),
+    );
+    return {
+      priced: all.filter((r) => r.price !== null),
+      rejected: all.filter((r) => r.price === null).map((r) => r.ticker),
+    };
+  }
+
+  const shortlist = await shortlistOnce().catch(() => null);
+  if (shortlist && !shortlist.ok) {
     return NextResponse.json(
       { error: `Could not read Jarvis's shortlist: ${shortlist.error}` },
       { status: 502 },
     );
   }
+  if (!shortlist) {
+    return NextResponse.json({ error: "Candidate shortlist call failed" }, { status: 502 });
+  }
 
-  const seen = new Set<string>();
-  const wanted: { ticker: string; company_name: string | null }[] = [];
-  // Seed the trader's own stock first so it is never dropped by a shortlist
-  // that forgot to echo it back.
-  if (thesis.ticker) {
-    seen.add(thesis.ticker.toUpperCase());
-    wanted.push({ ticker: thesis.ticker.toUpperCase(), company_name: null });
+  let { priced, rejected } = await priceShortlist(shortlist.data.candidates);
+
+  // Too thin to be a comparison. Ask once more, naming what was rejected.
+  if (priced.length < 3 && rejected.length > 0) {
+    const retry = await shortlistOnce(rejected).catch(() => null);
+    if (retry?.ok) {
+      const second = await priceShortlist(retry.data.candidates);
+      if (second.priced.length > priced.length) {
+        priced = second.priced;
+        rejected = [...new Set([...rejected, ...second.rejected])];
+      }
+    }
   }
-  for (const c of shortlist.data.candidates) {
-    const key = c.ticker.trim().toUpperCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    wanted.push({ ticker: key, company_name: c.company_name ?? null });
+
+  if (priced.length === 0) {
+    return NextResponse.json(
+      {
+        error: `Jarvis could not find any ${MARKETS[market].label}-listed name it could price for this thesis${
+          rejected.length ? ` (tried: ${rejected.join(", ")})` : ""
+        }. Try another market, or rephrase the thesis.`,
+      },
+      { status: 422 },
+    );
   }
-  // The grid is built for five columns.
-  const shortlisted = wanted.slice(0, 5);
 
   // --- 2. Live market data ----------------------------------------------
-  const resolved = await Promise.all(
-    shortlisted.map((c) => resolveCandidate(c.ticker, c.company_name)),
-  );
+  // Already fetched above; every survivor has a real price by construction.
+  const resolved = priced;
 
   // --- 3. One memorandum call -------------------------------------------
   const memoInputs: MemoCandidateInput[] = resolved.map((r) => ({
@@ -252,7 +322,10 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     (a, b) => Number(b.is_primary_pick) - Number(a.is_primary_pick),
   );
 
-  await supabase.from("thesis_candidates").delete().eq("thesis_id", id);
+  // Scoped to this market: without the second filter, running India would wipe
+  // the US run's candidates and leave that memorandum pointing at rows that no
+  // longer exist.
+  await supabase.from("thesis_candidates").delete().eq("thesis_id", id).eq("market", market);
 
   const rows: ThesisCandidateInsert[] = ordered.map((c, i) => {
     const ticker = c.ticker.trim().toUpperCase();
@@ -260,6 +333,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const f = r.fundamentals;
     return {
       thesis_id: id,
+      market,
       ticker,
       company_name: c.company_name ?? r.companyName,
       stock_id: stockIdByTicker.get(ticker) ?? null,
@@ -300,6 +374,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     .upsert(
       {
         thesis_id: id,
+        market,
         sector_theme: memo.header.sector_theme,
         memo_title: memo.header.title,
         data_source: memo.header.data_source,
@@ -309,7 +384,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         document: memo,
         raw_llm_response: memoRaw,
       },
-      { onConflict: "thesis_id" },
+      { onConflict: "thesis_id,market" },
     )
     .select("*")
     .single();
@@ -317,28 +392,41 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ error: memoError.message }, { status: 500 });
   }
 
-  return NextResponse.json({ memorandum, candidates: candidates ?? [] });
+  return NextResponse.json({ market, memorandum, candidates: candidates ?? [] });
 }
 
 /** Reads a previously-generated memorandum without spending model calls. */
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
+
+  // Defaults to the thesis's first market so an older link without the param
+  // still resolves to a real report rather than an empty one.
+  const requested = new URL(request.url).searchParams.get("market");
+  const { data: thesis } = await supabase.from("theses").select("markets").eq("id", id).single();
+  const market = (requested ?? thesis?.markets?.[0] ?? "US") as MarketCode;
 
   const { data: memorandum } = await supabase
     .from("thesis_memorandums")
     .select("*")
     .eq("thesis_id", id)
+    .eq("market", market)
     .maybeSingle();
 
   const { data: candidates, error } = await supabase
     .from("thesis_candidates")
     .select("*")
     .eq("thesis_id", id)
+    .eq("market", market)
     .order("rank", { ascending: true });
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ memorandum: memorandum ?? null, candidates: candidates ?? [] });
+  return NextResponse.json({
+    market,
+    markets: thesis?.markets ?? [market],
+    memorandum: memorandum ?? null,
+    candidates: candidates ?? [],
+  });
 }

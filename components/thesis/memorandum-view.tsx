@@ -5,7 +5,8 @@ import { RefreshCw, XCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { MemorandumSchema, type Memorandum } from "@/lib/jarvis-memorandum";
-import type { ThesisCandidate, ThesisMemorandum } from "@/lib/types";
+import { MARKETS } from "@/lib/markets";
+import type { MarketCode, ThesisCandidate, ThesisMemorandum } from "@/lib/types";
 import { BackTradeDialog } from "./back-trade-dialog";
 import { ComparativeGrid } from "./comparative-grid";
 import { ExitTab, StressTab, ThesisTab, TradeTab } from "./memorandum-tabs";
@@ -37,6 +38,9 @@ export function MemorandumView({
   const [memo, setMemo] = useState<Memorandum | null>(null);
   const [row, setRow] = useState<ThesisMemorandum | null>(null);
   const [candidates, setCandidates] = useState<ThesisCandidate[]>([]);
+  /** Markets this thesis was created for; each has its own memorandum. */
+  const [markets, setMarkets] = useState<MarketCode[]>([]);
+  const [market, setMarket] = useState<MarketCode | null>(null);
   const [tab, setTab] = useState<TabId>("thesis");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,32 +69,55 @@ export function MemorandumView({
     return true;
   }, []);
 
-  const run = useCallback(async () => {
-    setRunning(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/theses/${thesisId}/memorandum`, { method: "POST" });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error ?? "Jarvis couldn't produce the memorandum.");
-      adopt(body.memorandum, body.candidates ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setRunning(false);
-    }
-  }, [thesisId, adopt]);
+  const run = useCallback(
+    async (target?: MarketCode) => {
+      const m = target ?? market;
+      if (!m) return;
+      setRunning(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/theses/${thesisId}/memorandum?market=${m}`, {
+          method: "POST",
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? "Jarvis couldn't produce the memorandum.");
+        adopt(body.memorandum, body.candidates ?? []);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Something went wrong.");
+      } finally {
+        setRunning(false);
+      }
+    },
+    [thesisId, market, adopt],
+  );
 
-  // Show a previous memo if one exists, and only spend model calls when none
-  // does — the run is two LLM calls plus five live quotes.
+  /**
+   * Loads the memo for one market, and only spends model calls when there is
+   * none — a run is two LLM calls plus five live quotes.
+   *
+   * Auto-run is deliberately limited to a single-market thesis. With several
+   * markets selected, firing every one on mount would spend N x 2 model calls
+   * before the trader has looked at anything; each extra market waits for its
+   * own click instead.
+   */
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/theses/${thesisId}/memorandum`);
+        const qs = market ? `?market=${market}` : "";
+        const res = await fetch(`/api/theses/${thesisId}/memorandum${qs}`);
         const body = await res.json().catch(() => ({}));
         if (cancelled || !res.ok) return;
+        const list: MarketCode[] = body.markets ?? [];
+        if (list.length) setMarkets(list);
+        if (!market && body.market) {
+          setMarket(body.market as MarketCode);
+        }
         const had = adopt(body.memorandum ?? null, body.candidates ?? []);
-        if (!had && !body.memorandum && autoRun) void run();
+        const single = list.length <= 1;
+        if (!had && !body.memorandum && autoRun && single && body.market) {
+          void run(body.market as MarketCode);
+        }
       } catch {
         // Falls through to the empty state with a run button.
       }
@@ -98,7 +125,37 @@ export function MemorandumView({
     return () => {
       cancelled = true;
     };
-  }, [thesisId, autoRun, run, adopt]);
+  }, [thesisId, market, autoRun, run, adopt]);
+
+  /**
+   * Market switcher. Rendered above every state — empty, running and complete —
+   * because with two markets selected one may have a memo while the other has
+   * not been run yet, and the trader needs to be able to reach either.
+   */
+  const marketStrip =
+    markets.length > 1 ? (
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-[10px] tracking-widest text-on-surface-variant/60 uppercase">
+          Market
+        </span>
+        {markets.map((m) => (
+          <button
+            key={m}
+            type="button"
+            disabled={running}
+            onClick={() => setMarket(m)}
+            className={cn(
+              "rounded-full border px-3 py-1 text-xs transition-colors disabled:opacity-50",
+              m === market
+                ? "border-primary/60 bg-primary/10 text-primary"
+                : "border-white/10 text-on-surface-variant hover:border-white/25 hover:text-on-surface",
+            )}
+          >
+            {MARKETS[m].label}
+          </button>
+        ))}
+      </div>
+    ) : null;
 
   const primary =
     candidates.find((c) => c.id === row?.primary_candidate_id) ??
@@ -107,6 +164,7 @@ export function MemorandumView({
   if (running && !memo) {
     return (
       <div className="flex flex-col gap-4">
+        {marketStrip}
         <p className="flex items-center gap-2 text-sm text-primary">
           <RefreshCw className="size-4 animate-spin" strokeWidth={2.5} />
           Jarvis is comparing the field — pricing every candidate, stress-testing the winner, and
@@ -121,6 +179,13 @@ export function MemorandumView({
   if (!memo) {
     return (
       <div className="flex flex-col items-start gap-4">
+        {marketStrip}
+        {markets.length > 1 && market && (
+          <p className="text-xs text-on-surface-variant">
+            No {MARKETS[market].label} analysis yet — each market is priced and argued
+            separately.
+          </p>
+        )}
         {error && (
           <div className="flex items-start gap-2 rounded-lg bg-error-container px-4 py-3 text-sm text-error">
             <XCircle className="mt-0.5 size-4 shrink-0" strokeWidth={2.5} />
@@ -129,7 +194,7 @@ export function MemorandumView({
         )}
         <button
           type="button"
-          onClick={run}
+          onClick={() => void run()}
           disabled={running}
           className="rounded-full bg-primary px-6 py-3 font-display text-sm font-extrabold tracking-tight text-on-primary shadow-ambient transition-all hover:bg-primary-dim active:scale-[0.97] disabled:opacity-40"
         >
@@ -141,6 +206,7 @@ export function MemorandumView({
 
   return (
     <div className="flex flex-col gap-6">
+      {marketStrip}
       {/* Header */}
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -207,7 +273,7 @@ export function MemorandumView({
         </button>
         <button
           type="button"
-          onClick={run}
+          onClick={() => void run()}
           disabled={running}
           className="flex items-center gap-2 rounded-full bg-white/5 px-4 py-2.5 text-[10px] font-black uppercase tracking-widest text-on-surface-variant transition-colors hover:bg-white/10 hover:text-on-surface disabled:opacity-40"
         >
