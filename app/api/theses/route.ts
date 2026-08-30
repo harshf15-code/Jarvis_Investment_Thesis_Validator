@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateText } from "ai";
 import { z } from "zod";
 
+import { currentUser } from "@/lib/auth/user";
 import { extractPossibleTicker } from "@/lib/ticker-heuristic";
 import {
   buildJarvisThesisUserContext,
   JARVIS_THESIS_SYSTEM_PROMPT,
 } from "@/lib/jarvis-thesis-prompt";
 import { parseThesisResponse } from "@/lib/jarvis-thesis-parser";
-import { jarvisModel } from "@/lib/llm/openrouter";
+import { checkBudget } from "@/lib/llm/budget";
+import { meteredGenerateText } from "@/lib/llm/meter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
 import { isLiveMarket, exchangesFor } from "@/lib/markets";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -89,6 +90,17 @@ export async function POST(request: NextRequest) {
   const { input_text, names_stocks } = parsedInput.data;
   const markets = parsedInput.data.markets as MarketCode[];
 
+  // Spend guard. Runs before any model call and before the live market lookups
+  // below, so an account that is over budget costs nothing at all.
+  const user = await currentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
+  }
+  const budget = await checkBudget();
+  if (!budget.ok) {
+    return NextResponse.json({ error: budget.message }, { status: 429 });
+  }
+
   const supabase = await createClient();
 
   // Every exchange across the chosen markets, deduped — the universe this
@@ -156,8 +168,9 @@ export async function POST(request: NextRequest) {
 
   let rawResponse: string;
   try {
-    const result = await generateText({
-      model: jarvisModel,
+    const result = await meteredGenerateText({
+      userId: user.id,
+      feature: "thesis",
       system: JARVIS_THESIS_SYSTEM_PROMPT,
       prompt: userContext,
     });

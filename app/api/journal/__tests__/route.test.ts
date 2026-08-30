@@ -2,8 +2,15 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("ai", () => ({ generateText: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/auth/user", () => ({ currentUser: vi.fn() }));
+vi.mock("@/lib/llm/budget", () => ({ checkBudget: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => ({ from: () => ({ insert: async () => ({ error: null }) }) }),
+}));
 
 import { generateText } from "ai";
+import { currentUser } from "@/lib/auth/user";
+import { checkBudget } from "@/lib/llm/budget";
 import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
@@ -34,6 +41,8 @@ describe("POST /api/journal", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("generate_only returns a preview without persisting", async () => {
+  vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+  vi.mocked(checkBudget).mockResolvedValue({ ok: true } as never);
     vi.mocked(createClient).mockResolvedValue(buildMock() as never);
     vi.mocked(generateText).mockResolvedValue({ text: VERDICT_RAW } as never);
     const req = new Request("http://test", { method: "POST", body: JSON.stringify({ position_id: "p1", generate_only: true }) });

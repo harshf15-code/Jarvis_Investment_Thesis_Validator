@@ -27,3 +27,19 @@ export async function requireUser() {
 
   return user;
 }
+
+/**
+ * The signed-in user, or null.
+ *
+ * `requireUser` redirects, which is right for a page and wrong for a route
+ * handler — an API caller should get a 401, not an HTML redirect it will try to
+ * parse as JSON. Route handlers that need the user's id (spend accounting) use
+ * this instead.
+ */
+export async function currentUser() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user;
+}

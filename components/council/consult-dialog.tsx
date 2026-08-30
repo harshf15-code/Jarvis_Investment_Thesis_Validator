@@ -27,6 +27,13 @@ export function ConsultDialog({
   const [members, setMembers] = useState<CouncilMember[] | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Average cost of one council call, from THIS trader's own ledger. Null until
+   * they have run enough calls for an average to mean anything — a made-up
+   * number next to a spend decision is worse than no number.
+   */
+  const [costPerCall, setCostPerCall] = useState<number | null>(null);
+  const [overBudget, setOverBudget] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,6 +45,31 @@ export function ConsultDialog({
         if (!res.ok) throw new Error(body.error ?? "Could not load your roster.");
         const list: CouncilMember[] = body.members ?? [];
         setMembers(list);
+
+        // Price the consult from the trader's own recent calls rather than a
+        // guess. Failing to load this costs the estimate, never the picker.
+        try {
+          const usageRes = await fetch("/api/usage");
+          const usage = await usageRes.json();
+          if (!cancelled && usageRes.ok) {
+            const council = (usage.byFeature ?? []).filter((f: { feature: string }) =>
+              f.feature.startsWith("council_"),
+            );
+            const calls = council.reduce((n: number, f: { calls: number }) => n + f.calls, 0);
+            const spent = council.reduce((n: number, f: { costUsd: number }) => n + f.costUsd, 0);
+            // Below a handful of calls the mean is noise, not an estimate.
+            if (calls >= 3) setCostPerCall(spent / calls);
+            const { limits, daily_spent, monthly_spent } = usage;
+            if (
+              (limits?.daily != null && daily_spent >= limits.daily) ||
+              (limits?.monthly != null && monthly_spent >= limits.monthly)
+            ) {
+              setOverBudget("You're at your analysis budget — a consult will be refused.");
+            }
+          }
+        } catch {
+          // No estimate. The call count alone is still shown.
+        }
         // Pre-select the first three so the common case is one click. Still an
         // explicit confirmation — nothing runs until the trader says so.
         setSelected(list.slice(0, COUNCIL_CONSULT_MIN).map((m) => m.id));
@@ -141,12 +173,24 @@ export function ConsultDialog({
             </ul>
 
             <p className="mt-4 font-mono text-[11px] text-on-surface-variant/70">
-              {ready
-                ? `${selected.length} member${selected.length === 1 ? "" : "s"} → ${
-                    selected.length + 1
-                  } model calls.`
-                : `Select ${short} more — a council is at least ${COUNCIL_CONSULT_MIN}.`}
+              {ready ? (
+                <>
+                  {selected.length} member{selected.length === 1 ? "" : "s"} →{" "}
+                  {selected.length + 1} model calls
+                  {costPerCall !== null &&
+                    `, ≈ $${((selected.length + 1) * costPerCall).toFixed(2)}`}
+                  .
+                </>
+              ) : (
+                `Select ${short} more — a council is at least ${COUNCIL_CONSULT_MIN}.`
+              )}
             </p>
+
+            {overBudget && (
+              <p className="mt-2 rounded-lg bg-error-container px-3 py-2 text-[11px] text-error">
+                {overBudget}
+              </p>
+            )}
 
             <CouncilDisclaimer className="mt-3" />
 

@@ -2,8 +2,15 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("ai", () => ({ generateText: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/auth/user", () => ({ currentUser: vi.fn() }));
+vi.mock("@/lib/llm/budget", () => ({ checkBudget: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => ({ from: () => ({ insert: async () => ({ error: null }) }) }),
+}));
 
 import { generateText } from "ai";
+import { currentUser } from "@/lib/auth/user";
+import { checkBudget } from "@/lib/llm/budget";
 import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
 
@@ -161,6 +168,8 @@ const SYNTHESIS = {
 beforeEach(() => {
   vi.clearAllMocks();
   upserted = null;
+  vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+  vi.mocked(checkBudget).mockResolvedValue({ ok: true } as never);
   vi.mocked(createClient).mockResolvedValue(buildSupabaseMock() as never);
   vi.mocked(generateText).mockResolvedValue(fenced(OPINION) as never);
 });
@@ -304,5 +313,28 @@ describe("POST /api/theses/[id]/council", () => {
     const doc = upserted!.document as { opinions: unknown[]; synthesis: unknown };
     expect(doc.synthesis).toBeNull();
     expect(doc.opinions).toHaveLength(3);
+  });
+});
+
+describe("spend guard", () => {
+  it("refuses with 429 and spends nothing when over budget", async () => {
+    // The point of the pre-flight check: an account that is over budget must
+    // cost zero, not "one more request's worth".
+    vi.mocked(checkBudget).mockResolvedValue({
+      ok: false,
+      window: "daily",
+      message: "You've used $1.00 of your $1.00 daily analysis budget.",
+    } as never);
+    const res = await POST(post({ member_ids: ALL_IDS }), { params });
+    expect(res.status).toBe(429);
+    expect((await res.json()).error).toMatch(/daily analysis budget/);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("401s a request with no session", async () => {
+    vi.mocked(currentUser).mockResolvedValue(null as never);
+    const res = await POST(post({ member_ids: ALL_IDS }), { params });
+    expect(res.status).toBe(401);
+    expect(generateText).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { generateText } from "ai";
 
 import {
   buildMemorandumUserContext,
@@ -12,8 +11,10 @@ import {
   buildCandidateShortlistUserContext,
   JARVIS_CANDIDATE_SHORTLIST_SYSTEM_PROMPT,
 } from "@/lib/jarvis-thesis-prompt";
+import { currentUser } from "@/lib/auth/user";
 import { parseCandidateShortlist } from "@/lib/jarvis-thesis-parser";
-import { jarvisModel } from "@/lib/llm/openrouter";
+import { checkBudget } from "@/lib/llm/budget";
+import { meteredGenerateText } from "@/lib/llm/meter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
 import { MARKETS, exchangesFor, isLiveMarket } from "@/lib/markets";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -107,6 +108,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const { id } = await params;
   const supabase = await createClient();
 
+  // Spend guard. Runs before any model call and before the live market lookups
+  // below, so an account that is over budget costs nothing at all.
+  const user = await currentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
+  }
+  const budget = await checkBudget();
+  if (!budget.ok) {
+    return NextResponse.json({ error: budget.message }, { status: 429 });
+  }
+  // Re-bound for the same reason as `t` below: the shortlist closures are
+  // function declarations, inside which TypeScript widens `user` back to `| null`.
+  const userId = user.id;
+
   const { data: thesis, error: thesisError } = await supabase
     .from("theses")
     .select("*")
@@ -143,8 +158,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   // told which tickers were rejected — otherwise it just re-rolls the same
   // foreign names it already offered.
   async function shortlistOnce(rejected?: string[]) {
-    const result = await generateText({
-      model: jarvisModel,
+    const result = await meteredGenerateText({
+      userId,
+      feature: "memorandum",
+      thesisId: id,
       system: JARVIS_CANDIDATE_SHORTLIST_SYSTEM_PROMPT,
       prompt: t.ticker
         ? buildPeerShortlistUserContext(
@@ -241,8 +258,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   let memoRaw: string;
   try {
-    const result = await generateText({
-      model: jarvisModel,
+    const result = await meteredGenerateText({
+      userId,
+      feature: "memorandum",
+      thesisId: id,
       system: JARVIS_MEMORANDUM_SYSTEM_PROMPT,
       prompt: buildMemorandumUserContext({
         thesis,

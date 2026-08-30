@@ -1,3 +1,4 @@
+import { limitsFor } from "@/lib/llm/budget";
 import { createClient } from "@/lib/supabase/server";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 
@@ -54,6 +55,56 @@ export async function listTheses() {
  * Built-ins seed at sort_order 1-3 and custom members default to 100, so the
  * three defaults lead and additions follow in the order they were made.
  */
+/**
+ * This account's LLM spend: both windows against their limits, plus a
+ * per-feature breakdown of the current month.
+ *
+ * Read-only by construction — `authenticated` has SELECT and nothing else on
+ * `llm_usage` (0018), because a ledger its subject can edit is not a limit.
+ */
+export async function getUsageSummary() {
+  const supabase = await createClient();
+
+  const { data: statusRows } = await supabase.rpc("llm_budget_status");
+  const raw = statusRows?.[0];
+  const status = {
+    daily_spent: Number(raw?.daily_spent ?? 0),
+    monthly_spent: Number(raw?.monthly_spent ?? 0),
+    daily_limit: raw?.daily_limit == null ? null : Number(raw.daily_limit),
+    monthly_limit: raw?.monthly_limit == null ? null : Number(raw.monthly_limit),
+    has_override: raw?.has_override ?? false,
+  };
+
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
+
+  const { data: rows } = await supabase
+    .from("llm_usage")
+    .select("feature, cost_usd, cost_source, ok")
+    .gte("created_at", monthStart.toISOString());
+
+  const byFeature = new Map<string, { costUsd: number; calls: number }>();
+  let estimatedCalls = 0;
+  for (const r of rows ?? []) {
+    const acc = byFeature.get(r.feature) ?? { costUsd: 0, calls: 0 };
+    acc.costUsd += Number(r.cost_usd);
+    acc.calls += 1;
+    byFeature.set(r.feature, acc);
+    if (r.cost_source === "estimated" && r.ok) estimatedCalls += 1;
+  }
+
+  return {
+    ...status,
+    limits: limitsFor(status),
+    byFeature: [...byFeature.entries()]
+      .map(([feature, v]) => ({ feature, ...v }))
+      .sort((a, b) => b.costUsd - a.costUsd),
+    /** Calls priced from the local table rather than OpenRouter's own number. */
+    estimatedCalls,
+  };
+}
+
 export async function listCouncilMembers() {
   const supabase = await createClient();
   const { data, error } = await supabase

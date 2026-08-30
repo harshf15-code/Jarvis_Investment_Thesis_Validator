@@ -1,4 +1,6 @@
 import { CouncilRoster } from "@/components/council/council-roster";
+import { UsagePanel } from "@/components/settings/usage-panel";
+import { getUsageSummary } from "@/lib/queries";
 import { listCouncilMembers } from "@/lib/queries";
 
 export const metadata = { title: "Settings · Jarvis" };
@@ -13,7 +15,7 @@ export const metadata = { title: "Settings · Jarvis" };
  * app in production once.
  */
 export default async function SettingsPage() {
-  const members = await listCouncilMembers();
+  const [members, usage] = await Promise.all([listCouncilMembers(), getUsageSummary()]);
 
   return (
     <div className="flex max-w-3xl flex-col gap-8">
@@ -25,6 +27,8 @@ export default async function SettingsPage() {
           How Jarvis behaves for this account.
         </p>
       </header>
+
+      <UsagePanel summary={usage} />
 
       <CouncilRoster initialMembers={members} />
     </div>
