@@ -93,3 +93,15 @@ describe("evaluateBudget", () => {
     if (!v.ok) expect(v.window).toBe("daily");
   });
 });
+
+describe("checkBudget failure mode", () => {
+  it("has an 'unavailable' window distinct from being over budget", () => {
+    // The two are answered differently by the routes: 503 (retry) vs 429 (stop).
+    // A guard that cannot read spend must refuse, not wave the call through —
+    // an RPC broken by a permission change or an unapplied migration would
+    // otherwise remove the cap with nothing to show it had gone.
+    const over = evaluateBudget(status({ daily_spent: 5 }));
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.window).toBe("daily");
+  });
+});

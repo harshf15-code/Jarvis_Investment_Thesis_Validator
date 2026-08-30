@@ -331,6 +331,17 @@ describe("spend guard", () => {
     expect(generateText).not.toHaveBeenCalled();
   });
 
+  it("503s and spends nothing when the budget cannot be read", async () => {
+    vi.mocked(checkBudget).mockResolvedValue({
+      ok: false,
+      window: "unavailable",
+      message: "Couldn't check your analysis budget just now — try again in a moment.",
+    } as never);
+    const res = await POST(post({ member_ids: ALL_IDS }), { params });
+    expect(res.status).toBe(503);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
   it("401s a request with no session", async () => {
     vi.mocked(currentUser).mockResolvedValue(null as never);
     const res = await POST(post({ member_ids: ALL_IDS }), { params });

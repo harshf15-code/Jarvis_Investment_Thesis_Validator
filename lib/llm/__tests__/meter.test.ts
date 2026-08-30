@@ -5,11 +5,12 @@ vi.mock("@/lib/llm/openrouter", () => ({
   JARVIS_MODEL_ID: "anthropic/claude-sonnet-4.5",
   jarvisModel: {},
   takeReportedCost: vi.fn(),
+  takeMostRecentUnclaimed: vi.fn(),
 }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
 
 import { generateText } from "ai";
-import { takeReportedCost } from "@/lib/llm/openrouter";
+import { takeMostRecentUnclaimed, takeReportedCost } from "@/lib/llm/openrouter";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { meteredGenerateText } from "@/lib/llm/meter";
 
@@ -47,6 +48,7 @@ beforeEach(() => {
   vi.mocked(createAdminClient).mockImplementation(adminMock as never);
   vi.mocked(generateText).mockResolvedValue(result() as never);
   vi.mocked(takeReportedCost).mockReturnValue(null);
+  vi.mocked(takeMostRecentUnclaimed).mockReturnValue(null);
 });
 
 describe("meteredGenerateText", () => {
@@ -88,6 +90,20 @@ describe("meteredGenerateText", () => {
     vi.mocked(generateText).mockRejectedValue(new Error("upstream 503"));
     await expect(meteredGenerateText(CALL)).rejects.toThrow("upstream 503");
     expect(rows[0]).toMatchObject({ ok: false, cost_usd: 0, feature: "memorandum" });
+  });
+
+  it("books a charge that arrived before the SDK rejected the response", async () => {
+    // OpenRouter can return a fully billable response the SDK then refuses to
+    // validate. The charge is real and was already captured on the wire; if the
+    // error path booked $0, a repeatable validation failure would never reach
+    // the cap.
+    vi.mocked(generateText).mockRejectedValue(new Error("could not parse response"));
+    vi.mocked(takeMostRecentUnclaimed).mockReturnValue({
+      cost: 0.019,
+      model: "anthropic/claude-sonnet-4.5",
+    });
+    await expect(meteredGenerateText(CALL)).rejects.toThrow();
+    expect(rows[0]).toMatchObject({ ok: false, cost_usd: 0.019, cost_source: "reported" });
   });
 
   it("does not fail the request when the ledger write fails", async () => {

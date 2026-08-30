@@ -65,7 +65,12 @@ export async function listTheses() {
 export async function getUsageSummary() {
   const supabase = await createClient();
 
-  const { data: statusRows } = await supabase.rpc("llm_budget_status");
+  // Both reads throw on failure rather than degrading to zero. Reporting "$0
+  // spent" during a permission or schema failure would tell the trader they
+  // have room they may not have, and would quietly drop the Council dialog's
+  // over-budget warning.
+  const { data: statusRows, error: statusError } = await supabase.rpc("llm_budget_status");
+  if (statusError) fail(statusError.message);
   const raw = statusRows?.[0];
   const status = {
     daily_spent: Number(raw?.daily_spent ?? 0),
@@ -75,33 +80,23 @@ export async function getUsageSummary() {
     has_override: raw?.has_override ?? false,
   };
 
-  const monthStart = new Date();
-  monthStart.setUTCDate(1);
-  monthStart.setUTCHours(0, 0, 0, 0);
-
-  const { data: rows } = await supabase
-    .from("llm_usage")
-    .select("feature, cost_usd, cost_source, ok")
-    .gte("created_at", monthStart.toISOString());
-
-  const byFeature = new Map<string, { costUsd: number; calls: number }>();
-  let estimatedCalls = 0;
-  for (const r of rows ?? []) {
-    const acc = byFeature.get(r.feature) ?? { costUsd: 0, calls: 0 };
-    acc.costUsd += Number(r.cost_usd);
-    acc.calls += 1;
-    byFeature.set(r.feature, acc);
-    if (r.cost_source === "estimated" && r.ok) estimatedCalls += 1;
-  }
+  // Aggregated in SQL (0019), not by pulling every row and grouping here.
+  // PostgREST caps a response at 1000 rows, so the old approach silently
+  // understated any account past 1000 calls in a month — reachable precisely
+  // for the uncapped account this feature exists to support.
+  const { data: rows, error: featureError } = await supabase.rpc("llm_usage_by_feature");
+  if (featureError) fail(featureError.message);
 
   return {
     ...status,
     limits: limitsFor(status),
-    byFeature: [...byFeature.entries()]
-      .map(([feature, v]) => ({ feature, ...v }))
-      .sort((a, b) => b.costUsd - a.costUsd),
+    byFeature: (rows ?? []).map((r) => ({
+      feature: r.feature,
+      costUsd: Number(r.cost_usd),
+      calls: Number(r.calls),
+    })),
     /** Calls priced from the local table rather than OpenRouter's own number. */
-    estimatedCalls,
+    estimatedCalls: (rows ?? []).reduce((n, r) => n + Number(r.estimated_calls), 0),
   };
 }
 

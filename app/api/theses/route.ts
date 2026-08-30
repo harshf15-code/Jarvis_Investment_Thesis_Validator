@@ -98,7 +98,10 @@ export async function POST(request: NextRequest) {
   }
   const budget = await checkBudget();
   if (!budget.ok) {
-    return NextResponse.json({ error: budget.message }, { status: 429 });
+    // 503 when spend is unknown, 429 when it is known to be exhausted — a
+    // caller should retry the first and not the second.
+    const status = budget.window === "unavailable" ? 503 : 429;
+    return NextResponse.json({ error: budget.message }, { status });
   }
 
   const supabase = await createClient();

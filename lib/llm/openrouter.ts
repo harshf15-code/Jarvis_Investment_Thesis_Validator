@@ -22,6 +22,8 @@ import { createOpenAI } from "@ai-sdk/openai";
 /** What OpenRouter charged for one call, keyed by its generation id. */
 type Reported = { cost: number | null; model: string | null };
 
+type Pending = Reported & { at: number };
+
 /**
  * Costs seen on the wire but not yet claimed by the meter.
  *
@@ -29,7 +31,7 @@ type Reported = { cost: number | null; model: string | null };
  * is trimmed when it grows past `MAX_PENDING` — a response the SDK throws away
  * (a parse failure, an aborted request) would otherwise sit here forever.
  */
-const reported = new Map<string, Reported>();
+const reported = new Map<string, Pending>();
 const MAX_PENDING = 200;
 
 /**
@@ -61,6 +63,7 @@ const meteringFetch: typeof fetch = async (input, init) => {
       reported.set(body.id, {
         cost: typeof body.usage?.cost === "number" ? body.usage.cost : null,
         model: typeof body.model === "string" ? body.model : null,
+        at: Date.now(),
       });
     }
   } catch {
@@ -81,6 +84,35 @@ export function takeReportedCost(generationId: string | undefined): Reported | n
   if (!hit) return null;
   reported.delete(generationId);
   return hit;
+}
+
+/**
+ * Claims the most recent unclaimed charge captured since `since`, for the error
+ * path — where there is no generation id to match on.
+ *
+ * OpenRouter can return a fully billable response that the SDK then rejects (a
+ * shape it cannot validate, say). The charge is real and was captured here, but
+ * `generateText` threw before anything could read `response.id`, so without this
+ * the call books as $0 and a repeatable parse failure would never reach the cap.
+ *
+ * Attribution is approximate under concurrency: with several calls in flight
+ * this may credit the cost to the wrong one of them. That is acceptable because
+ * the budget reads the SUM per user, and every concurrent call in this app
+ * belongs to the same request and therefore the same user. Booking the amount
+ * against a slightly wrong row is far better than not booking it at all.
+ */
+export function takeMostRecentUnclaimed(since: number): Reported | null {
+  let key: string | null = null;
+  let best: Pending | null = null;
+  for (const [k, v] of reported) {
+    if (v.at >= since && (best === null || v.at > best.at)) {
+      key = k;
+      best = v;
+    }
+  }
+  if (key === null || best === null) return null;
+  reported.delete(key);
+  return best;
 }
 
 const openrouter = createOpenAI({

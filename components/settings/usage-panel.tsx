@@ -34,7 +34,10 @@ function Meter({
   limit: number | null;
   reset: string;
 }) {
-  const pct = limit ? Math.min(100, (spent / limit) * 100) : 0;
+  // `limit` of 0 is a real cap, not an absent one — a falsy check here would
+  // render "of $0.00" beside an empty meter while every call is being refused.
+  const pct =
+    limit === null ? 0 : limit === 0 ? (spent > 0 ? 100 : 0) : Math.min(100, (spent / limit) * 100);
   const hot = limit !== null && pct >= 80;
 
   return (

@@ -32,7 +32,12 @@ function envBudget(name: string, fallback: number): number {
 
 export type BudgetVerdict =
   | { ok: true; status: LlmBudgetStatus }
-  | { ok: false; message: string; window: "daily" | "monthly" };
+  | { ok: false; message: string; window: "daily" | "monthly" }
+  /**
+   * Spend could not be read at all. Distinct from "over budget": nothing is
+   * known, so nothing may be spent.
+   */
+  | { ok: false; message: string; window: "unavailable" };
 
 function money(n: number): string {
   return `$${n.toFixed(2)}`;
@@ -88,9 +93,13 @@ export function evaluateBudget(status: LlmBudgetStatus): BudgetVerdict {
  * argument — it answers only for `auth.uid()`, so this cannot be pointed at
  * another account.
  *
- * A failed read allows the call. The alternative is that a transient database
- * hiccup blocks every analysis in the app, and the ceiling is still bounded by
- * the next request's check.
+ * FAILS CLOSED. An earlier version allowed the call when the read failed, on
+ * the grounds that a transient database hiccup should not block every analysis.
+ * That was the wrong default for a spend guard: an RPC that fails for a
+ * structural reason — a permission change, an unapplied migration — silently
+ * removes the cap entirely, and nothing surfaces that it has gone. It also
+ * bought very little, since a database that cannot answer this query cannot
+ * serve the rest of the request either.
  */
 export async function checkBudget(): Promise<BudgetVerdict> {
   const supabase = await createClient();
@@ -98,14 +107,9 @@ export async function checkBudget(): Promise<BudgetVerdict> {
   const status = data?.[0];
   if (error || !status) {
     return {
-      ok: true,
-      status: {
-        daily_spent: 0,
-        monthly_spent: 0,
-        daily_limit: null,
-        monthly_limit: null,
-        has_override: false,
-      },
+      ok: false,
+      window: "unavailable",
+      message: "Couldn't check your analysis budget just now — try again in a moment.",
     };
   }
   return evaluateBudget({

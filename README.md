@@ -384,10 +384,13 @@ Two things are worth knowing:
   *first* account created — so if someone else signs up first, they inherit your book.
   `0015_finish_user_accounts.sql` drops that trigger and makes `user_id` NOT NULL; run it
   once the first account is in place, after which ownerless rows are impossible.
-- **Sign-up is open, and LLM calls are billed to your `OPENROUTER_API_KEY`.** Every account is
-  capped — see [Cost](#cost) — so a stranger who finds the URL is bounded to $10 a month rather
-  than to your card. If even that matters, gate sign-up behind an invite code or turn on Vercel's
-  Deployment Protection.
+- **Sign-up is open, and LLM calls are billed to your `OPENROUTER_API_KEY`.** Every *account* is
+  capped — see [Cost](#cost) — so one account is bounded to $10 a month. But **account creation
+  itself is not limited**: there is no invite code, no email verification and no captcha, so
+  someone determined can register repeatedly and get a fresh allowance each time. The caps are a
+  guard against runaway use and casual abuse, not a total spend ceiling. For a real ceiling, gate
+  sign-up behind an invite code, turn on Vercel's Deployment Protection, or set a hard limit on
+  the OpenRouter key itself.
 
 Not built: password reset, email verification flows, OAuth providers, and teams or sharing.
 Supabase supports all of them; none is wired up here.
@@ -408,7 +411,16 @@ Every analysis is a model call billed to your own OpenRouter key. With Sonnet 4.
 
 **Every account is capped by default: $1/day and $10/month.** The check runs before anything is
 spent, so an account over its limit costs exactly zero — it gets a 429 saying which window it hit
-and when it resets, not a failure part-way through a run.
+and when it resets, not a failure part-way through a run. If spend cannot be read at all, the
+request is refused with a 503 rather than allowed: a guard that fails open is not a guard.
+
+Two limits on what this actually bounds, worth knowing before you rely on it:
+
+- **The cap is per account, and sign-up is open.** N accounts means N allowances. See
+  [Accounts](#accounts).
+- **The pre-flight check is not a reservation.** Requests issued in parallel can each read the
+  same under-limit ledger before any of them has recorded its spend, so a burst can overshoot.
+  Sequential use is bounded correctly; a scripted burst is not.
 
 Two tables do the work. `llm_usage` is an append-only ledger, one row per call, denominated in
 **money rather than tokens** — token prices change per model, so a token count is not a bill. The

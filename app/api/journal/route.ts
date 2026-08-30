@@ -82,6 +82,8 @@ export async function POST(request: Request) {
   // already written; refusing to save their words because an optional model
   // call is unaffordable would be the wrong trade. It degrades to the same
   // "no verdict" path a failed call already takes.
+  // `checkBudget` fails closed, so an unreadable budget lands here as
+  // unaffordable and the verdict is skipped — the review still saves.
   const user = await currentUser();
   const affordable = user !== null && (await checkBudget()).ok;
 

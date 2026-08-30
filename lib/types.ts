@@ -761,6 +761,15 @@ export interface Database {
         Args: Record<string, never>;
         Returns: LlmBudgetStatus[];
       };
+      llm_usage_by_feature: {
+        Args: Record<string, never>;
+        Returns: {
+          feature: LlmFeature;
+          cost_usd: number;
+          calls: number;
+          estimated_calls: number;
+        }[];
+      };
     };
     Enums: {
       exchange_code: ExchangeCode;

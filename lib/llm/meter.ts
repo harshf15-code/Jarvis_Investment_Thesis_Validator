@@ -1,6 +1,11 @@
 import { generateText } from "ai";
 
-import { JARVIS_MODEL_ID, jarvisModel, takeReportedCost } from "@/lib/llm/openrouter";
+import {
+  JARVIS_MODEL_ID,
+  jarvisModel,
+  takeMostRecentUnclaimed,
+  takeReportedCost,
+} from "@/lib/llm/openrouter";
 import { estimateCostUsd } from "@/lib/llm/pricing";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { LlmFeature, LlmUsageInsert } from "@/lib/types";
@@ -57,6 +62,7 @@ export async function meteredGenerateText({
   prompt,
   thesisId = null,
 }: MeteredCall) {
+  const startedAt = Date.now();
   try {
     const result = await generateText({ model: jarvisModel, system, prompt });
 
@@ -90,15 +96,17 @@ export async function meteredGenerateText({
 
     return result;
   } catch (err) {
+    // A throw does not mean a free call. OpenRouter can return a fully billable
+    // response that the SDK then rejects, in which case the charge was already
+    // captured on the wire and is claimed here — otherwise a repeatable
+    // validation failure would book $0 forever and never reach the cap.
+    const late = takeMostRecentUnclaimed(startedAt);
     await record({
       user_id: userId,
       feature,
-      model: JARVIS_MODEL_ID,
-      // No generation id to claim, so nothing to reconcile against; the cost of
-      // a failed call is recorded as zero rather than guessed from tokens that
-      // were never counted.
-      cost_usd: 0,
-      cost_source: "estimated",
+      model: late?.model ?? JARVIS_MODEL_ID,
+      cost_usd: late?.cost ?? 0,
+      cost_source: late?.cost != null ? "reported" : "estimated",
       thesis_id: thesisId,
       ok: false,
     });
