@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/harshf15-code/Myticker/actions/workflows/ci.yml"><img src="https://github.com/harshf15-code/Myticker/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  <a href="https://github.com/harshf15-code/Jarvis_Investment_Thesis_Validator/actions/workflows/ci.yml"><img src="https://github.com/harshf15-code/Jarvis_Investment_Thesis_Validator/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
   <img src="https://img.shields.io/badge/decision_support-never_execution-00c805?style=flat-square&labelColor=0b0f14" alt="Decision support, never execution" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-c6e315?style=flat-square&labelColor=0b0f14" alt="MIT license" /></a>
   <img src="https://img.shields.io/badge/Next.js-16-f4f6fe?style=flat-square&labelColor=0b0f14" alt="Next.js 16" />
@@ -110,8 +110,8 @@ Two Supabase Edge Functions run on `pg_cron`:
 [OpenRouter](https://openrouter.ai) API key.
 
 ```bash
-git clone https://github.com/harshf15-code/Myticker.git
-cd Myticker
+git clone https://github.com/harshf15-code/Jarvis_Investment_Thesis_Validator.git
+cd Jarvis_Investment_Thesis_Validator
 npm install
 cp .env.local.example .env.local
 ```
