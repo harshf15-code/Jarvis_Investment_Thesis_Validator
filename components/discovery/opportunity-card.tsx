@@ -21,13 +21,14 @@ type Row = {
   };
   currentPrice: number | null;
   lastPriceAt: string | null;
+  currency: string;
   held: boolean;
   draft: boolean;
 };
 
 /** Spec US-20/US-21. "Explore" reuses Task 10's page via its existing `?ticker=` searchParam — no new route needed. */
 export function OpportunityCard({ row }: { row: Row }) {
-  const { opportunity: o, currentPrice, held, draft } = row;
+  const { opportunity: o, currentPrice, currency, held, draft } = row;
 
   const near52wHigh =
     currentPrice !== null && o.fifty_two_week_high !== null && currentPrice > o.fifty_two_week_high * 0.85;
@@ -50,7 +51,7 @@ export function OpportunityCard({ row }: { row: Row }) {
           PE <span className="font-mono tabular-nums">{o.pe ?? "—"}</span> vs sector{" "}
           <span className="font-mono tabular-nums">{o.sector_median_pe ?? "—"}</span>
         </span>
-        <PriceBadge price={currentPrice} exchange={o.market} />
+        <PriceBadge price={currentPrice} currency={currency} />
       </div>
       {near52wHigh && (
         <span className="w-fit rounded-full bg-primary-container px-2 py-0.5 text-[10px] text-primary">Near 52W High ⚠</span>

@@ -16,7 +16,7 @@ import { parseCandidateShortlist } from "@/lib/jarvis-thesis-parser";
 import { checkBudget } from "@/lib/llm/budget";
 import { meteredGenerateText } from "@/lib/llm/meter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
-import { MARKETS, exchangesFor, isLiveMarket } from "@/lib/markets";
+import { MARKETS, currencyForExchange, exchangesFor, isLiveMarket } from "@/lib/markets";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { ExchangeCode, MarketCode, ThesisCandidateInsert } from "@/lib/types";
@@ -44,6 +44,7 @@ type Resolved = {
   yahooSymbol: string | null;
   price: number | null;
   priceAsOf: Date | null;
+  currency: string | null;
   fundamentals: Record<string, string | number>;
 };
 
@@ -68,6 +69,13 @@ async function resolveCandidate(
         getQuote(yahooSymbol),
         getFundamentals(yahooSymbol).catch(() => ({})),
       ]);
+      // Priced in the wrong money means this is a different listing to the one
+      // the chosen market means — see the note in `app/api/theses/route.ts`.
+      // A candidate that reaches the comparative grid in another currency is
+      // compared against its peers as if the numbers were the same money.
+      if (quote.currency != null && quote.currency !== currencyForExchange(exchange)) {
+        continue;
+      }
       return {
         ticker,
         companyName,
@@ -75,6 +83,7 @@ async function resolveCandidate(
         yahooSymbol,
         price: quote.price,
         priceAsOf: quote.asOf,
+        currency: quote.currency ?? currencyForExchange(exchange),
         fundamentals,
       };
     } catch {
@@ -88,6 +97,7 @@ async function resolveCandidate(
     yahooSymbol: null,
     price: null,
     priceAsOf: null,
+    currency: null,
     fundamentals: {},
   };
 }
@@ -320,7 +330,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       stockIdByTicker.set(r.ticker, existing.id);
       await stocksAdmin
         .from("stocks")
-        .update({ last_price: r.price, last_price_at: r.priceAsOf?.toISOString() ?? null })
+        .update({
+          last_price: r.price,
+          last_price_at: r.priceAsOf?.toISOString() ?? null,
+          // Re-asserted from the quote — see the note in prices/refresh.
+          ...(r.currency ? { currency: r.currency } : {}),
+        })
         .eq("id", existing.id);
       continue;
     }
@@ -330,6 +345,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         ticker: r.ticker,
         yahoo_symbol: r.yahooSymbol,
         exchange: r.exchange,
+        currency: r.currency ?? currencyForExchange(r.exchange),
         last_price: r.price,
         last_price_at: r.priceAsOf?.toISOString() ?? null,
       })

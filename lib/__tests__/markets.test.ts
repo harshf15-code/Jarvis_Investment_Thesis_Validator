@@ -4,10 +4,14 @@ import {
   LIVE_MARKETS,
   MARKETS,
   exchangesFor,
+  currencyForExchange,
+  currencyForMarket,
   formatMarketPrice,
   isLiveMarket,
   isMarketCode,
+  localeForCurrency,
   marketForExchange,
+  symbolForCurrency,
 } from "@/lib/markets";
 
 describe("markets", () => {
@@ -16,10 +20,12 @@ describe("markets", () => {
   });
 
   /**
-   * CN/EU/EM are deliberately present but not live. Pricing them needs a
-   * currency column on `stocks` and FX-aware trade-plan geometry; until that
-   * exists a half-priced report is worse than none, so they must never pass
-   * the live check that gates thesis creation.
+   * CN/EU/EM are deliberately present but not live. `stocks` carries a
+   * currency since 0021, so their prices would at least be LABELLED correctly
+   * — but nothing can resolve one of these names in the first place:
+   * `exchange_code` has no value for SSE, LSE or XETRA, `exchangesFor` is
+   * empty for all three, and `resolveYahooSymbol` has no suffix to build. They
+   * must never pass the live check that gates thesis creation.
    */
   it("recognises non-live markets without treating them as usable", () => {
     for (const code of ["CN", "EU", "EM"] as const) {
@@ -63,5 +69,42 @@ describe("markets", () => {
     expect(formatMarketPrice(100000, "IN")).toBe("₹1,00,000");
     expect(MARKETS.IN.currency).toBe("INR");
     expect(MARKETS.US.currency).toBe("USD");
+  });
+});
+
+describe("currency", () => {
+  it("maps each live market's exchanges to that market's currency", () => {
+    expect(currencyForExchange("NSE")).toBe("INR");
+    expect(currencyForExchange("BSE")).toBe("INR");
+    expect(currencyForExchange("US")).toBe("USD");
+  });
+
+  it("agrees with the market table it is derived from", () => {
+    expect(currencyForMarket("IN")).toBe("INR");
+    expect(currencyForMarket("US")).toBe("USD");
+    // Not live, but still a real answer — the watch on a `stocks` row does not
+    // care whether a thesis could be run against that market.
+    expect(currencyForMarket("CN")).toBe("CNY");
+  });
+
+  it("gives INR the locale that groups digits the Indian way", () => {
+    expect(localeForCurrency("INR")).toBe("en-IN");
+    expect(localeForCurrency("inr")).toBe("en-IN");
+  });
+
+  it("resolves USD to en-US rather than to Emerging Markets' entry", () => {
+    // Both US and EM name USD. First in MARKET_ORDER wins, which is US.
+    expect(localeForCurrency("USD")).toBe("en-US");
+  });
+
+  it("falls back to en-US for a currency no market claims", () => {
+    expect(localeForCurrency("SGD")).toBe("en-US");
+  });
+
+  it("names a currency it has no symbol for rather than borrowing one", () => {
+    expect(symbolForCurrency("INR")).toBe("₹");
+    expect(symbolForCurrency("USD")).toBe("$");
+    // The one thing it must never do is fall through to ₹ or $.
+    expect(symbolForCurrency("SGD")).toBe("SGD ");
   });
 });

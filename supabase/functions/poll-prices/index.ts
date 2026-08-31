@@ -68,7 +68,7 @@ async function withRetry<T>(
 
 async function getQuote(
   yahooSymbol: string,
-): Promise<{ price: number; asOf: Date }> {
+): Promise<{ price: number; asOf: Date; currency: string | null }> {
   const quote = await withRetry(() => yahooFinance.quote(yahooSymbol));
 
   if (
@@ -80,6 +80,7 @@ async function getQuote(
 
   return {
     price: quote.regularMarketPrice,
+    currency: quote.currency ?? null,
     // `regularMarketTime` existing without a value is an edge case Yahoo
     // shouldn't produce in practice; fall back to "now" rather than
     // failing the whole call over a missing timestamp (matches
@@ -302,7 +303,14 @@ Deno.serve(async (req: Request) => {
       const quote = await getQuote(stock.yahoo_symbol);
       await supabase
         .from("stocks")
-        .update({ last_price: quote.price, last_price_at: quote.asOf.toISOString() })
+        .update({
+          last_price: quote.price,
+          last_price_at: quote.asOf.toISOString(),
+          // Re-asserted from the quote rather than written once and trusted
+          // forever (0021). This is the path that runs most often, so it is
+          // the one that actually corrects a row seeded from `exchange`.
+          ...(quote.currency ? { currency: quote.currency } : {}),
+        })
         .eq("id", stock.id);
 
       const events = evaluatePositionTriggers(tradePlan, quote.price, now);

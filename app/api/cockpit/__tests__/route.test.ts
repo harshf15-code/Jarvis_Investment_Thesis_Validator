@@ -56,7 +56,7 @@ describe("GET /api/cockpit", () => {
         positions: [POSITION],
         entries: [{ position_id: "p1", quantity: 10, price: 100 }],
         exits: [],
-        stocks: [{ id: "s1", last_price: 120, exchange: "US" }],
+        stocks: [{ id: "s1", last_price: 120, exchange: "US", currency: "USD" }],
         trade_plans: [{ id: "tp1", stop_loss: 90, target_1: 130, target_2: 150, time_exit_date: OVERDUE }],
         theses: [{ id: "t1", conviction_tier: "I" }],
         jarvis_recommendations: [],
@@ -67,8 +67,11 @@ describe("GET /api/cockpit", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.totalOpenPnl.absolute).toBe(200); // (120-100)*10
-    expect(body.totalOpenPnl.percent).toBeCloseTo(20); // 200 / (100*10)
+    expect(body.totalsByCurrency).toHaveLength(1);
+    expect(body.totalsByCurrency[0].currency).toBe("USD");
+    expect(body.totalsByCurrency[0].absolute).toBe(200); // (120-100)*10
+    expect(body.totalsByCurrency[0].percent).toBeCloseTo(20); // 200 / (100*10)
+    expect(body.totalsByCurrency[0].positions).toBe(1);
     expect(body.overdueTickers).toContain("AAPL");
     expect(body.positions).toHaveLength(1);
     expect(body.positions[0].weightedAverage).toEqual({ totalQuantity: 10, averagePrice: 100 });
@@ -82,7 +85,7 @@ describe("GET /api/cockpit", () => {
         positions: [{ ...POSITION, status: "partial_exit" }],
         entries: [{ position_id: "p1", quantity: 10, price: 100 }],
         exits: [{ position_id: "p1", quantity: 4, price: 130 }],
-        stocks: [{ id: "s1", last_price: 120, exchange: "US" }],
+        stocks: [{ id: "s1", last_price: 120, exchange: "US", currency: "USD" }],
         trade_plans: [{ id: "tp1", stop_loss: 90, target_1: 130, target_2: 150, time_exit_date: FUTURE }],
         theses: [{ id: "t1", conviction_tier: "II" }],
         jarvis_recommendations: [],
@@ -92,8 +95,8 @@ describe("GET /api/cockpit", () => {
     const res = await GET();
     const body = await res.json();
 
-    expect(body.totalOpenPnl.absolute).toBe(120); // (120-100) * 6 remaining
-    expect(body.totalOpenPnl.percent).toBeCloseTo(20); // 120 / (100*6) — cost basis of the remainder
+    expect(body.totalsByCurrency[0].absolute).toBe(120); // (120-100) * 6 remaining
+    expect(body.totalsByCurrency[0].percent).toBeCloseTo(20); // 120 / (100*6) — cost basis of the remainder
     expect(body.overdueTickers).toEqual([]);
   });
 
@@ -107,8 +110,8 @@ describe("GET /api/cockpit", () => {
         ],
         exits: [],
         stocks: [
-          { id: "s1", last_price: 120, exchange: "US" },
-          { id: "s2", last_price: null, exchange: "US" },
+          { id: "s1", last_price: 120, exchange: "US", currency: "USD" },
+          { id: "s2", last_price: null, exchange: "US", currency: "USD" },
         ],
         trade_plans: [{ id: "tp1", stop_loss: 90, target_1: 130, target_2: 150, time_exit_date: FUTURE }],
         theses: [{ id: "t1", conviction_tier: "I" }],
@@ -121,9 +124,114 @@ describe("GET /api/cockpit", () => {
 
     // The unpriced position contributes neither P&L nor cost basis, so the
     // percent stays that of the one position that can actually be valued.
-    expect(body.totalOpenPnl.absolute).toBe(200);
-    expect(body.totalOpenPnl.percent).toBeCloseTo(20);
+    expect(body.totalsByCurrency).toHaveLength(1);
+    expect(body.totalsByCurrency[0].absolute).toBe(200);
+    expect(body.totalsByCurrency[0].percent).toBeCloseTo(20);
+    expect(body.totalsByCurrency[0].positions).toBe(1);
     expect(body.positions).toHaveLength(2);
+  });
+
+  it("totals a mixed-currency book per currency, never blended", async () => {
+    // The defect this replaced: one scalar summing (120-100)*10 dollars with
+    // (1200-1000)*10 rupees to 2200 of nothing, divided by a cost basis of
+    // 11,000 of nothing. Both numbers below are individually true; no
+    // arithmetic relates them, because no exchange rate exists here.
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({
+        positions: [POSITION, { ...POSITION, id: "p2", ticker: "INFY", stock_id: "s2" }],
+        entries: [
+          { position_id: "p1", quantity: 10, price: 100 },
+          { position_id: "p2", quantity: 10, price: 1000 },
+        ],
+        exits: [],
+        stocks: [
+          { id: "s1", last_price: 120, exchange: "US", currency: "USD" },
+          { id: "s2", last_price: 1200, exchange: "NSE", currency: "INR" },
+        ],
+        trade_plans: [{ id: "tp1", stop_loss: 90, target_1: 130, target_2: 150, time_exit_date: FUTURE }],
+        theses: [{ id: "t1", conviction_tier: "I" }],
+        jarvis_recommendations: [],
+      }) as never,
+    );
+
+    const res = await GET();
+    const body = await res.json();
+
+    expect(body.totalsByCurrency).toHaveLength(2);
+    // One position each, so the tie breaks on the code — a stable order that
+    // does NOT rank ₹10,000 above $1,000 by comparing the raw numbers.
+    expect(body.totalsByCurrency.map((t: { currency: string }) => t.currency)).toEqual(["INR", "USD"]);
+
+    const inr = body.totalsByCurrency[0];
+    expect(inr).toMatchObject({ currency: "INR", absolute: 2000, positions: 1 });
+    expect(inr.percent).toBeCloseTo(20);
+
+    const usd = body.totalsByCurrency[1];
+    expect(usd).toMatchObject({ currency: "USD", absolute: 200, positions: 1 });
+    expect(usd.percent).toBeCloseTo(20);
+  });
+
+  it("orders sub-books by position count, never by comparing the raw money", async () => {
+    // The trap: ₹10,000 is a bigger NUMBER than $2,000 and worth far less.
+    // Sorting on cost basis would rank by the unit size of the currency and
+    // always put rupees first, which is the cross-currency arithmetic this
+    // whole change removes.
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({
+        positions: [
+          POSITION,
+          { ...POSITION, id: "p2", ticker: "MSFT", stock_id: "s1" },
+          { ...POSITION, id: "p3", ticker: "INFY", stock_id: "s2" },
+        ],
+        entries: [
+          { position_id: "p1", quantity: 10, price: 100 },
+          { position_id: "p2", quantity: 10, price: 100 },
+          { position_id: "p3", quantity: 10, price: 1000 },
+        ],
+        exits: [],
+        stocks: [
+          { id: "s1", last_price: 120, exchange: "US", currency: "USD" },
+          { id: "s2", last_price: 1200, exchange: "NSE", currency: "INR" },
+        ],
+        trade_plans: [{ id: "tp1", stop_loss: 90, target_1: null, target_2: null, time_exit_date: FUTURE }],
+        theses: [{ id: "t1", conviction_tier: "I" }],
+        jarvis_recommendations: [],
+      }) as never,
+    );
+
+    const body = await (await GET()).json();
+
+    // USD leads on two positions against one, despite ₹10,000 > $2,000.
+    expect(body.totalsByCurrency.map((t: { currency: string }) => t.currency)).toEqual(["USD", "INR"]);
+    expect(body.totalsByCurrency[0].positions).toBe(2);
+  });
+
+  it("keeps NSE and BSE in one rupee total rather than splitting by exchange", async () => {
+    // The old display-side mitigation keyed on ExchangeCode, so a book holding
+    // one NSE name and one BSE name was labelled "mixed currencies" while
+    // being entirely rupees. Currency is the right key; exchange never was.
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({
+        positions: [POSITION, { ...POSITION, id: "p2", ticker: "TCS", stock_id: "s2" }],
+        entries: [
+          { position_id: "p1", quantity: 10, price: 100 },
+          { position_id: "p2", quantity: 10, price: 100 },
+        ],
+        exits: [],
+        stocks: [
+          { id: "s1", last_price: 120, exchange: "NSE", currency: "INR" },
+          { id: "s2", last_price: 120, exchange: "BSE", currency: "INR" },
+        ],
+        trade_plans: [{ id: "tp1", stop_loss: 90, target_1: null, target_2: null, time_exit_date: FUTURE }],
+        theses: [{ id: "t1", conviction_tier: "I" }],
+        jarvis_recommendations: [],
+      }) as never,
+    );
+
+    const body = await (await GET()).json();
+
+    expect(body.totalsByCurrency).toHaveLength(1);
+    expect(body.totalsByCurrency[0]).toMatchObject({ currency: "INR", absolute: 400, positions: 2 });
   });
 
   it("lists an overdue ticker once even when two positions share it", async () => {
@@ -132,7 +240,7 @@ describe("GET /api/cockpit", () => {
         positions: [POSITION, { ...POSITION, id: "p2" }],
         entries: [],
         exits: [],
-        stocks: [{ id: "s1", last_price: 120, exchange: "US" }],
+        stocks: [{ id: "s1", last_price: 120, exchange: "US", currency: "USD" }],
         trade_plans: [{ id: "tp1", stop_loss: 90, target_1: null, target_2: null, time_exit_date: OVERDUE }],
         theses: [{ id: "t1", conviction_tier: "I" }],
         jarvis_recommendations: [],
@@ -148,7 +256,7 @@ describe("GET /api/cockpit", () => {
   it("joins each recommendation to its stock and asks for them newest-first", async () => {
     const mock = buildMock({
       positions: [],
-      stocks: [{ id: "s9", last_price: 250, exchange: "NSE" }],
+      stocks: [{ id: "s9", last_price: 250, exchange: "NSE", currency: "INR" }],
       jarvis_recommendations: [
         { id: "r1", stock_id: "s9", ticker: "INFY", converted_to_position: false },
       ],
@@ -159,7 +267,7 @@ describe("GET /api/cockpit", () => {
     const body = await res.json();
 
     expect(body.positions).toEqual([]);
-    expect(body.totalOpenPnl).toEqual({ absolute: 0, percent: 0 });
+    expect(body.totalsByCurrency).toEqual([]);
     expect(body.overdueTickers).toEqual([]);
     expect(body.recommendations).toHaveLength(1);
     expect(body.recommendations[0].recommendation.ticker).toBe("INFY");

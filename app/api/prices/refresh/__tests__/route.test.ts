@@ -75,7 +75,7 @@ describe("POST /api/prices/refresh", () => {
     vi.mocked(createAdminClient).mockReturnValue(writer.client as never);
     vi.mocked(getQuote).mockImplementation(async (symbol: string) => {
       if (symbol === "BROKEN") throw new Error("no quote");
-      return { price: 150.25, asOf: new Date("2026-08-27T10:00:00Z"), name: "Apple Inc." };
+      return { price: 150.25, asOf: new Date("2026-08-27T10:00:00Z"), name: "Apple Inc.", currency: "USD" };
     });
 
     const res = await postWith(["s1", "s2"]);
@@ -84,11 +84,41 @@ describe("POST /api/prices/refresh", () => {
     expect(res.status).toBe(200);
     expect(body.prices.s1.price).toBe(150.25);
     expect(body.prices.s1.asOf).toBe("2026-08-27T10:00:00.000Z");
+    // Returned, not just written: a caller holding a currency seeded from
+    // `exchange` would otherwise render the stale one until a full reload.
+    expect(body.prices.s1.currency).toBe("USD");
     expect(body.prices.s2).toBeUndefined();
 
     // The price write-back must go through the service-role client: since 0014
     // `authenticated` may read `stocks` but not write it.
     expect(writer.update).toHaveBeenCalledTimes(1);
+    expect(writer.update).toHaveBeenCalledWith({
+      last_price: 150.25,
+      last_price_at: "2026-08-27T10:00:00.000Z",
+      // Re-asserted on every refresh, not written once and trusted forever:
+      // 0021 seeded `currency` from `exchange`, which is a guess, and this is
+      // the path that corrects a row seeded wrong.
+      currency: "USD",
+    });
+  });
+
+  it("leaves the stored currency alone when a quote does not report one", async () => {
+    // Overwriting a known currency with a guess would be worse than keeping
+    // the one already on the row.
+    vi.mocked(createClient).mockResolvedValue(
+      buildReadClientMock([{ id: "s1", yahoo_symbol: "AAPL" }]) as never,
+    );
+    const writer = buildWriteClientMock();
+    vi.mocked(createAdminClient).mockReturnValue(writer.client as never);
+    vi.mocked(getQuote).mockResolvedValue({
+      price: 150.25,
+      asOf: new Date("2026-08-27T10:00:00Z"),
+      name: "Apple Inc.",
+      currency: null,
+    } as never);
+
+    await postWith(["s1"]);
+
     expect(writer.update).toHaveBeenCalledWith({
       last_price: 150.25,
       last_price_at: "2026-08-27T10:00:00.000Z",

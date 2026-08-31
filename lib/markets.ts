@@ -9,13 +9,15 @@ import type { ExchangeCode, MarketCode } from "@/lib/types";
  * candidate the model returns is checked back against that same list — so the
  * universe the trader chose is the universe the memo is written from.
  *
- * `live: false` markets are deliberately visible but unselectable. Pricing
- * them needs currency support this app does not have: `stocks` has no currency
- * column, `exchange_code` is `NSE|BSE|US`, and the whole price path assumes a
- * candidate's number is comparable to every other candidate's. Showing a
- * ¥6,052 quote beside a $356 one — or worse, feeding it into stop-loss
- * geometry — is far more dangerous than showing nothing, so these stay off
- * until that work is actually done rather than shipping half-priced reports.
+ * `live: false` markets are deliberately visible but unselectable. `stocks`
+ * now carries a currency (0021), so a ¥6,052 quote would at least be LABELLED
+ * as yuan — but labelling is not listing. What still does not exist is any way
+ * to resolve one of these names in the first place: `exchange_code` is
+ * `NSE|BSE|US` and has no value for SSE, LSE or XETRA, `exchangesFor` returns
+ * an empty list for all three, `resolveYahooSymbol` has no suffix to build,
+ * and `lib/market-hours.ts` knows only NSE and US sessions. Each of those is
+ * real work with real per-exchange testing behind it, so these stay off rather
+ * than shipping half-priced reports.
  */
 export type MarketMeta = {
   label: string;
@@ -87,6 +89,58 @@ export function exchangesFor(market: MarketCode): readonly ExchangeCode[] {
  */
 export function marketForExchange(exchange: ExchangeCode): MarketCode {
   return exchange === "US" ? "US" : "IN";
+}
+
+/**
+ * Locale to render a currency in, derived from `MARKETS` rather than kept as a
+ * second hand-maintained table — the currency and the locale that groups its
+ * digits correctly are already paired there. First market in `MARKET_ORDER`
+ * wins, which matters only for USD (claimed by US, also EM's currency) where
+ * both entries name `en-US` anyway.
+ *
+ * `en-US` is the fallback for a currency no market claims. That is not a
+ * guess about the money — `Intl.NumberFormat` still renders the right symbol
+ * and the right minor units from the currency code — only about digit
+ * grouping, which is the one part a fallback can be wrong about harmlessly.
+ */
+const CURRENCY_LOCALE: Record<string, string> = Object.fromEntries(
+  MARKET_ORDER.map((code) => [MARKETS[code].currency, MARKETS[code].locale] as const).reverse(),
+);
+
+export function localeForCurrency(currency: string): string {
+  return CURRENCY_LOCALE[currency.toUpperCase()] ?? "en-US";
+}
+
+/**
+ * The currency a market's listings quote in. Used as the fallback when a Yahoo
+ * quote comes back without one, and as the expectation a resolved listing is
+ * checked against — a symbol that prices in dollars for an India run resolved
+ * to an ADR, not to the NSE line the trader meant.
+ */
+export function currencyForMarket(market: MarketCode): string {
+  return MARKETS[market].currency;
+}
+
+/**
+ * The bare symbol for a currency (`₹`, `$`). For the handful of places that
+ * prefix an already-formatted string rather than formatting a number —
+ * `formatCurrency` is the right tool everywhere a raw number is being
+ * rendered.
+ */
+export function symbolForCurrency(currency: string): string {
+  const upper = currency.toUpperCase();
+  const market = MARKET_ORDER.find((code) => MARKETS[code].currency === upper);
+  return market ? MARKETS[market].symbol : `${upper} `;
+}
+
+/**
+ * The currency an exchange's listings quote in. The fallback whenever a Yahoo
+ * quote arrives without a currency of its own — a thesis run can span markets,
+ * so the exchange that actually resolved is the honest source, not whichever
+ * market the trader happened to list first.
+ */
+export function currencyForExchange(exchange: ExchangeCode): string {
+  return currencyForMarket(marketForExchange(exchange));
 }
 
 /**

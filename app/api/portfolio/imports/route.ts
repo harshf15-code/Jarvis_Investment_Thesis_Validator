@@ -164,6 +164,7 @@ export async function POST(request: Request) {
           ticker: row.ticker,
           yahoo_symbol: row.yahooSymbol!,
           exchange: row.exchange!,
+          currency: row.currency!,
           last_price: row.lastPrice,
           last_price_at: new Date().toISOString(),
         },

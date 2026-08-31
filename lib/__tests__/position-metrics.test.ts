@@ -19,7 +19,7 @@ describe("computeDistanceToStop", () => {
   it("returns positive rupee and percent distance when above stop", () => {
     const d = computeDistanceToStop({ currentPrice: 110, stopLoss: 100 });
     expect(d).not.toBeNull();
-    expect(d!.rupees).toBe(10);
+    expect(d!.absolute).toBe(10);
     expect(d!.percent).toBeCloseTo(9.09, 1);
   });
 
@@ -29,7 +29,7 @@ describe("computeDistanceToStop", () => {
 
   it("returns zero-or-negative distance when at or below stop", () => {
     const d = computeDistanceToStop({ currentPrice: 95, stopLoss: 100 });
-    expect(d!.rupees).toBe(-5);
+    expect(d!.absolute).toBe(-5);
   });
 });
 

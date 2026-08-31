@@ -1,13 +1,12 @@
 import { formatCurrency } from "@/lib/format";
-import type { ExchangeCode } from "@/lib/types";
 
 /** Renders a price, or the spec's "Price unavailable" amber badge when null. */
 export function PriceBadge({
   price,
-  exchange,
+  currency,
 }: {
   price: number | null;
-  exchange: ExchangeCode;
+  currency: string;
 }) {
   if (price === null) {
     return (
@@ -16,5 +15,5 @@ export function PriceBadge({
       </span>
     );
   }
-  return <span className="font-mono tabular-nums">{formatCurrency(price, exchange)}</span>;
+  return <span className="font-mono tabular-nums">{formatCurrency(price, currency)}</span>;
 }

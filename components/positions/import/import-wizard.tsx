@@ -47,9 +47,13 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
     averagePrice: null,
     date: null,
   });
-  // India by default: this is a Kite export far more often than not, and
-  // probing the wrong market resolves INFY to a NYSE ADR priced in dollars.
-  const [market, setMarket] = useState<MarketCode>("IN");
+  // No default, deliberately. It used to open on India — reasonable, since
+  // this is a Kite export more often than not, but the chips sat below the
+  // file picker and a trader could map columns and price a whole book without
+  // ever seeing them. The copy underneath says Jarvis will not guess the
+  // market, and a pre-selection is exactly that guess. Probing the wrong one
+  // resolves INFY to a NYSE ADR priced in dollars.
+  const [market, setMarket] = useState<MarketCode | null>(null);
   // The trader's own calendar, not UTC — see `localToday`.
   const [asOfDate, setAsOfDate] = useState(localToday());
   const [objective, setObjective] = useState("");
@@ -101,6 +105,9 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
   }
 
   async function resolveRows() {
+    // The button is disabled without a market; this is the guard that makes
+    // `market` non-null for the request body rather than a `!` assertion.
+    if (market === null) return;
     const drafts = buildDraftRows(rawRows, mapping);
     if (drafts.length === 0) {
       setError("No rows in that file have a ticker in the column you mapped.");
@@ -155,6 +162,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
   const skipped = resolved.filter((r) => !importable.includes(r));
 
   async function commit() {
+    if (market === null) return;
     setBusy(true);
     setError(null);
     try {
@@ -202,7 +210,54 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
           <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">
             <div>
               <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                1 · The file
+                1 · Which market is this portfolio?
+              </h2>
+              <p className="mt-1 text-xs text-on-surface-variant">
+                One market per file. The same symbol is listed in two of them at very different
+                prices in different currencies, so this is asked, never guessed.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {MARKET_ORDER.map((code) => {
+                const meta = MARKETS[code];
+                return (
+                  <button
+                    key={code}
+                    type="button"
+                    disabled={!meta.live || busy}
+                    aria-pressed={market === code}
+                    onClick={() => {
+                      setMarket(code);
+                      clearPreview();
+                    }}
+                    title={meta.live ? undefined : "Coming soon"}
+                    className={cn(
+                      "rounded-full border px-3 py-1.5 text-xs transition-colors",
+                      !meta.live
+                        ? "cursor-not-allowed border-white/5 text-on-surface-variant/40"
+                        : market === code
+                          ? "border-primary/60 bg-primary/10 text-primary"
+                          : "border-white/10 text-on-surface-variant hover:border-white/25 hover:text-on-surface",
+                    )}
+                  >
+                    {meta.label}
+                    {!meta.live && <span className="ml-1.5 text-[9px] opacity-70">soon</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <section
+            className={cn(
+              "glass-panel flex flex-col gap-4 rounded-xl p-5 transition-opacity",
+              market === null && "opacity-50",
+            )}
+          >
+            <div>
+              <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
+                2 · The file
               </h2>
               <p className="mt-1 text-xs text-on-surface-variant">
                 Any broker&apos;s holdings export, as long as it has a ticker, a quantity and an
@@ -211,63 +266,38 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
               </p>
             </div>
 
-            <label className="flex cursor-pointer items-center gap-3 self-start rounded-full border border-white/10 px-4 py-2 text-xs text-on-surface-variant transition-colors hover:border-white/25 hover:text-on-surface">
-              <Upload className="size-3.5" />
-              {fileName || "Choose a CSV"}
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                className="hidden"
-                disabled={busy}
-                onChange={(e) => void handleFile(e.target.files?.[0])}
-              />
-            </label>
-
-            <div>
-              <p className="font-mono text-[10px] tracking-widest text-on-surface-variant uppercase">
-                Market
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {MARKET_ORDER.map((code) => {
-                  const meta = MARKETS[code];
-                  return (
-                    <button
-                      key={code}
-                      type="button"
-                      disabled={!meta.live || busy}
-                      aria-pressed={market === code}
-                      onClick={() => {
-                        setMarket(code);
-                        clearPreview();
-                      }}
-                      title={meta.live ? undefined : "Coming soon"}
-                      className={cn(
-                        "rounded-full border px-3 py-1.5 text-xs transition-colors",
-                        !meta.live
-                          ? "cursor-not-allowed border-white/5 text-on-surface-variant/40"
-                          : market === code
-                            ? "border-primary/60 bg-primary/10 text-primary"
-                            : "border-white/10 text-on-surface-variant hover:border-white/25 hover:text-on-surface",
-                      )}
-                    >
-                      {meta.label}
-                      {!meta.live && <span className="ml-1.5 text-[9px] opacity-70">soon</span>}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="mt-2 text-[11px] text-on-surface-variant/70">
-                One market per file. The same symbol can be listed in two of them at very different
-                prices, so this is not something Jarvis will guess.
-              </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <label
+                className={cn(
+                  "flex items-center gap-3 self-start rounded-full border border-white/10 px-4 py-2 text-xs transition-colors",
+                  market === null
+                    ? "cursor-not-allowed text-on-surface-variant/40"
+                    : "cursor-pointer text-on-surface-variant hover:border-white/25 hover:text-on-surface",
+                )}
+              >
+                <Upload className="size-3.5" />
+                {fileName || "Choose a CSV"}
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  disabled={busy || market === null}
+                  onChange={(e) => void handleFile(e.target.files?.[0])}
+                />
+              </label>
+              {market === null && (
+                <span className="text-[11px] text-on-surface-variant/70">
+                  Pick a market first — it decides which exchanges each ticker is looked up on.
+                </span>
+              )}
             </div>
           </section>
 
-          {headers.length > 0 && (
+          {market !== null && headers.length > 0 && (
             <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">
               <div>
                 <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                  2 · The columns
+                  3 · The columns
                 </h2>
                 <p className="mt-1 text-xs text-on-surface-variant">
                   {rawRows.length} row{rawRows.length === 1 ? "" : "s"} found. Change anything Jarvis
@@ -338,7 +368,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                  3 · Check before anything is saved
+                  4 · Check before anything is saved
                 </h2>
                 <p className="mt-1 text-xs text-on-surface-variant">
                   Nothing has been written yet. {importable.length} to import

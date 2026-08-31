@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 
 import type { Memorandum } from "@/lib/jarvis-memorandum";
+import { currencyForExchange, symbolForCurrency } from "@/lib/markets";
 import type { ThesisCandidate } from "@/lib/types";
 
 /**
@@ -34,7 +35,12 @@ export function BackTradeDialog({
 }) {
   const router = useRouter();
   const n = memo.trade_plan.numeric;
-  const symbol = candidate.exchange === "US" ? "$" : "₹";
+  // Was `exchange === "US" ? "$" : "₹"` — the last place in the app that
+  // labelled every non-US price as rupees. An unresolved candidate has no
+  // exchange and no price either, so the rupee fallback costs nothing.
+  const symbol = symbolForCurrency(
+    candidate.exchange ? currencyForExchange(candidate.exchange) : "INR",
+  );
 
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [quantity, setQuantity] = useState("");

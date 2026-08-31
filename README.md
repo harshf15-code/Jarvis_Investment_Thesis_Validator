@@ -73,10 +73,12 @@ answers, so they are asked separately and priced separately.
 | India | Live | NSE, BSE |
 | China · Europe · Emerging Markets | Visible, disabled | — |
 
-The three disabled markets are deliberate, not unfinished. `stocks` has no currency column and
-the whole price path assumes every candidate's number is comparable to every other's — so a
-¥6,052 quote would render as ₹6,052 beside a $356 one, and feed into stop-loss geometry as if it
-were the same money. A half-priced report is worse than no report.
+The three disabled markets are deliberate, not unfinished. Every price now carries the currency
+it was quoted in, so a ¥6,052 quote would at least be labelled as yuan — but labelling is not
+listing. Nothing can resolve one of those names in the first place: there is no exchange code for
+SSE, LSE or XETRA, no Yahoo suffix to build from one, and no trading session to know when the
+market is open. Each is real work with real per-exchange testing behind it. A half-priced report
+is worse than no report.
 
 The market you pick is also the **universe the shortlist is held to**. Every name the model
 returns is re-checked against that market's exchanges after the fact, and one retry names the
@@ -124,6 +126,12 @@ the model proposed. From there the app tracks the position, computes weighted-av
 entry across tranches, logs exits, and keeps a trade journal so you can review whether
 the thesis was right for the reasons you thought.
 
+Every stock stores the currency it is quoted in — re-read from the quote on every price refresh,
+not written once and trusted — so the Cockpit's open P&L is **one line per currency** rather than a
+single blended figure. A book holding INFY and AAPL sees a ₹ total and a
+$ total, each true. There is no exchange rate anywhere in this app, and a stale one misstates a
+portfolio silently, so it shows several correct numbers instead of one convenient wrong one.
+
 Two Supabase Edge Functions run on `pg_cron`:
 
 - **`poll-prices`** — refreshes quotes during market hours (NSE and US sessions handled
@@ -164,14 +172,14 @@ Two honest consequences, both visible in the UI:
   collapsed `T1` entry and stamps it with one "held since" date you supply, labelled as the
   approximation it is.
 
-A batch is one market — the same symbol is listed in two of them at very different prices in
-different currencies, so this is asked, never guessed. Imported holdings deliberately do **not**
-appear under `/thesis`, which lists analyses you ran; thirty of them would bury the ones that are.
+A batch is one market, and picking it is the **first** step — before the file, with nothing
+pre-selected. The same symbol is listed in two markets at very different prices in different
+currencies, so this is asked, never guessed, and a default would have been a guess. A listing that
+prices in the wrong currency for the market you named is refused with both currencies in the
+reason, rather than imported at a cost basis wrong by the exchange rate.
 
-> One pre-existing rough edge this makes easy to hit: the Cockpit's open-P&L total sums rupees and
-> dollars without converting, because `stocks` has no currency column (the same gap that keeps
-> CN/EU/EM disabled). Per-position numbers are correct and correctly symboled; the single combined
-> total is not, once you hold both.
+Imported holdings deliberately do **not** appear under `/thesis`, which lists analyses you ran;
+thirty of them would bury the ones that are.
 
 ---
 

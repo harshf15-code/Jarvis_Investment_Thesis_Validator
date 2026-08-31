@@ -75,6 +75,14 @@ export type Stock = {
   ticker: string;
   yahoo_symbol: string;
   exchange: ExchangeCode;
+  /**
+   * ISO-4217-ish code this listing is quoted in, taken from the quote itself
+   * (0021). Not derived from `exchange`: that derivation was a US-or-rupees
+   * binary, and it is what let the Cockpit add ₹ to $ in one total. "-ish"
+   * because Yahoo reports LSE in `GBp` — pence — which is a real answer and
+   * not a malformed one.
+   */
+  currency: string;
   last_price: number | null;
   last_price_at: string | null;
   created_at: string;
@@ -455,7 +463,7 @@ export type PortfolioProfile = {
 
 // --- Insert types (columns with a SQL default or that are nullable become optional) ---
 
-export type StockInsert = Pick<Stock, "ticker" | "yahoo_symbol" | "exchange"> &
+export type StockInsert = Pick<Stock, "ticker" | "yahoo_symbol" | "exchange" | "currency"> &
   Partial<Pick<Stock, "id" | "last_price" | "last_price_at" | "created_at">>;
 
 export type ThesisInsert = Pick<Thesis, "input_text" | "mode" | "markets"> &

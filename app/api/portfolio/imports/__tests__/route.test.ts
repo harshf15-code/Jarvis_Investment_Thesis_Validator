@@ -148,7 +148,7 @@ describe("POST /api/portfolio/imports", () => {
     vi.mocked(createAdminClient).mockReturnValue(admin as never);
     vi.mocked(getQuote).mockImplementation(async (symbol: string) => {
       if (symbol === "INFY.NS" || symbol === "TCS.NS") {
-        return { price: 1600, asOf: new Date("2026-08-31T10:00:00Z"), name: "A Company" };
+        return { price: 1600, asOf: new Date("2026-08-31T10:00:00Z"), name: "A Company", currency: "INR" };
       }
       throw new Error("not found");
     });

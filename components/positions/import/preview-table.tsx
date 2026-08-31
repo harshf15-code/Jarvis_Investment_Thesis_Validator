@@ -73,8 +73,8 @@ export function PreviewTable({
                 <td className="p-3 text-on-surface-variant">{row.companyName ?? "—"}</td>
                 <td className="p-3 font-mono tabular-nums">{row.quantity ?? "—"}</td>
                 <td className="p-3 font-mono tabular-nums">
-                  {row.averagePrice !== null && row.exchange
-                    ? formatCurrency(row.averagePrice, row.exchange)
+                  {row.averagePrice !== null && row.currency
+                    ? formatCurrency(row.averagePrice, row.currency)
                     : (row.averagePrice ?? "—")}
                 </td>
                 <td className="p-3">

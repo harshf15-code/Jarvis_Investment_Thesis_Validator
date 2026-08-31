@@ -50,7 +50,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const prices: Record<string, { price: number; asOf: string }> = {};
+  // `currency` rides along because the refresh is the path that CORRECTS a
+  // row seeded from `exchange` (0021). A caller holding a stale currency would
+  // otherwise keep rendering the old one until a full reload.
+  const prices: Record<string, { price: number; asOf: string; currency: string | null }> = {};
   // `stocks` is a shared cache that `authenticated` may read but not write
   // (0014), so the price write-back is service-role work.
   const stocksAdmin = createAdminClient();
@@ -58,10 +61,24 @@ export async function POST(request: NextRequest) {
   await mapWithConcurrency(stocks ?? [], MAX_CONCURRENT_QUOTES, async (stock) => {
     try {
       const quote = await getQuote(stock.yahoo_symbol);
-      prices[stock.id] = { price: quote.price, asOf: quote.asOf.toISOString() };
+      prices[stock.id] = {
+        price: quote.price,
+        asOf: quote.asOf.toISOString(),
+        currency: quote.currency,
+      };
       await stocksAdmin
         .from("stocks")
-        .update({ last_price: quote.price, last_price_at: quote.asOf.toISOString() })
+        .update({
+          last_price: quote.price,
+          last_price_at: quote.asOf.toISOString(),
+          // Currency is re-asserted from the quote on every refresh, not
+          // written once and trusted forever. 0021 backfilled it from
+          // `exchange`, which is a good guess and not a fact: a bare US ticker
+          // can resolve to a foreign listing, and a row that was seeded USD
+          // would otherwise be aggregated as dollars for the rest of time. The
+          // quote is the authority, and this is the path that keeps saying so.
+          ...(quote.currency ? { currency: quote.currency } : {}),
+        })
         .eq("id", stock.id);
     } catch {
       // One symbol failing (delisted, rate-limited, transient network error)

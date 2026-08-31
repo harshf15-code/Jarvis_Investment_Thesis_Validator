@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { currencyForExchange } from "@/lib/markets";
 import { createClient } from "@/lib/supabase/server";
 import type { OpportunityInsert } from "@/lib/types";
 
@@ -33,7 +34,7 @@ export async function GET() {
 
   const tickers = [...new Set(rows.map((o) => o.ticker))];
   const [{ data: stocks }, { data: positions }, { data: theses }] = await Promise.all([
-    supabase.from("stocks").select("ticker, exchange, last_price, last_price_at").in("ticker", tickers),
+    supabase.from("stocks").select("ticker, exchange, currency, last_price, last_price_at").in("ticker", tickers),
     supabase.from("positions").select("ticker").in("status", ["active", "partial_exit"]).in("ticker", tickers),
     supabase.from("theses").select("ticker, status").eq("status", "draft").in("ticker", tickers),
   ]);
@@ -47,6 +48,9 @@ export async function GET() {
       opportunity: o,
       currentPrice: stock?.last_price ?? null,
       lastPriceAt: stock?.last_price_at ?? null,
+      // Falls back to the opportunity's own exchange when this ticker has no
+      // `stocks` row yet — in which case there is no price to label either.
+      currency: stock?.currency ?? currencyForExchange(o.market),
       held: heldTickers.has(o.ticker),
       draft: draftTickers.has(o.ticker),
     };
