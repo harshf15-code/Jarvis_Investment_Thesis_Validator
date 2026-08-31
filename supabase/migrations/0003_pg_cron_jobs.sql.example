@@ -144,7 +144,14 @@ select cron.schedule(
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'holding_watch_secret'),
       'Content-Type', 'application/json'
     ),
-    body := '{}'::jsonb
+    body := '{}'::jsonb,
+    -- pg_net defaults to a 5s timeout, and this drain runs for MINUTES: a Yahoo
+    -- fetch plus a model call per due holding, sequentially. At the default the
+    -- request always "fails" from Postgres's side -- `net._http_response` records
+    -- a timeout for every run, so a job that is working looks broken and a job
+    -- that is broken is indistinguishable from it. (The route itself does finish;
+    -- the caller just stopped listening.) Matched to the route's `maxDuration`.
+    timeout_milliseconds := 300000
   );
   $$
 );
