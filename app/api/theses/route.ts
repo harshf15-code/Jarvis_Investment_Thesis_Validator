@@ -66,6 +66,14 @@ async function tryResolveTicker(
         getQuote(yahooSymbol),
         getFundamentals(yahooSymbol).catch(() => ({})),
       ]);
+      // A US probe is a BARE ticker, so Yahoo may answer with a foreign
+      // listing — `NESN` is Swiss francs, `BP.L` is pence. Accepting it would
+      // seed a US thesis, and later a memorandum candidate, from a market the
+      // trader never asked about, priced in money the grid does not label.
+      // Same rule the CSV import applies; a market means one currency.
+      if (quote.currency != null && quote.currency !== currencyForExchange(exchange)) {
+        continue;
+      }
       return {
         exchange,
         yahooSymbol,

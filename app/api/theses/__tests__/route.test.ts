@@ -138,7 +138,7 @@ describe("POST /api/theses", () => {
       existingTheses: [{ id: "thesis-old", status: "active", created_at: "2026-06-01T00:00:00Z" }],
     });
     vi.mocked(createClient).mockResolvedValue(supabase as never);
-    vi.mocked(getQuote).mockResolvedValue({ price: 100, asOf: new Date() } as never);
+    vi.mocked(getQuote).mockResolvedValue({ price: 100, asOf: new Date(), name: null, currency: "INR" } as never);
     vi.mocked(generateText).mockResolvedValue({
       text: RAW_RESPONSE
         .replace('"mode":"thesis_only"', '"mode":"stock_only"')
@@ -162,7 +162,7 @@ describe("POST /api/theses", () => {
   it("never persists a ticker the model invented for a thesis_only run", async () => {
     const supabase = buildSupabaseMock();
     vi.mocked(createClient).mockResolvedValue(supabase as never);
-    vi.mocked(getQuote).mockResolvedValue({ price: 356, asOf: new Date() } as never);
+    vi.mocked(getQuote).mockResolvedValue({ price: 356, asOf: new Date(), name: null, currency: "USD" } as never);
     vi.mocked(generateText).mockResolvedValue({
       text: RAW_RESPONSE.replace('"ticker":null', '"ticker":"ZBRA"'),
     } as never);
@@ -179,10 +179,36 @@ describe("POST /api/theses", () => {
     expect(insert.markets).toEqual(["US"]);
   });
 
+  it("refuses a listing quoted in the wrong currency for the chosen market", async () => {
+    // A US probe is a BARE ticker, so Yahoo may answer with a foreign listing.
+    // Accepting it would seed a US thesis — and later a memorandum candidate
+    // compared against its peers — from a market the trader never asked about,
+    // priced in money the grid does not label.
+    const supabase = buildSupabaseMock();
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    vi.mocked(getQuote).mockResolvedValue({
+      price: 90, asOf: new Date(), name: "Nestlé S.A.", currency: "CHF",
+    } as never);
+    vi.mocked(generateText).mockResolvedValue({
+      text: RAW_RESPONSE
+        .replace('"mode":"thesis_only"', '"mode":"stock_only"')
+        .replace('"ticker":null', '"ticker":"NESN"'),
+    } as never);
+
+    const res = await POST(post({ input_text: "NESN looks cheap", names_stocks: true, markets: ["US"] }));
+    expect(res.status).toBe(201);
+
+    const insert = supabase.from.mock.results
+      .map((x) => x.value)
+      .find((v) => v?.insert?.mock?.calls?.length)?.insert.mock.calls[0][0];
+    // Unresolved, so no ticker is persisted and no stock row is created.
+    expect(insert.ticker).toBe(null);
+  });
+
   it("ignores a model ticker when the trader did not tick 'naming stocks'", async () => {
     const supabase = buildSupabaseMock();
     vi.mocked(createClient).mockResolvedValue(supabase as never);
-    vi.mocked(getQuote).mockResolvedValue({ price: 100, asOf: new Date() } as never);
+    vi.mocked(getQuote).mockResolvedValue({ price: 100, asOf: new Date(), name: null, currency: "INR" } as never);
     vi.mocked(generateText).mockResolvedValue({
       text: RAW_RESPONSE
         .replace('"mode":"thesis_only"', '"mode":"stock_only"')

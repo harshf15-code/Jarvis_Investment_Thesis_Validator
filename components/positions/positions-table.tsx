@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { computeDistanceToStop, computePositionPnl } from "@/lib/position-metrics";
 import { formatCurrency } from "@/lib/format";
+import { currencyForExchange } from "@/lib/markets";
 import { ConvictionBadge } from "@/components/thesis/conviction-badge";
 import type { ConvictionTier, ExchangeCode, ThesisSource } from "@/lib/types";
 
@@ -85,7 +86,10 @@ export function PositionsTable({ rows }: { rows: PositionRow[] }) {
         <tbody>
           {sorted.map((row) => {
             const price = row.stock?.last_price ?? null;
-            const currency = row.stock?.currency ?? "USD";
+            // Exchange-aware, not a flat "USD": a row missing its currency is
+            // still on a known exchange, and labelling an NSE holding in
+            // dollars is the exact defect this column was added to remove.
+            const currency = row.stock?.currency ?? currencyForExchange(row.stock?.exchange ?? "US");
             const pnl = price !== null
               ? computePositionPnl({ currentPrice: price, avgEntry: row.weightedAverage.averagePrice, quantity: row.weightedAverage.totalQuantity })
               : null;

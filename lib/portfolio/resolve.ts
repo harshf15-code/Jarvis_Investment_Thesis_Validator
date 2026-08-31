@@ -83,7 +83,7 @@ export async function resolveImportRows(
         // exchange rate, which is exactly the failure one-market-per-batch
         // exists to prevent. Reject rather than convert: this app holds no FX
         // rate, and guessing one is how a book stops being true.
-        if (quote.currency !== null && quote.currency !== expected) {
+        if (quote.currency != null && quote.currency !== expected) {
           wrongCurrency.set(row.index, quote.currency);
           continue;
         }

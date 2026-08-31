@@ -50,7 +50,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const prices: Record<string, { price: number; asOf: string }> = {};
+  // `currency` rides along because the refresh is the path that CORRECTS a
+  // row seeded from `exchange` (0021). A caller holding a stale currency would
+  // otherwise keep rendering the old one until a full reload.
+  const prices: Record<string, { price: number; asOf: string; currency: string | null }> = {};
   // `stocks` is a shared cache that `authenticated` may read but not write
   // (0014), so the price write-back is service-role work.
   const stocksAdmin = createAdminClient();
@@ -58,7 +61,11 @@ export async function POST(request: NextRequest) {
   await mapWithConcurrency(stocks ?? [], MAX_CONCURRENT_QUOTES, async (stock) => {
     try {
       const quote = await getQuote(stock.yahoo_symbol);
-      prices[stock.id] = { price: quote.price, asOf: quote.asOf.toISOString() };
+      prices[stock.id] = {
+        price: quote.price,
+        asOf: quote.asOf.toISOString(),
+        currency: quote.currency,
+      };
       await stocksAdmin
         .from("stocks")
         .update({

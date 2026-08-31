@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 
+import { currencyForExchange } from "@/lib/markets";
 import { computeDistanceToStop } from "@/lib/position-metrics";
 import { DisciplineBanner } from "./discipline-banner";
 import { PositionsTable, type PositionRow } from "./positions-table";
@@ -42,7 +43,9 @@ export function PositionsPageClient({ rows }: { rows: PositionRow[] }) {
         <DisciplineBanner
           ticker={mostUrgent.position.ticker}
           currentPrice={mostUrgent.stock?.last_price ?? null}
-          currency={mostUrgent.stock?.currency ?? "USD"}
+          currency={
+            mostUrgent.stock?.currency ?? currencyForExchange(mostUrgent.stock?.exchange ?? "US")
+          }
           stopLoss={mostUrgent.tradePlan?.stop_loss ?? null}
           target1={mostUrgent.tradePlan?.target_1 ?? null}
           t1Trimmed={false}

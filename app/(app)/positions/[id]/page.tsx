@@ -74,6 +74,14 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
               if (!cancelled && quote) {
                 setCmp(quote.price);
                 setPriceAsOf(quote.asOf);
+                // The refresh is what corrects a currency seeded from
+                // `exchange` (0021), so take the corrected value with the
+                // price rather than rendering the stale one until a reload.
+                if (quote.currency) {
+                  setDetail((prev) =>
+                    prev?.stock ? { ...prev, stock: { ...prev.stock, currency: quote.currency } } : prev,
+                  );
+                }
               }
             }
           } catch {

@@ -84,6 +84,9 @@ describe("POST /api/prices/refresh", () => {
     expect(res.status).toBe(200);
     expect(body.prices.s1.price).toBe(150.25);
     expect(body.prices.s1.asOf).toBe("2026-08-27T10:00:00.000Z");
+    // Returned, not just written: a caller holding a currency seeded from
+    // `exchange` would otherwise render the stale one until a full reload.
+    expect(body.prices.s1.currency).toBe("USD");
     expect(body.prices.s2).toBeUndefined();
 
     // The price write-back must go through the service-role client: since 0014

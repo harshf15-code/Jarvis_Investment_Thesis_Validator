@@ -69,6 +69,13 @@ async function resolveCandidate(
         getQuote(yahooSymbol),
         getFundamentals(yahooSymbol).catch(() => ({})),
       ]);
+      // Priced in the wrong money means this is a different listing to the one
+      // the chosen market means — see the note in `app/api/theses/route.ts`.
+      // A candidate that reaches the comparative grid in another currency is
+      // compared against its peers as if the numbers were the same money.
+      if (quote.currency != null && quote.currency !== currencyForExchange(exchange)) {
+        continue;
+      }
       return {
         ticker,
         companyName,

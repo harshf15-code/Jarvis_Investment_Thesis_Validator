@@ -35,6 +35,12 @@ alter table stocks add column currency text;
 -- first time anything prices it rather than being trusted forever.
 update stocks set currency = case when exchange = 'US' then 'USD' else 'INR' end;
 
+-- `set not null` takes an ACCESS EXCLUSIVE lock and scans the table. That is
+-- the right form HERE: `stocks` is a shared ticker cache holding tens of rows,
+-- not a transaction log, so the scan is instant and the lock is held for
+-- microseconds. The NOT VALID / VALIDATE CONSTRAINT dance exists for tables
+-- where that is not true, and using it here would be ceremony that makes the
+-- migration harder to read without making it safer.
 alter table stocks alter column currency set not null;
 
 -- Deliberately not '^[A-Z]{3}$'. Yahoo reports LSE listings in 'GBp' -- pence,
