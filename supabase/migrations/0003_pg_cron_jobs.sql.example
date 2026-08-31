@@ -115,7 +115,42 @@ select cron.schedule(
   $$
 );
 
+-- The per-holding watch (0022).
+--
+-- Note this one does NOT point at an Edge Function. It is a Next.js route,
+-- because Deno cannot import `lib/llm/*` and a scheduled job that made model
+-- calls from Deno would have to reimplement the spend ledger alongside the
+-- original -- two answers to "what has this cost" is one too many. So the URL
+-- is the deployed app, not the Supabase functions host, and the bearer is a
+-- secret of its own rather than the service-role key (which must never leave
+-- Supabase for an app host).
+--
+--   1. set HOLDING_WATCH_SECRET in the app's environment
+--   2. store the SAME value in Vault:
+--        select vault.create_secret('<value>', 'holding_watch_secret');
+--
+-- HOURLY for a WEEKLY watch, deliberately. Each run drains WATCH_BATCH
+-- holdings that are due (`lib/holding-watch.ts`), so the work stays inside one
+-- function timeout however large the book grows, and the queue is ordered
+-- oldest-first so nothing starves. A holding is still only re-read every
+-- WATCH_INTERVAL_DAYS.
+select cron.schedule(
+  'holding-watch',
+  '17 * * * *',
+  $$
+  select net.http_post(
+    url := 'https://<APP_HOST>/api/portfolio/holding-watch',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'holding_watch_secret'),
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+
 -- To remove a schedule later:
 --   select cron.unschedule('poll-prices-nse');
 --   select cron.unschedule('poll-prices-us');
+--   select cron.unschedule('holding-watch');
 --   select cron.unschedule('daily-digest');

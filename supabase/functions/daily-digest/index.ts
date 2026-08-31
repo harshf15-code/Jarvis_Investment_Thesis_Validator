@@ -8,6 +8,7 @@ import {
   groupAlertsByStock,
   renderDigestHtml,
   renderDigestText,
+  type DigestSignal,
 } from "./email-template.ts";
 import { sendDigestEmail } from "./agentmail.ts";
 
@@ -101,49 +102,91 @@ Deno.serve(async (_req: Request) => {
   if (alertError) {
     return jsonResponse({ error: alertError.message }, 500);
   }
-  if (!alertRows || alertRows.length === 0) {
-    return jsonResponse({ sent: false, reason: "no unemailed alerts" }, 200);
+
+  // Feed rows the per-holding watch wrote (0022). Same lookback and the same
+  // `emailed_at` contract as alerts, so a signal is marked sent only after a
+  // confirmed send and a failed run simply retries it.
+  const { data: signalRows, error: signalError } = await supabase
+    .from("intelligence_signals")
+    .select("id, user_id, ticker, headline, priority, created_at")
+    .is("emailed_at", null)
+    .is("archived_at", null)
+    .gt("created_at", lookbackFloor)
+    .order("created_at", { ascending: true });
+
+  if (signalError) {
+    return jsonResponse({ error: signalError.message }, 500);
   }
 
-  const positionIds = [...new Set(alertRows.map((r) => r.position_id as string))];
-  const { data: positionRows, error: positionsError } = await supabase
-    .from("positions")
-    .select("id, ticker")
-    .in("id", positionIds);
+  const alerts = alertRows ?? [];
+  const signals = signalRows ?? [];
+  if (alerts.length === 0 && signals.length === 0) {
+    return jsonResponse({ sent: false, reason: "nothing unemailed" }, 200);
+  }
+
+  const positionIds = [...new Set(alerts.map((r) => r.position_id as string))];
+  const { data: positionRows, error: positionsError } = positionIds.length
+    ? await supabase
+        .from("positions")
+        .select("id, ticker")
+        .in("id", positionIds)
+    : { data: [], error: null };
   if (positionsError) {
     return jsonResponse({ error: positionsError.message }, 500);
   }
   const tickerByPositionId = new Map<string, string>(
-    (positionRows ?? []).map((p: { id: string; ticker: string }) => [p.id, p.ticker]),
+    (positionRows ?? []).map((p: { id: string; ticker: string }) => [
+      p.id,
+      p.ticker,
+    ]),
   );
 
   // Alerts predating accounts (and any whose owner has been deleted) group
   // under this key and go to the fallback address.
   const UNOWNED = "__unowned__";
-  const alertsByUser = new Map<string, typeof alertRows>();
-  for (const row of alertRows) {
+  const alertsByUser = new Map<string, typeof alerts>();
+  for (const row of alerts) {
     const key = (row.user_id as string | null) ?? UNOWNED;
     const list = alertsByUser.get(key) ?? [];
     list.push(row);
     alertsByUser.set(key, list);
   }
 
+  const signalsByUser = new Map<string, typeof signals>();
+  for (const row of signals) {
+    const key = (row.user_id as string | null) ?? UNOWNED;
+    const list = signalsByUser.get(key) ?? [];
+    list.push(row);
+    signalsByUser.set(key, list);
+  }
+
+  // Every recipient who has anything at all. A trader whose only news this run
+  // is a watch flag must still get an email.
+  const recipientKeys = [
+    ...new Set([...alertsByUser.keys(), ...signalsByUser.keys()]),
+  ];
+
   const fallbackTo = Deno.env.get("DIGEST_RECIPIENT_EMAIL") ?? null;
   const emailByUserId = await resolveRecipients(
     supabase,
-    [...alertsByUser.keys()].filter((k) => k !== UNOWNED),
+    recipientKeys.filter((k) => k !== UNOWNED),
   );
 
   const emailedAt = new Date().toISOString();
   let sentCount = 0;
   const failures: string[] = [];
 
-  for (const [userKey, rows] of alertsByUser) {
-    const to = userKey === UNOWNED ? fallbackTo : (emailByUserId.get(userKey) ?? fallbackTo);
+  for (const userKey of recipientKeys) {
+    const rows = alertsByUser.get(userKey) ?? [];
+    const userSignals = signalsByUser.get(userKey) ?? [];
+    const to =
+      userKey === UNOWNED
+        ? fallbackTo
+        : (emailByUserId.get(userKey) ?? fallbackTo);
     if (!to) {
       console.error(
         `daily-digest: no recipient for ${userKey} and DIGEST_RECIPIENT_EMAIL is unset; ` +
-          `${rows.length} alert(s) left unemailed for the next run`,
+          `${rows.length} alert(s) and ${userSignals.length} signal(s) left unemailed for the next run`,
       );
       failures.push(userKey);
       continue;
@@ -158,9 +201,19 @@ Deno.serve(async (_req: Request) => {
     }));
 
     const groups = groupAlertsByStock(enrichedRows);
+    const digestSignals: DigestSignal[] = userSignals.map((s) => ({
+      ticker: s.ticker as string | null,
+      headline: s.headline as string,
+      priority: s.priority as string,
+      created_at: s.created_at as string,
+    }));
 
     try {
-      await sendDigestEmail(renderDigestHtml(groups), renderDigestText(groups), to);
+      await sendDigestEmail(
+        renderDigestHtml(groups, digestSignals),
+        renderDigestText(groups, digestSignals),
+        to,
+      );
     } catch (err) {
       // Left `emailed_at is null` on purpose so the next scheduled run
       // retries them, rather than dropping alerts on a transient failure.
@@ -174,21 +227,26 @@ Deno.serve(async (_req: Request) => {
     // Chunked (`EMAILED_UPDATE_BATCH_SIZE` ids per `.in(...)` call) rather
     // than one call with every id, so a large backlog can never produce a
     // single request whose URL is too long for PostgREST.
-    for (const idBatch of chunk(rows.map((r) => r.id), EMAILED_UPDATE_BATCH_SIZE)) {
-      const { error: updateError } = await supabase
-        .from("position_alerts")
-        .update({ emailed_at: emailedAt })
-        .in("id", idBatch);
+    for (const [table, ids] of [
+      ["position_alerts", rows.map((r) => r.id)],
+      ["intelligence_signals", userSignals.map((r) => r.id)],
+    ] as const) {
+      for (const idBatch of chunk(ids as string[], EMAILED_UPDATE_BATCH_SIZE)) {
+        const { error: updateError } = await supabase
+          .from(table)
+          .update({ emailed_at: emailedAt })
+          .in("id", idBatch);
 
-      if (updateError) {
-        // The email already went out at this point; failing to mark rows
-        // emailed means the next run may re-send them. Surface it loudly
-        // rather than silently swallowing it.
-        console.error(
-          `daily-digest: email sent to ${userKey} but failed to mark rows emailed`,
-          updateError,
-        );
-        failures.push(userKey);
+        if (updateError) {
+          // The email already went out at this point; failing to mark rows
+          // emailed means the next run may re-send them. Surface it loudly
+          // rather than silently swallowing it.
+          console.error(
+            `daily-digest: email sent to ${userKey} but failed to mark rows emailed`,
+            updateError,
+          );
+          failures.push(userKey);
+        }
       }
     }
 
@@ -199,7 +257,8 @@ Deno.serve(async (_req: Request) => {
     {
       sent: sentCount > 0,
       recipients: sentCount,
-      alertCount: alertRows.length,
+      alertCount: alerts.length,
+      signalCount: signals.length,
       failures,
     },
     failures.length > 0 && sentCount === 0 ? 502 : 200,

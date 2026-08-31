@@ -1,3 +1,4 @@
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { LlmBudgetStatus } from "@/lib/types";
 
@@ -87,11 +88,18 @@ export function evaluateBudget(status: LlmBudgetStatus): BudgetVerdict {
 }
 
 /**
- * Reads this session's spend and decides whether it may spend more.
+ * Reads a user's spend and decides whether they may spend more.
  *
- * Runs through the user's own client, and `llm_budget_status()` takes no
- * argument — it answers only for `auth.uid()`, so this cannot be pointed at
- * another account.
+ * Called with no argument it runs through the user's OWN client against
+ * `llm_budget_status()`, which takes no parameter and answers only for
+ * `auth.uid()` — so a request cannot point it at another account.
+ *
+ * `userId` is for the one caller that has no session to read: the scheduled
+ * holding watch acts as nobody, so `auth.uid()` is null there and the check
+ * would have passed unconditionally — spending model calls on every account's
+ * behalf while applying nobody's cap. That path goes through the service-role
+ * client and `llm_budget_status_for(uid)`, which is the SAME rule with the
+ * user named explicitly (0022), and which `authenticated` cannot execute.
  *
  * FAILS CLOSED. An earlier version allowed the call when the read failed, on
  * the grounds that a transient database hiccup should not block every analysis.
@@ -101,9 +109,11 @@ export function evaluateBudget(status: LlmBudgetStatus): BudgetVerdict {
  * bought very little, since a database that cannot answer this query cannot
  * serve the rest of the request either.
  */
-export async function checkBudget(): Promise<BudgetVerdict> {
-  const supabase = await createClient();
-  const { data, error } = await supabase.rpc("llm_budget_status");
+export async function checkBudget(userId?: string): Promise<BudgetVerdict> {
+  const { data, error } =
+    userId === undefined
+      ? await (await createClient()).rpc("llm_budget_status")
+      : await createAdminClient().rpc("llm_budget_status_for", { uid: userId });
   const status = data?.[0];
   if (error || !status) {
     return {

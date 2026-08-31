@@ -30,6 +30,7 @@ function buildSupabaseMock(opts: { held?: string[]; failOn?: string } = {}) {
     trade_plans: [] as unknown[][],
     positions: [] as unknown[][],
     entries: [] as unknown[][],
+    holding_watch_state: [] as unknown[][],
     deletedThesisIds: null as string[] | null,
     batchUpdates: [] as Table[],
     profileUpserts: [] as Table[],
@@ -86,6 +87,7 @@ function buildSupabaseMock(opts: { held?: string[]; failOn?: string } = {}) {
       }
       if (table === "trade_plans") return { insert: insertFor("trade_plans") };
       if (table === "entries") return { insert: insertFor("entries") };
+      if (table === "holding_watch_state") return { insert: insertFor("holding_watch_state") };
       if (table === "portfolio_profiles") {
         return {
           upsert: vi.fn().mockImplementation(async (patch: Table) => {
@@ -185,6 +187,44 @@ describe("POST /api/portfolio/imports", () => {
       import_batch_id: "batch-1",
       input_text: "Cheap on cash flows",
     });
+  });
+
+  it("queues an initial Jarvis read per holding rather than running one inline", async () => {
+    // A 200-row import fanning out 200 model calls inside a 120s route would
+    // blow the timeout and the spend cap in one action, and would fail the
+    // import for a reason that has nothing to do with importing. The row with
+    // a null `last_checked_at` IS the queue.
+    await POST(
+      post({
+        rows: [
+          { ticker: "INFY", quantity: 10, averagePrice: 1500 },
+          { ticker: "TCS", quantity: 5, averagePrice: 3200 },
+        ],
+      }),
+    );
+
+    const { holding_watch_state, positions } = supabase._calls;
+    expect(holding_watch_state).toHaveLength(1);
+    const queued = holding_watch_state[0] as Record<string, unknown>[];
+    expect(queued).toHaveLength(2);
+    // Pointed at the positions this import just created, and unchecked.
+    const positionIds = (positions[0] as Record<string, unknown>[]).map((p) => p.id);
+    expect(queued.map((q) => q.position_id)).toEqual(positionIds);
+    expect(queued.every((q) => q.last_checked_at === undefined)).toBe(true);
+  });
+
+  it("still reports success when the watch queue write fails", async () => {
+    // The holdings are imported and correct; all that is lost is the queued
+    // first read, which the trader can trigger by hand. Unwinding a good
+    // import over a missing queue entry would be the worse trade.
+    const mock = buildSupabaseMock({ failOn: "holding_watch_state" });
+    vi.mocked(createClient).mockResolvedValue(mock as never);
+
+    const res = await POST(post({ rows: [{ ticker: "INFY", quantity: 10, averagePrice: 1500 }] }));
+
+    expect(res.status).toBe(201);
+    expect(mock._calls.deletedThesisIds).toBeNull();
+    expect((await res.json()).imported).toBe(1);
   });
 
   it("gives a holding with no note an input_text that says so", async () => {

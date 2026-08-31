@@ -42,7 +42,10 @@ export type LlmFeature =
   | "memorandum"
   | "council_opinion"
   | "council_synthesis"
-  | "journal";
+  | "journal"
+  | "holding_review"
+  | "portfolio_council_opinion"
+  | "portfolio_council_synthesis";
 
 /**
  * `reported` is OpenRouter's own charge for the call, read off the raw response
@@ -394,6 +397,9 @@ export type IntelligenceSignal = {
   headline: string;
   thesis_id: string | null;
   archived_at: string | null;
+  /** Set by `daily-digest` once this signal has actually been emailed (0022),
+   *  mirroring `position_alerts.emailed_at`. Null means unsent. */
+  emailed_at: string | null;
 };
 
 /** `opportunities` */
@@ -461,7 +467,111 @@ export type PortfolioProfile = {
   updated_at: string;
 };
 
+/**
+ * What made a `holding_reviews` row happen (0022).
+ *
+ * `manual` covers both the trader pressing "re-run this read" and the FIRST
+ * read on a freshly imported holding — in both cases nothing changed, someone
+ * simply asked. `scheduled` is reserved for a re-check the cadence forced with
+ * no trigger of its own.
+ */
+export type HoldingReviewTrigger =
+  | "manual"
+  | "earnings_calendar"
+  | "fundamentals_delta"
+  | "scheduled";
+
+/**
+ * `portfolio_council_reports` (0023) — one Council consult on the whole book.
+ *
+ * Append-only, unlike `thesis_council_reports`, which is keyed
+ * `unique (thesis_id, market)` and replaced in place. A memorandum is rewritten
+ * on every re-run so an old report on it is stale by definition; a portfolio is
+ * not rewritten, it changes, and comparing two dates is the point.
+ */
+export type PortfolioCouncilReportRow = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  document: Json;
+  /** What was reviewed and at what prices, so a report cannot silently read as
+   *  current once the book has moved on. */
+  holdings_snapshot: Json;
+  raw_llm_response: string | null;
+};
+
+/**
+ * `holding_reviews` (0022) — one Jarvis read of one holding, append-only.
+ *
+ * `document` is a `HoldingReview` from `lib/holding-watch.ts`, re-validated on
+ * read like every other JSONB document in this schema.
+ */
+export type HoldingReview = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  thesis_id: string;
+  position_id: string;
+  trigger: HoldingReviewTrigger;
+  document: Json;
+  raw_llm_response: string | null;
+};
+
+/**
+ * `holding_watch_state` (0022) — one row per watched position, updated in
+ * place. The only thing in the schema that makes "has this moved since last
+ * time" answerable; see the migration for why it is not an append-only
+ * snapshot table.
+ */
+export type HoldingWatchState = {
+  position_id: string;
+  user_id: string;
+  /** Null means never successfully reviewed — which is how an import queues one. */
+  last_checked_at: string | null;
+  /**
+   * When the drain last TRIED, whatever came of it. The queue is ordered on
+   * this, not on `last_checked_at`: a holding that fails every time keeps a
+   * null `last_checked_at` forever, so ordering on that would hand back the
+   * same doomed rows every hour and starve everything behind them.
+   */
+  last_attempted_at: string | null;
+  fundamentals: Json;
+  next_earnings_date: string | null;
+  last_earnings_seen: string | null;
+};
+
 // --- Insert types (columns with a SQL default or that are nullable become optional) ---
+
+export type PortfolioCouncilReportInsert = Pick<
+  PortfolioCouncilReportRow,
+  "document" | "holdings_snapshot"
+> &
+  Partial<Pick<PortfolioCouncilReportRow, "id" | "user_id" | "created_at" | "raw_llm_response">>;
+
+export type PortfolioCouncilReportUpdate = Partial<PortfolioCouncilReportInsert>;
+
+export type HoldingReviewInsert = Pick<
+  HoldingReview,
+  "thesis_id" | "position_id" | "trigger" | "document"
+> &
+  Partial<Pick<HoldingReview, "id" | "user_id" | "created_at" | "raw_llm_response">>;
+
+export type HoldingReviewUpdate = Partial<HoldingReviewInsert>;
+
+export type HoldingWatchStateInsert = Pick<HoldingWatchState, "position_id"> &
+  Partial<
+    Pick<
+      HoldingWatchState,
+      | "user_id"
+      | "last_checked_at"
+      | "last_attempted_at"
+      | "fundamentals"
+      | "next_earnings_date"
+      | "last_earnings_seen"
+    >
+  >;
+
+export type HoldingWatchStateUpdate = Partial<HoldingWatchStateInsert>;
 
 export type StockInsert = Pick<Stock, "ticker" | "yahoo_symbol" | "exchange" | "currency"> &
   Partial<Pick<Stock, "id" | "last_price" | "last_price_at" | "created_at">>;
@@ -656,7 +766,17 @@ export type PositionAlertInsert = Pick<
 
 export type IntelligenceSignalInsert = Pick<IntelligenceSignal, "priority" | "headline"> &
   Partial<
-    Pick<IntelligenceSignal, "id" | "created_at" | "ticker" | "theme" | "thesis_id" | "archived_at">
+    Pick<
+      IntelligenceSignal,
+      | "id"
+      | "user_id"
+      | "created_at"
+      | "ticker"
+      | "theme"
+      | "thesis_id"
+      | "archived_at"
+      | "emailed_at"
+    >
   >;
 
 export type OpportunityInsert = Pick<Opportunity, "ticker" | "market"> &
@@ -853,11 +973,35 @@ export interface Database {
         Update: PortfolioProfileUpdate;
         Relationships: [];
       };
+      portfolio_council_reports: {
+        Row: PortfolioCouncilReportRow;
+        Insert: PortfolioCouncilReportInsert;
+        Update: PortfolioCouncilReportUpdate;
+        Relationships: [];
+      };
+      holding_reviews: {
+        Row: HoldingReview;
+        Insert: HoldingReviewInsert;
+        Update: HoldingReviewUpdate;
+        Relationships: [];
+      };
+      holding_watch_state: {
+        Row: HoldingWatchState;
+        Insert: HoldingWatchStateInsert;
+        Update: HoldingWatchStateUpdate;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
       llm_budget_status: {
         Args: Record<string, never>;
+        Returns: LlmBudgetStatus[];
+      };
+      /** Same rule, told who to apply it to. Service-role only (0022) — a
+       *  scheduled job acts as no one, so it cannot read `auth.uid()`. */
+      llm_budget_status_for: {
+        Args: { uid: string };
         Returns: LlmBudgetStatus[];
       };
       llm_usage_by_feature: {
@@ -885,6 +1029,7 @@ export interface Database {
       council_member_source: CouncilMemberSource;
       llm_feature: LlmFeature;
       thesis_source: ThesisSource;
+      holding_review_trigger: HoldingReviewTrigger;
     };
     CompositeTypes: Record<string, never>;
   };

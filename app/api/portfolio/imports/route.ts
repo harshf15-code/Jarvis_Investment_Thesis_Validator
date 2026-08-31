@@ -9,6 +9,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type {
   EntryInsert,
+  HoldingWatchStateInsert,
   MarketCode,
   PortfolioImportError,
   PositionInsert,
@@ -213,6 +214,7 @@ export async function POST(request: Request) {
   const tradePlans: TradePlanInsert[] = [];
   const positions: PositionInsert[] = [];
   const entries: EntryInsert[] = [];
+  const watchState: HoldingWatchStateInsert[] = [];
 
   for (const row of accepted) {
     const note = input.rows[row.index]?.note?.trim();
@@ -263,6 +265,13 @@ export async function POST(request: Request) {
       tranche: "T1",
       notes: `Imported from ${input.source_filename}. Cost basis is a broker average; the date is approximate.`,
     });
+    // Queues the initial read rather than running it here (0022). A null
+    // `last_checked_at` is what the watch route drains first. Doing it inline
+    // would be one model call per holding inside a route with a 120s budget
+    // and a 200-row cap — a large import would blow the timeout, the spend cap
+    // and the trader's patience in one action, and would fail the import for a
+    // reason that has nothing to do with importing.
+    watchState.push({ position_id: positionId });
   }
 
   const thesisIds = theses.map((t) => t.id!);
@@ -291,6 +300,15 @@ export async function POST(request: Request) {
 
   const entryWrite = await supabase.from("entries").insert(entries);
   if (entryWrite.error) return failed(entryWrite.error.message);
+
+  const watchWrite = await supabase.from("holding_watch_state").insert(watchState);
+  if (watchWrite.error) {
+    // Deliberately NOT `failed()`. The holdings are imported and correct; all
+    // that is lost is the queued first read, which the trader can trigger by
+    // hand from the position page. Unwinding a good import over a missing
+    // queue entry would be the worse trade.
+    console.error("[portfolio-import] holdings imported but the watch was not queued", watchWrite.error);
+  }
 
   const { data: finished, error: finishError } = await supabase
     .from("portfolio_imports")

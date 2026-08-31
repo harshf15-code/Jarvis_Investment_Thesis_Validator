@@ -10,7 +10,20 @@ import { NextResponse, type NextRequest } from "next/server";
  * page, which offers them the cockpit instead of a sign-up button.
  */
 const AUTH_PATHS = ["/login", "/signup"];
-const PUBLIC_PATHS = ["/", ...AUTH_PATHS];
+
+/**
+ * Routes that carry their OWN authentication and must not be gated on a
+ * session cookie.
+ *
+ * `/api/portfolio/holding-watch` is called by `pg_cron`, which has no browser
+ * and no session. Without this the proxy answers it with a 307 to /login and
+ * the route never runs — the scheduled watch would appear healthy in cron's
+ * log and do nothing forever. It is not "public": it checks a bearer secret
+ * itself, and refuses outright when that secret is not configured.
+ */
+const SELF_AUTHENTICATED_PATHS = ["/api/portfolio/holding-watch"];
+
+const PUBLIC_PATHS = ["/", ...AUTH_PATHS, ...SELF_AUTHENTICATED_PATHS];
 
 /** Where a signed-in user lands: the cockpit, not the marketing page. */
 const HOME_PATH = "/dashboard";
