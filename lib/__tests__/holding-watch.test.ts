@@ -11,6 +11,8 @@ import {
   signalPriority,
   type WatchObservation,
   type WatchState,
+  importRationalePlaceholder,
+  statedRationale,
 } from "@/lib/holding-watch";
 
 const TODAY = "2026-08-31";
@@ -277,5 +279,31 @@ describe("the Feed row", () => {
       ],
     });
     expect(headline).toBe("TCS: earnings date 2026-09-04, 2 fundamentals moved — Jarvis leans STAY");
+  });
+});
+
+describe("statedRationale", () => {
+  it("returns null for the placeholder an import writes when no reason was given", () => {
+    expect(statedRationale(importRationalePlaceholder("HAL"), "HAL")).toBeNull();
+  });
+
+  it("returns null for a blank or missing reason", () => {
+    expect(statedRationale(null, "HAL")).toBeNull();
+    expect(statedRationale("   ", "HAL")).toBeNull();
+  });
+
+  it("keeps the trader's own words verbatim, including whitespace they chose", () => {
+    expect(statedRationale("Defence order book.\n\nRe-rating.", "HAL")).toBe(
+      "Defence order book.\n\nRe-rating.",
+    );
+  });
+
+  it("does not mistake ANOTHER ticker's placeholder for a placeholder", () => {
+    // The comparison is ticker-specific on purpose: text that happens to read
+    // like a placeholder for a different holding is still something the trader
+    // typed, and silently discarding it would lose a real reason.
+    expect(statedRationale(importRationalePlaceholder("INFY"), "HAL")).toBe(
+      importRationalePlaceholder("INFY"),
+    );
   });
 });

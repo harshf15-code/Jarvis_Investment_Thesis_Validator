@@ -12,6 +12,7 @@ import { LogTrimModal } from "@/components/positions/log-trim-modal";
 import { StopExitModal } from "@/components/positions/stop-exit-modal";
 import { ThesisMetricsPanel } from "@/components/positions/thesis-metrics-panel";
 import { DisciplineBanner } from "@/components/positions/discipline-banner";
+import { HoldingRationalePanel } from "@/components/positions/holding-rationale-panel";
 import { HoldingReviewsPanel } from "@/components/positions/reviews/holding-reviews-panel";
 import { PriceBadge } from "@/components/shared/price-badge";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
@@ -225,6 +226,19 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
           onLogStop={() => setStopModalOpen(true)}
         />
       </div>
+
+      {/* Imported holdings only. A Jarvis position already has a reason behind
+          it — the whole thesis — and the route refuses to rewrite that text. */}
+      {thesis?.source === "imported" && (
+        <div className="mt-6">
+          <HoldingRationalePanel
+            thesisId={thesis.id}
+            ticker={position.ticker}
+            inputText={thesis.input_text}
+            onSaved={() => setReloadKey((k) => k + 1)}
+          />
+        </div>
+      )}
 
       <div className="mt-6">
         <HoldingReviewsPanel

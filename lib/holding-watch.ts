@@ -468,3 +468,30 @@ export function signalPriority(lean: HoldingLean): "red" | "amber" | "blue" {
   if (lean === "TRIM") return "amber";
   return "blue";
 }
+
+/**
+ * What an import writes into `theses.input_text` when the trader gave no
+ * reason. The column is NOT NULL, so it always says something.
+ *
+ * This lives here, next to the watch that reads it, because two copies of this
+ * string is a silent bug: the import writes it and the review path compares
+ * against it, and the day one is reworded the other stops matching. The review
+ * would then hand the model "Imported holding — HAL." as a stated thesis and
+ * ask it to judge whether that still holds.
+ */
+export function importRationalePlaceholder(ticker: string): string {
+  return `Imported holding — ${ticker}. No stated reason recorded at import.`;
+}
+
+/**
+ * The trader's own words, or `null` when all that was ever recorded is the
+ * placeholder above. Null is the honest value — the review prompt handles
+ * "no stated reason" explicitly and says so in its answer, which is a far
+ * better outcome than grading a sentence the trader never wrote.
+ */
+export function statedRationale(inputText: string | null, ticker: string): string | null {
+  if (!inputText) return null;
+  const trimmed = inputText.trim();
+  if (trimmed === "" || trimmed === importRationalePlaceholder(ticker)) return null;
+  return inputText;
+}
