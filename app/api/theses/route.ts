@@ -11,7 +11,7 @@ import { parseThesisResponse } from "@/lib/jarvis-thesis-parser";
 import { checkBudget } from "@/lib/llm/budget";
 import { meteredGenerateText } from "@/lib/llm/meter";
 import { getFundamentals, getQuote, resolveYahooSymbol } from "@/lib/market-data";
-import { isLiveMarket, exchangesFor } from "@/lib/markets";
+import { currencyForExchange, isLiveMarket, exchangesFor } from "@/lib/markets";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { listTheses } from "@/lib/queries";
@@ -58,7 +58,7 @@ function errorMessage(err: unknown): string {
 async function tryResolveTicker(
   ticker: string,
   exchanges: readonly ExchangeCode[],
-): Promise<{ exchange: ExchangeCode; yahooSymbol: string; price: number; priceAsOf: Date; fundamentals: Record<string, string | number> } | null> {
+): Promise<{ exchange: ExchangeCode; yahooSymbol: string; price: number; priceAsOf: Date; currency: string; fundamentals: Record<string, string | number> } | null> {
   for (const exchange of exchanges) {
     const yahooSymbol = resolveYahooSymbol(ticker, exchange);
     try {
@@ -66,7 +66,14 @@ async function tryResolveTicker(
         getQuote(yahooSymbol),
         getFundamentals(yahooSymbol).catch(() => ({})),
       ]);
-      return { exchange, yahooSymbol, price: quote.price, priceAsOf: quote.asOf, fundamentals };
+      return {
+        exchange,
+        yahooSymbol,
+        price: quote.price,
+        priceAsOf: quote.asOf,
+        currency: quote.currency ?? currencyForExchange(exchange),
+        fundamentals,
+      };
     } catch {
       continue;
     }
@@ -141,6 +148,7 @@ export async function POST(request: NextRequest) {
           ticker: heuristicTicker!,
           yahoo_symbol: resolved.yahooSymbol,
           exchange: resolved.exchange,
+          currency: resolved.currency,
           last_price: resolved.price,
           last_price_at: resolved.priceAsOf.toISOString(),
         })

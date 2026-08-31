@@ -94,10 +94,17 @@ export async function withRetry<T>(
  * that `BAJAJ-AUTO` is the company they think it is before anything is
  * written. Nothing persists it — `stocks` has no name column — so it is a
  * display value only, and `null` is a fine answer.
+ *
+ * `currency` is what the exchange actually quotes this listing in, and it IS
+ * persisted (0021). It comes back on the same response as the price at no
+ * extra cost, and taking it from the source is the whole point: deriving it
+ * from `exchange` is what produced a Cockpit total that added rupees to
+ * dollars. `null` when Yahoo omits it, which callers resolve against the
+ * market they asked for.
  */
 export async function getQuote(
   yahooSymbol: string,
-): Promise<{ price: number; asOf: Date; name: string | null }> {
+): Promise<{ price: number; asOf: Date; name: string | null; currency: string | null }> {
   const quote = await withRetry(() => yahooFinance.quote(yahooSymbol));
 
   if (
@@ -116,6 +123,7 @@ export async function getQuote(
     // than failing the whole call over a missing timestamp.
     asOf: quote.regularMarketTime ?? new Date(),
     name: quote.longName ?? quote.shortName ?? null,
+    currency: quote.currency ?? null,
   };
 }
 

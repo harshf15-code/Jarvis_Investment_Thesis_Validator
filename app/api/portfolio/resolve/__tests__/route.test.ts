@@ -47,11 +47,17 @@ function post(body: Record<string, unknown>) {
   }) as never;
 }
 
-/** Quotes for exactly the symbols listed; everything else throws, as Yahoo does. */
-function quotesFor(symbols: Record<string, string>) {
+/**
+ * Quotes for exactly the symbols listed; everything else throws, as Yahoo
+ * does. A value may be a bare name (quoted in INR, the India default) or a
+ * `[name, currency]` pair for the cases that turn on what money it is.
+ */
+function quotesFor(symbols: Record<string, string | [string, string]>) {
   vi.mocked(getQuote).mockImplementation(async (symbol: string) => {
     if (symbol in symbols) {
-      return { price: 1600, asOf: new Date("2026-08-31T10:00:00Z"), name: symbols[symbol] };
+      const entry = symbols[symbol];
+      const [name, currency] = Array.isArray(entry) ? entry : [entry, "INR"];
+      return { price: 1600, asOf: new Date("2026-08-31T10:00:00Z"), name, currency };
     }
     throw new Error("not found");
   });
@@ -146,6 +152,36 @@ describe("POST /api/portfolio/resolve", () => {
     const body = await res.json();
     expect(body.rows[0].status).toBe("duplicate");
     expect(body.rows[0].reason).toMatch(/more than once/);
+  });
+
+  it("refuses a listing quoted in a currency this market does not use", async () => {
+    // A US probe is a BARE ticker, so Yahoo is free to answer with a foreign
+    // listing — NESN is Swiss francs. Priced as dollars it would import a
+    // cost basis wrong by the exchange rate, on a row that looks perfect.
+    quotesFor({ NESN: ["Nestlé S.A.", "CHF"] });
+    const res = await POST(post({ market: "US", rows: [row({ ticker: "NESN" })] }));
+    const body = await res.json();
+    expect(body.rows[0].status).toBe("unresolved");
+    expect(body.rows[0].reason).toMatch(/CHF, not USD/);
+    expect(body.rows[0].currency).toBe(null);
+  });
+
+  it("reports the currency of a listing it accepts", async () => {
+    const body = await (await POST(post({ rows: [row()] }))).json();
+    expect(body.rows[0]).toMatchObject({ status: "resolved", currency: "INR" });
+  });
+
+  it("accepts a quote that names no currency at all", async () => {
+    // Yahoo occasionally omits it. Falling back to the market the trader
+    // named is right for every exchange this app can currently resolve.
+    vi.mocked(getQuote).mockResolvedValue({
+      price: 1600,
+      asOf: new Date("2026-08-31T10:00:00Z"),
+      name: "Infosys Limited",
+      currency: null,
+    } as never);
+    const body = await (await POST(post({ rows: [row()] }))).json();
+    expect(body.rows[0]).toMatchObject({ status: "resolved", currency: "INR" });
   });
 
   it("refuses a row whose date is not a real calendar day", async () => {

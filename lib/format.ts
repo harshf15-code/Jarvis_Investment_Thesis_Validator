@@ -1,22 +1,28 @@
 /**
- * Currency formatting shared by every screen that renders a stock's price in
- * its native exchange currency (US -> USD, NSE/BSE -> INR).
+ * Currency and exchange-timezone formatting, shared by every screen that
+ * renders a stock's price or stamps a time against one.
  *
  * Pulled out of `components/dashboard/stock-card.tsx` and
  * `app/(app)/stocks/[id]/page.tsx` (Task 12 polish pass) — both had the
  * identical `Intl.NumberFormat` logic duplicated verbatim.
  */
 
-import type { ExchangeCode, Stock } from "@/lib/types";
+import { localeForCurrency } from "@/lib/markets";
+import type { ExchangeCode } from "@/lib/types";
 
-export function formatCurrency(
-  value: number,
-  exchange: Stock["exchange"],
-): string {
-  const isUS = exchange === "US";
-  return new Intl.NumberFormat(isUS ? "en-US" : "en-IN", {
+/**
+ * Renders an amount in the currency the stock actually trades in.
+ *
+ * Takes a currency, not an exchange. It used to take an exchange and read
+ * `exchange === "US" ? USD : INR`, which was a binary that labelled every
+ * non-US listing as rupees — correct only for as long as the universe stayed
+ * NSE/BSE/US, and wrong the moment it does not. `stocks.currency` (0021) is
+ * the source now, and it comes off the quote itself.
+ */
+export function formatCurrency(value: number, currency: string): string {
+  return new Intl.NumberFormat(localeForCurrency(currency), {
     style: "currency",
-    currency: isUS ? "USD" : "INR",
+    currency,
     maximumFractionDigits: 2,
   }).format(value);
 }

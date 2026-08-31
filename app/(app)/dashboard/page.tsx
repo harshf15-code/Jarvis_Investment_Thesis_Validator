@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 
-import { PortfolioSummary } from "@/components/cockpit/portfolio-summary";
+import { PortfolioSummary, type CurrencyTotal } from "@/components/cockpit/portfolio-summary";
 import { AlertRail } from "@/components/cockpit/alert-rail";
 import { PositionsTable, type PositionRow } from "@/components/positions/positions-table";
 import {
@@ -15,12 +15,11 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { LastUpdated } from "@/components/shared/last-updated";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
 import { useNewThesisDrawer } from "@/components/layout/new-thesis-context";
-import type { ExchangeCode } from "@/lib/types";
 
 type Cockpit = {
   positions: PositionRow[];
   recommendations: RecommendationStatsRow[];
-  totalOpenPnl: { absolute: number; percent: number };
+  totalsByCurrency: CurrencyTotal[];
   overdueTickers: string[];
 };
 
@@ -79,13 +78,6 @@ export default function CockpitPage() {
     (r) => !r.recommendation.converted_to_position,
   ).length;
 
-  // The book's currency, when it has exactly one — a total that mixes NSE and
-  // US positions can't be stamped with a single symbol (see PortfolioSummary).
-  const exchanges = new Set(
-    data.positions.map((r) => r.stock?.exchange).filter((e): e is ExchangeCode => e != null),
-  );
-  const summaryExchange = exchanges.size === 1 ? [...exchanges][0] : null;
-
   // Spec Section 5: the freshest quote behind anything on this screen, stamped
   // in its own exchange's timezone. Prices are never polled — this reflects
   // whatever the last on-demand refresh stored.
@@ -113,8 +105,7 @@ export default function CockpitPage() {
       </div>
 
       <PortfolioSummary
-        totalOpenPnl={data.totalOpenPnl}
-        exchange={summaryExchange}
+        totalsByCurrency={data.totalsByCurrency}
         positionCount={data.positions.length}
         pendingRecCount={pendingRecCount}
       />

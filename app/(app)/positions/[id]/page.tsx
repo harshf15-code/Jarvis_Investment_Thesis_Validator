@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 import { computePositionPnl, computeDistanceToStop } from "@/lib/position-metrics";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
+import { currencyForExchange } from "@/lib/markets";
 import { formatCurrency } from "@/lib/format";
 import { ExitLadder } from "@/components/positions/exit-ladder";
 import { LogTrimModal } from "@/components/positions/log-trim-modal";
@@ -120,6 +121,10 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
 
   const { position, entries, exits, tradePlan, thesis, stock } = detail;
   const exchange = stock?.exchange ?? "US";
+  // `exchange` still drives the timezone a price is stamped in; `currency`
+  // drives what the money is called. They are different questions and a US
+  // fallback is only defensible for the first one.
+  const currency = stock?.currency ?? currencyForExchange(exchange);
   const weightedAverage = computeWeightedAverageEntry(entries);
   const remaining = weightedAverage.totalQuantity - exits.reduce((sum, e) => sum + e.quantity, 0);
   const pnl =
@@ -135,7 +140,7 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
       <DisciplineBanner
         ticker={position.ticker}
         currentPrice={cmp}
-        exchange={exchange}
+        currency={currency}
         stopLoss={tradePlan.stop_loss}
         target1={tradePlan.target_1}
         t1Trimmed={exits.some((e) => e.type === "trim_t1")}
@@ -151,7 +156,7 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <PriceBadge price={cmp} exchange={exchange} />
+          <PriceBadge price={cmp} currency={currency} />
           <LastUpdated at={priceAsOf} exchange={exchange} />
         </div>
       </div>
@@ -161,7 +166,7 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
           <div className="rounded-xl bg-surface-container-low p-4">
             <p className="text-xs text-on-surface/50">Avg Entry</p>
             <p className="font-mono text-lg text-on-surface">
-              {formatCurrency(weightedAverage.averagePrice, exchange)}
+              {formatCurrency(weightedAverage.averagePrice, currency)}
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -173,20 +178,20 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
             </div>
             <div className="rounded-xl bg-surface-container-low p-4">
               <p className="text-xs text-on-surface/50">Dist. to Stop</p>
-              <p className={`font-mono text-lg ${distToStop && distToStop.rupees <= 0 ? "text-status-red" : "text-on-surface"}`}>
-                {distToStop ? formatCurrency(distToStop.rupees, exchange) : "—"}
+              <p className={`font-mono text-lg ${distToStop && distToStop.absolute <= 0 ? "text-status-red" : "text-on-surface"}`}>
+                {distToStop ? formatCurrency(distToStop.absolute, currency) : "—"}
               </p>
             </div>
             <div className="rounded-xl bg-surface-container-low p-4">
               <p className="text-xs text-on-surface/50">Dist. to T1</p>
               <p className="font-mono text-lg text-on-surface">
-                {distToT1 !== null ? formatCurrency(distToT1, exchange) : "—"}
+                {distToT1 !== null ? formatCurrency(distToT1, currency) : "—"}
               </p>
             </div>
             <div className="rounded-xl bg-surface-container-low p-4">
               <p className="text-xs text-on-surface/50">Dist. to T2</p>
               <p className="font-mono text-lg text-on-surface">
-                {distToT2 !== null ? formatCurrency(distToT2, exchange) : "—"}
+                {distToT2 !== null ? formatCurrency(distToT2, currency) : "—"}
               </p>
             </div>
           </div>

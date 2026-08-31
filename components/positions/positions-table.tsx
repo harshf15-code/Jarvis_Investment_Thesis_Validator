@@ -13,7 +13,9 @@ export type PositionRow = {
   // `last_price_at` is what the Cockpit's <LastUpdated/> stamps (spec Section
   // 5: every screen showing a price says when it was taken); it's optional
   // here because this table itself never reads it.
-  stock: { last_price: number | null; last_price_at?: string | null; exchange: ExchangeCode } | undefined;
+  stock:
+    | { last_price: number | null; last_price_at?: string | null; exchange: ExchangeCode; currency: string }
+    | undefined;
   tradePlan: {
     stop_loss: number | null;
     target_1: number | null;
@@ -83,7 +85,7 @@ export function PositionsTable({ rows }: { rows: PositionRow[] }) {
         <tbody>
           {sorted.map((row) => {
             const price = row.stock?.last_price ?? null;
-            const exchange = row.stock?.exchange ?? "US";
+            const currency = row.stock?.currency ?? "USD";
             const pnl = price !== null
               ? computePositionPnl({ currentPrice: price, avgEntry: row.weightedAverage.averagePrice, quantity: row.weightedAverage.totalQuantity })
               : null;
@@ -108,13 +110,13 @@ export function PositionsTable({ rows }: { rows: PositionRow[] }) {
                     </span>
                   )}
                 </td>
-                <td className="p-3 font-mono tabular-nums">{formatCurrency(row.weightedAverage.averagePrice, exchange)}</td>
-                <td className="p-3 font-mono tabular-nums">{price !== null ? formatCurrency(price, exchange) : "Price unavailable"}</td>
+                <td className="p-3 font-mono tabular-nums">{formatCurrency(row.weightedAverage.averagePrice, currency)}</td>
+                <td className="p-3 font-mono tabular-nums">{price !== null ? formatCurrency(price, currency) : "Price unavailable"}</td>
                 <td className={`p-3 font-mono tabular-nums ${pnl && pnl.percent >= 0 ? "text-status-green" : "text-status-red"}`}>
                   {pnl ? `${pnl.percent >= 0 ? "+" : ""}${pnl.percent.toFixed(2)}%` : "—"}
                 </td>
-                <td className={`p-3 font-mono tabular-nums ${dist && dist.rupees <= 0 ? "text-status-red" : ""}`}>
-                  {dist ? formatCurrency(dist.rupees, exchange) : "—"}
+                <td className={`p-3 font-mono tabular-nums ${dist && dist.absolute <= 0 ? "text-status-red" : ""}`}>
+                  {dist ? formatCurrency(dist.absolute, currency) : "—"}
                 </td>
                 <td className="p-3">{t1Hit ? <span className="text-status-green">HIT</span> : "—"}</td>
                 <td className="p-3">{t2Hit ? <span className="text-status-green">HIT</span> : "—"}</td>

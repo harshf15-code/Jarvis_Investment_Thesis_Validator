@@ -10,19 +10,25 @@ export function computePositionPnl(input: {
 }
 
 /**
- * Rupee/percent distance from current price down to the stop. Used to
- * drive HUB-2's default "nearest stop first" sort (US-03) — a SMALLER
- * `rupees`/`percent` (including negative, meaning already through the
- * stop) sorts first.
+ * Distance from current price down to the stop, in the stock's own currency
+ * and in percent. Used to drive HUB-2's default "nearest stop first" sort
+ * (US-03) — a SMALLER `absolute`/`percent` (including negative, meaning
+ * already through the stop) sorts first.
+ *
+ * `absolute`, not `rupees`: the field has held dollars for every US position
+ * since the day this app got a second market, and a name that says otherwise
+ * is the same class of mistake as `formatCurrency` deriving INR from an
+ * exchange. Sorting on `percent` is what makes the sort currency-safe;
+ * `absolute` is only ever rendered next to its own currency symbol.
  */
 export function computeDistanceToStop(input: {
   currentPrice: number;
   stopLoss: number | null;
-}): { rupees: number; percent: number } | null {
+}): { absolute: number; percent: number } | null {
   if (input.stopLoss === null) return null;
-  const rupees = input.currentPrice - input.stopLoss;
-  const percent = (rupees / input.currentPrice) * 100;
-  return { rupees, percent };
+  const absolute = input.currentPrice - input.stopLoss;
+  const percent = (absolute / input.currentPrice) * 100;
+  return { absolute, percent };
 }
 
 /** Default "danger zone" width for HUB-1's near-stop alert (spec US-01: within 3% of the stop). */

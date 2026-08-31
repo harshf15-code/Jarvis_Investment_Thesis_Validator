@@ -205,6 +205,13 @@ export type ResolvedImportRow = DraftImportRow & {
   exchange: ExchangeCode | null;
   yahooSymbol: string | null;
   lastPrice: number | null;
+  /**
+   * What the listing is quoted in. Non-null exactly when `yahooSymbol` is:
+   * a row that never priced has no currency to report, and a row that priced
+   * in a currency the chosen market does not use never gets this far — see
+   * `resolveImportRows`.
+   */
+  currency: string | null;
 };
 
 /**

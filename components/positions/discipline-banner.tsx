@@ -1,13 +1,12 @@
 "use client";
 
 import { formatCurrency } from "@/lib/format";
-import type { ExchangeCode } from "@/lib/types";
 
 /** Spec US-04. Blocking red banner when at/through stop; non-blocking amber toast-style bar when a target has been reached but not yet trimmed. */
 export function DisciplineBanner({
   ticker,
   currentPrice,
-  exchange,
+  currency,
   stopLoss,
   target1,
   t1Trimmed,
@@ -16,7 +15,7 @@ export function DisciplineBanner({
 }: {
   ticker: string;
   currentPrice: number | null;
-  exchange: ExchangeCode;
+  currency: string;
   stopLoss: number | null;
   target1: number | null;
   t1Trimmed: boolean;
@@ -29,7 +28,7 @@ export function DisciplineBanner({
     return (
       <div className="mb-4 flex items-center justify-between rounded-xl bg-status-red-container px-4 py-3">
         <span className="text-sm font-medium text-status-red">
-          Stop Hit — {ticker} at {formatCurrency(currentPrice, exchange)}. Exit required.
+          Stop Hit — {ticker} at {formatCurrency(currentPrice, currency)}. Exit required.
         </span>
         <button type="button" onClick={onExitNow} className="rounded-lg bg-status-red px-3 py-1.5 text-xs font-medium text-on-primary">
           Exit Now

@@ -62,24 +62,36 @@ export async function GET() {
   const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
   const thesisById = new Map((theses ?? []).map((t) => [t.id, t]));
 
-  // Both sides of the percent are restricted to the same set of positions —
+  // Totalled PER CURRENCY, never blended.
+  //
+  // This used to be two scalars summed across the whole book, which added
+  // rupees to dollars and then divided one mixed sum by another to get a
+  // percentage. It was invisible while a book held one currency and became
+  // easy to hit the moment holdings could be imported. There is no honest
+  // single number here without an exchange rate, this app holds none, and a
+  // stale rate misstates a portfolio silently — so the answer is several
+  // correct numbers rather than one convenient wrong one.
+  //
+  // Both sides of each percent are restricted to the same set of positions —
   // the shares still held (entries minus exits) of a position that actually
   // has a quoted price. Dividing a remainder-only P&L by the full original
   // cost basis would understate the return of every partially-exited position.
-  let totalAbsolute = 0;
-  let totalCostBasis = 0;
+  const totals = new Map<string, { absolute: number; costBasis: number; positions: number }>();
   const positionResult = positionRows.map((p) => {
     const stock = stockById.get(p.stock_id);
     const tradePlan = tradePlanById.get(p.trade_plan_id);
     const weightedAverage = computeWeightedAverageEntry(entriesByPosition.get(p.id) ?? []);
     const remaining = weightedAverage.totalQuantity - (exitedByPosition.get(p.id) ?? 0);
     if (stock?.last_price != null && remaining > 0) {
-      totalAbsolute += computePositionPnl({
+      const bucket = totals.get(stock.currency) ?? { absolute: 0, costBasis: 0, positions: 0 };
+      bucket.absolute += computePositionPnl({
         currentPrice: stock.last_price,
         avgEntry: weightedAverage.averagePrice,
         quantity: remaining,
       }).absolute;
-      totalCostBasis += weightedAverage.averagePrice * remaining;
+      bucket.costBasis += weightedAverage.averagePrice * remaining;
+      bucket.positions += 1;
+      totals.set(stock.currency, bucket);
     }
     return {
       position: p,
@@ -90,10 +102,17 @@ export async function GET() {
     };
   });
 
-  const totalOpenPnl = {
-    absolute: totalAbsolute,
-    percent: totalCostBasis > 0 ? (totalAbsolute / totalCostBasis) * 100 : 0,
-  };
+  // Largest book first, so the dominant currency leads rather than whichever
+  // position happened to be priced first.
+  const totalsByCurrency = [...totals.entries()]
+    .map(([currency, t]) => ({
+      currency,
+      absolute: t.absolute,
+      costBasis: t.costBasis,
+      percent: t.costBasis > 0 ? (t.absolute / t.costBasis) * 100 : 0,
+      positions: t.positions,
+    }))
+    .sort((a, b) => b.costBasis - a.costBasis);
 
   // De-duplicated: two open positions can sit on the same ticker (separate
   // theses), and the rail should show one chip per ticker, not one per row.
@@ -119,5 +138,5 @@ export async function GET() {
     stock: recStockById.get(r.stock_id),
   }));
 
-  return NextResponse.json({ positions: positionResult, recommendations, totalOpenPnl, overdueTickers });
+  return NextResponse.json({ positions: positionResult, recommendations, totalsByCurrency, overdueTickers });
 }

@@ -1,6 +1,6 @@
 import { MAX_CONCURRENT_QUOTES, mapWithConcurrency } from "@/lib/concurrency";
 import { getQuote, resolveYahooSymbol } from "@/lib/market-data";
-import { exchangesFor } from "@/lib/markets";
+import { currencyForMarket, exchangesFor } from "@/lib/markets";
 import {
   repeatedTickerIndices,
   rowValidationError,
@@ -59,6 +59,7 @@ export async function resolveImportRows(
     exchange: null,
     yahooSymbol: null,
     lastPrice: null,
+    currency: null,
   }));
 
   // Price every row that is structurally sound — including likely duplicates,
@@ -66,15 +67,31 @@ export async function resolveImportRows(
   // is before deciding.
   const priceable = resolved.filter((row) => rowValidationError(row) === null);
 
+  // What every listing in this batch must be quoted in. A quote in anything
+  // else did not come from the market the trader named.
+  const expected = currencyForMarket(market);
+  const wrongCurrency = new Map<number, string>();
+
   await mapWithConcurrency(priceable, MAX_CONCURRENT_QUOTES, async (row) => {
     for (const exchange of exchanges) {
       const yahooSymbol = resolveYahooSymbol(row.ticker, exchange);
       try {
         const quote = await getQuote(yahooSymbol);
+        // A US probe is a BARE ticker, so Yahoo is free to answer with a
+        // foreign listing — `NESN` is Swiss francs, not dollars. Priced in the
+        // wrong money it would import as a plausible cost basis off by the
+        // exchange rate, which is exactly the failure one-market-per-batch
+        // exists to prevent. Reject rather than convert: this app holds no FX
+        // rate, and guessing one is how a book stops being true.
+        if (quote.currency !== null && quote.currency !== expected) {
+          wrongCurrency.set(row.index, quote.currency);
+          continue;
+        }
         row.exchange = exchange;
         row.yahooSymbol = yahooSymbol;
         row.companyName = quote.name;
         row.lastPrice = quote.price;
+        row.currency = quote.currency ?? expected;
         return;
       } catch {
         // Not listed on this exchange, or Yahoo is unhappy. Try the next one;
@@ -91,7 +108,11 @@ export async function resolveImportRows(
       row.reason = invalid;
     } else if (row.yahooSymbol === null) {
       row.status = "unresolved";
-      row.reason = `No listing found for ${row.ticker} in this market`;
+      const wrong = wrongCurrency.get(row.index);
+      row.reason =
+        wrong !== undefined
+          ? `${row.ticker} priced in ${wrong}, not ${expected} — that is a different listing to the one this market means`
+          : `No listing found for ${row.ticker} in this market`;
     } else if (repeats.has(position) || knownRepeatSet.has(row.index)) {
       row.status = "duplicate";
       row.reason = `${row.ticker} appears more than once in this file`;
