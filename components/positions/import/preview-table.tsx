@@ -105,7 +105,7 @@ export function PreviewTable({
                     <input
                       value={notes[row.index] ?? ""}
                       onChange={(e) => onNote(row.index, e.target.value)}
-                      placeholder="Optional"
+                      placeholder="e.g. lending growth + cheap vs peers"
                       maxLength={2000}
                       className="sunken w-48 rounded-lg px-2.5 py-1.5 text-xs text-on-surface placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary/40 focus:outline-none"
                     />

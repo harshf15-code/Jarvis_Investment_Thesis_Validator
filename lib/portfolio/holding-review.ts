@@ -6,6 +6,7 @@ import {
   parseHoldingRead,
   signalHeadline,
   signalPriority,
+  statedRationale,
   HOLDING_REVIEW_SYSTEM_PROMPT,
   type WatchState,
 } from "@/lib/holding-watch";
@@ -284,15 +285,9 @@ export async function reviewHolding(input: {
 }
 
 /**
- * The trader's own words, or null.
- *
- * An import writes a placeholder into `theses.input_text` because the column is
- * NOT NULL, and feeding that placeholder to the model as a stated thesis would
- * have it solemnly assess "Imported holding — INFY" as a reason to own
- * something. Null is the honest value, and the prompt handles it explicitly.
+ * The trader's own words, or null. Delegates to `statedRationale` so the
+ * placeholder string has exactly one definition (see `lib/holding-watch.ts`).
  */
 function rationaleFrom(inputText: string | null, ticker: string): string | null {
-  if (!inputText) return null;
-  const placeholder = `Imported holding — ${ticker}. No stated reason recorded at import.`;
-  return inputText.trim() === placeholder ? null : inputText;
+  return statedRationale(inputText, ticker);
 }

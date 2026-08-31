@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { currentUser } from "@/lib/auth/user";
+import { importRationalePlaceholder } from "@/lib/holding-watch";
 import { isLiveMarket } from "@/lib/markets";
 import { MAX_IMPORT_ROWS } from "@/lib/portfolio-import";
 import { resolveImportRows } from "@/lib/portfolio/resolve";
@@ -228,9 +229,7 @@ export async function POST(request: Request) {
       // NOT NULL, so it always says something. The trader's own words when
       // they gave them: a later per-holding review is only as grounded as this.
       input_text:
-        note && note.length > 0
-          ? note
-          : `Imported holding — ${row.ticker}. No stated reason recorded at import.`,
+        note && note.length > 0 ? note : importRationalePlaceholder(row.ticker),
       mode: "stock_only",
       status: "active",
       markets: [market],

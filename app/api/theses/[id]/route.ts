@@ -41,6 +41,19 @@ const UpdateThesisSchema = z.object({
     .optional(),
   conviction_score: z.number().min(0).max(100).optional(),
   /**
+   * "Why I own this", for a holding that arrived from a CSV.
+   *
+   * Accepted ONLY on an imported thesis, and the check is server-side below.
+   * A Jarvis thesis's `input_text` is the prompt every downstream artefact was
+   * generated from — the extraction, the bear cases, the memorandum, the
+   * conviction score. Editing it later would leave all of those silently
+   * describing a thesis that no longer exists, which is worse than not being
+   * able to edit it at all. An imported thesis has no such artefacts: its
+   * input_text is a placeholder or the trader's own note, and nothing has been
+   * derived from it.
+   */
+  input_text: z.string().trim().min(1).max(2000).optional(),
+  /**
    * Resolves a macro thesis onto one of its bake-off candidates. The client
    * sends only the candidate id; `ticker` and `stock_id` are copied from that
    * row server-side rather than trusted from the request, so the thesis can
@@ -57,6 +70,32 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "Invalid input", issues: parsed.error.flatten() }, { status: 400 });
   }
   const supabase = await createClient();
+
+  // `input_text` is editable on imported holdings only — see the schema note.
+  // Read through the user client so RLS answers "not found" for someone else's
+  // thesis rather than leaking that it exists.
+  if (parsed.data.input_text !== undefined) {
+    const { data: owned, error: sourceError } = await supabase
+      .from("theses")
+      .select("source")
+      .eq("id", id)
+      .maybeSingle();
+    if (sourceError) {
+      return NextResponse.json({ error: sourceError.message }, { status: 500 });
+    }
+    if (!owned) {
+      return NextResponse.json({ error: "Thesis not found" }, { status: 404 });
+    }
+    if (owned.source !== "imported") {
+      return NextResponse.json(
+        {
+          error:
+            "This thesis was written with Jarvis, so its text is what the analysis was built from and cannot be rewritten. Only an imported holding's reason can be edited.",
+        },
+        { status: 400 },
+      );
+    }
+  }
 
   const { selected_candidate_id, ...rest } = parsed.data;
   const patch: ThesisUpdate = { ...rest };

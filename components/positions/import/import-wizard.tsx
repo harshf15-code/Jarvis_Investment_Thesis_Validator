@@ -374,6 +374,16 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
                   Nothing has been written yet. {importable.length} to import
                   {skipped.length > 0 ? `, ${skipped.length} skipped` : ""}.
                 </p>
+                {/* The one field worth slowing down for. A CSV carries the
+                    ticker, the quantity and the cost; the reason is the only
+                    thing Jarvis cannot recover later, and every future read is
+                    measured against it. You can still add it afterwards on the
+                    holding's own page, but never as well as you can now. */}
+                <p className="mt-2 text-xs text-on-surface-variant">
+                  Worth filling in the last column while you remember. Jarvis checks each
+                  holding against your reason for owning it — with none recorded, it can
+                  tell you what changed but never whether it matters.
+                </p>
               </div>
               <button
                 type="button"
