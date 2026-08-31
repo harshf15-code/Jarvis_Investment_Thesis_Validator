@@ -264,7 +264,14 @@ export async function getFundamentals(
       modules: ["summaryDetail", "defaultKeyStatistics", "financialData"],
     }),
   );
+  return flattenFundamentals(summary);
+}
 
+function flattenFundamentals(summary: {
+  summaryDetail?: unknown;
+  defaultKeyStatistics?: unknown;
+  financialData?: unknown;
+}): Record<string, string | number> {
   const result: Record<string, string | number> = {};
   pickFields(
     summary.summaryDetail as Record<string, unknown> | undefined,
@@ -283,4 +290,45 @@ export async function getFundamentals(
   );
 
   return result;
+}
+
+/**
+ * Everything the weekly holding watch needs about one symbol, in ONE Yahoo
+ * round trip.
+ *
+ * `getFundamentals` already calls `quoteSummary`; adding `calendarEvents` to
+ * the same call costs nothing extra, and the watch needs both together — a
+ * fundamentals delta and an earnings date are two triggers read from one
+ * fetch, not two fetches.
+ *
+ * `earningsDateIsEstimate` matters more than it looks. Yahoo will happily
+ * return a projected earnings date, and the whole discipline of this feature
+ * is that only calendar and fundamentals FACTS are asserted as fact. A review
+ * grounded in an estimated date must say it was an estimate.
+ */
+export async function getHoldingSnapshot(yahooSymbol: string): Promise<{
+  fundamentals: Record<string, string | number>;
+  earningsDates: string[];
+  earningsDateIsEstimate: boolean;
+}> {
+  const summary = await withRetry(() =>
+    yahooFinance.quoteSummary(yahooSymbol, {
+      modules: ["summaryDetail", "defaultKeyStatistics", "financialData", "calendarEvents"],
+    }),
+  );
+
+  const earnings = summary.calendarEvents?.earnings;
+  const dates = (earnings?.earningsDate ?? [])
+    .filter((d): d is Date => d instanceof Date && !Number.isNaN(d.getTime()))
+    // `YYYY-MM-DD` in UTC. An earnings date is a calendar day, not an instant,
+    // and carrying a timestamp would make "has it passed" depend on the
+    // server's clock zone.
+    .map((d) => d.toISOString().slice(0, 10))
+    .sort();
+
+  return {
+    fundamentals: flattenFundamentals(summary),
+    earningsDates: dates,
+    earningsDateIsEstimate: earnings?.isEarningsDateEstimate === true,
+  };
 }

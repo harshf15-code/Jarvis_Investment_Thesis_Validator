@@ -12,10 +12,11 @@ import { LogTrimModal } from "@/components/positions/log-trim-modal";
 import { StopExitModal } from "@/components/positions/stop-exit-modal";
 import { ThesisMetricsPanel } from "@/components/positions/thesis-metrics-panel";
 import { DisciplineBanner } from "@/components/positions/discipline-banner";
+import { HoldingReviewsPanel } from "@/components/positions/reviews/holding-reviews-panel";
 import { PriceBadge } from "@/components/shared/price-badge";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
 import { LastUpdated } from "@/components/shared/last-updated";
-import type { Entry, Exit, Position, Thesis, TradePlan, Stock } from "@/lib/types";
+import type { Entry, Exit, HoldingReview, Position, Thesis, TradePlan, Stock } from "@/lib/types";
 
 type Detail = {
   position: Position;
@@ -24,6 +25,8 @@ type Detail = {
   tradePlan: TradePlan | null;
   thesis: Thesis | null;
   stock: Stock | null;
+  reviews: HoldingReview[];
+  watch: { last_checked_at: string | null } | null;
 };
 
 /**
@@ -220,6 +223,17 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
           currentPrice={cmp}
           onLogTrim={setTrimTier}
           onLogStop={() => setStopModalOpen(true)}
+        />
+      </div>
+
+      <div className="mt-6">
+        <HoldingReviewsPanel
+          positionId={position.id}
+          reviews={detail.reviews ?? []}
+          queued={detail.watch !== null && detail.watch.last_checked_at === null}
+          // Not `handleSaved`: that one pushes to the journal when a position
+          // has just gone to zero. A new read only needs the page re-fetched.
+          onReviewed={() => setReloadKey((k) => k + 1)}
         />
       </div>
 

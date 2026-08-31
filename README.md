@@ -139,6 +139,30 @@ Two Supabase Edge Functions run on `pg_cron`:
   writes alerts. De-duplicates so a persistently-breached stop doesn't spam you.
 - **`daily-digest`** — once a day after the US close, emails everything unsent.
 
+### What Jarvis does with a holding afterwards
+
+An imported holding arrives with no analysis behind it, so Jarvis writes one — an initial read, and
+then a **weekly** re-check.
+
+The re-check is grounded in two things and says so: the **earnings calendar** and a **fundamentals
+delta**. If an earnings date is within a fortnight, or has just gone by, or a watched metric has
+moved more than 15%, Jarvis writes a read and puts it in your Feed and the daily digest. If nothing
+moved, it records that it looked and **spends nothing** — that branch is what makes watching a
+large book affordable.
+
+> **What this deliberately is not.** The obvious ask is "tell me what management said". This app
+> has no news feed, no transcripts and no live search, so it would have to invent that, and an
+> invented quote attributed to a real executive is the worst thing this codebase could produce. The
+> prompt forbids it explicitly: only a date, a number, or a change between two numbers may be
+> asserted as fact, and everything else is written as Jarvis's own read. An earnings date the data
+> provider only *estimated* is labelled as an estimate.
+
+Two more consequences worth knowing. If you never told Jarvis why you bought something, it says
+there is no stated thesis to test and leans `UNCLEAR` rather than inventing a reason to grade. And
+the first read is **queued**, not run during the import: two hundred holdings would mean two
+hundred model calls inside one request, which would fail the import for a reason that has nothing
+to do with importing.
+
 ### Import Holdings
 
 Every position above is one Jarvis *originated*. Most traders arrive owning things already, and
@@ -223,6 +247,7 @@ Fill in `.env.local` — every variable is documented in the example file:
 | `SUPABASE_DB_URL` | Supabase → Settings → Database → Connection string (URI) |
 | `OPENROUTER_API_KEY` | openrouter.ai → Keys |
 | `OPENROUTER_MODEL_ID` | e.g. `anthropic/claude-sonnet-4.5` |
+| `HOLDING_WATCH_SECRET` | Any long random string. Only needed to schedule the weekly holding watch |
 | `LLM_DAILY_BUDGET_USD`, `LLM_MONTHLY_BUDGET_USD` | Optional per-account spend caps — see [Cost](#cost). Omitting them does *not* mean unlimited |
 
 Apply the schema, in order:
@@ -264,6 +289,12 @@ Then schedule them: copy `supabase/migrations/0003_pg_cron_jobs.sql.example`, fi
 project ref, and run it in the SQL editor. It stores the service-role key in Supabase
 Vault rather than inlining it into the cron definition.
 
+That file also schedules the **holding watch**, which is not an Edge Function — it is a route in
+this app (`/api/portfolio/holding-watch`), because Deno cannot import the spend ledger and a second
+implementation of it would be a second answer to "what has this cost". Set `HOLDING_WATCH_SECRET`
+in the app's environment and store the same value in Vault as `holding_watch_secret`; the route
+refuses every request when it is unset, rather than failing open.
+
 ---
 
 ## Architecture
@@ -291,9 +322,11 @@ lib/
   jarvis-thesis-prompt.ts  Thesis structuring + candidate shortlist
   jarvis-thesis-parser.ts  Fenced-JSON extraction, trade-plan geometry
   markets.ts               Market → exchanges/currency registry (one source of truth)
+  holding-watch.ts         What counts as a development worth a model call
   csv.ts                   RFC 4180 reader (quoted commas, CRLF, BOM) + number parsing
   portfolio-import.ts      Column detection, row validation, import row shapes
   portfolio/resolve.ts     Prices and vets a CSV batch — writes nothing
+  portfolio/holding-review.ts  One holding's read, end to end (scheduled + manual)
   market-data.ts           yahoo-finance2 wrapper (quotes, OHLCV, fundamentals)
   llm/openrouter.ts        Provider + the fetch that reads OpenRouter's real cost
   llm/meter.ts             The ONLY door to the model — spends and records together
@@ -365,6 +398,8 @@ erDiagram
     positions ||--o{ position_alerts : "triggers"
     stocks ||--o{ thesis_candidates : "priced as"
     portfolio_imports ||--o{ theses : "created (source='imported')"
+    positions ||--o{ holding_reviews : "re-read weekly"
+    positions ||--o| holding_watch_state : "what changed since"
 ```
 
 `thesis_memorandums.document` is one validated JSONB blob rather than forty columns: it is
