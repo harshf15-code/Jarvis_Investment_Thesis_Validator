@@ -88,10 +88,16 @@ export async function withRetry<T>(
 
 /**
  * Latest quoted price for `yahooSymbol`.
+ *
+ * `name` is the company's display name where Yahoo supplies one. It exists for
+ * the CSV import preview, where a trader confirming forty rows needs to see
+ * that `BAJAJ-AUTO` is the company they think it is before anything is
+ * written. Nothing persists it — `stocks` has no name column — so it is a
+ * display value only, and `null` is a fine answer.
  */
 export async function getQuote(
   yahooSymbol: string,
-): Promise<{ price: number; asOf: Date }> {
+): Promise<{ price: number; asOf: Date; name: string | null }> {
   const quote = await withRetry(() => yahooFinance.quote(yahooSymbol));
 
   if (
@@ -109,6 +115,7 @@ export async function getQuote(
     // case Yahoo shouldn't produce in practice; fall back to "now" rather
     // than failing the whole call over a missing timestamp.
     asOf: quote.regularMarketTime ?? new Date(),
+    name: quote.longName ?? quote.shortName ?? null,
   };
 }
 

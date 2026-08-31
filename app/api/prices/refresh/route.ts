@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { MAX_CONCURRENT_QUOTES, mapWithConcurrency } from "@/lib/concurrency";
 import { getQuote } from "@/lib/market-data";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -20,23 +21,6 @@ import { createClient } from "@/lib/supabase/server";
 /** Refusing is better than silently truncating — the caller learns it asked for too much. */
 const MAX_STOCK_IDS = 50;
 
-/** Yahoo is an unofficial endpoint with no published quota; do not stampede it. */
-const MAX_CONCURRENT_QUOTES = 8;
-
-/** Runs `worker` over `items`, at most `limit` at a time. */
-async function mapWithConcurrency<T>(
-  items: T[],
-  limit: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  const queue = [...items];
-  const runners = Array.from({ length: Math.min(limit, queue.length) }, async () => {
-    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-      await worker(next);
-    }
-  });
-  await Promise.all(runners);
-}
 export async function POST(request: NextRequest) {
   const json = await request.json().catch(() => null);
   const stockIds: unknown = json?.stockIds;

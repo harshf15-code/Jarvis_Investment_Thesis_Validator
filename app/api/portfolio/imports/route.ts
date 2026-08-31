@@ -1,0 +1,325 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+
+import { currentUser } from "@/lib/auth/user";
+import { isLiveMarket } from "@/lib/markets";
+import { MAX_IMPORT_ROWS } from "@/lib/portfolio-import";
+import { resolveImportRows } from "@/lib/portfolio/resolve";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
+import type {
+  EntryInsert,
+  MarketCode,
+  PortfolioImportError,
+  PositionInsert,
+  ThesisInsert,
+  TradePlanInsert,
+} from "@/lib/types";
+
+/**
+ * Commits a reviewed CSV batch into the ordinary theses -> trade_plans ->
+ * positions -> entries chain.
+ *
+ * The shape of this route is the whole design of the feature. An imported
+ * holding is NOT a second kind of position: it is a real position hanging off
+ * a minimal synthetic thesis and an all-null trade plan, so the Cockpit, the
+ * positions table, `position-metrics.ts`, the Journal and the alert poller all
+ * work on it with no changes at all.
+ *
+ * Rows are re-resolved here rather than trusted from the preview. The client's
+ * resolve result is a courtesy; letting a browser choose which `stock_id` a
+ * position points at would make the whole resolution step advisory.
+ */
+export const maxDuration = 120;
+
+const CommitRowSchema = z.object({
+  ticker: z.string().trim().min(1).max(40),
+  quantity: z.number().positive(),
+  averagePrice: z.number().positive(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  /** The trader's own "why I bought this", if they gave one. */
+  note: z.string().trim().max(2000).optional(),
+  /** Set when the trader saw the duplicate warning and chose to import anyway. */
+  confirmedDuplicate: z.boolean().optional(),
+});
+
+const CommitInputSchema = z.object({
+  source_filename: z.string().trim().min(1).max(255),
+  market: z.string(),
+  as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "as_of_date must be YYYY-MM-DD"),
+  objective: z.string().trim().max(2000).optional(),
+  rows: z.array(CommitRowSchema).min(1).max(MAX_IMPORT_ROWS),
+  /** Rows the trader saw flagged and chose not to import. Recorded, not acted on. */
+  skipped: z
+    .array(z.object({ ticker: z.string(), reason: z.string(), row: z.number().int().min(1) }))
+    .max(MAX_IMPORT_ROWS)
+    .optional(),
+});
+
+export async function POST(request: Request) {
+  const user = await currentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
+  }
+
+  const json = await request.json().catch(() => null);
+  if (json === null) {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const parsed = CommitInputSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "Invalid input", issues: parsed.error.flatten() },
+      { status: 400 },
+    );
+  }
+  const input = parsed.data;
+
+  if (!isLiveMarket(input.market)) {
+    return NextResponse.json({ error: `Market "${input.market}" is not available yet.` }, { status: 400 });
+  }
+  const market = input.market as MarketCode;
+
+  // A cost basis dated in the future would make every return calculation on the
+  // Cockpit nonsense, and there is no legitimate way to have paid for shares
+  // tomorrow.
+  const today = new Date().toISOString().slice(0, 10);
+  if (input.as_of_date > today) {
+    return NextResponse.json({ error: "The 'as of' date cannot be in the future." }, { status: 400 });
+  }
+
+  const supabase = await createClient();
+
+  let resolved;
+  try {
+    resolved = await resolveImportRows(
+      supabase,
+      input.rows.map((row, index) => ({
+        index,
+        ticker: row.ticker.toUpperCase(),
+        quantity: row.quantity,
+        averagePrice: row.averagePrice,
+        date: row.date ?? null,
+      })),
+      market,
+    );
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
+  }
+
+  // `skipped` from the client is what the trader chose to leave out. Anything
+  // added here is what the server refused, and both end up in the same audit
+  // record — a row that vanished between preview and commit must be visible.
+  const errors: PortfolioImportError[] = (input.skipped ?? []).map((s) => ({
+    row: s.row,
+    ticker: s.ticker,
+    reason: s.reason,
+  }));
+
+  const accepted = resolved.filter((row, index) => {
+    const submitted = input.rows[index];
+    const importable =
+      row.status === "resolved" ||
+      (row.status === "duplicate" && submitted.confirmedDuplicate === true);
+    if (!importable) {
+      errors.push({
+        // +2: the trader's file has a header on line 1.
+        row: index + 2,
+        ticker: row.ticker,
+        reason: row.reason ?? "Could not be imported",
+      });
+    }
+    return importable;
+  });
+
+  if (accepted.length === 0) {
+    return NextResponse.json(
+      { error: "None of these rows could be imported.", errors },
+      { status: 400 },
+    );
+  }
+
+  // --- stocks -------------------------------------------------------------
+  // A shared market-data cache that `authenticated` may read but not write
+  // (0014), so maintaining it is service-role work. Upsert on the unique
+  // `yahoo_symbol` index rather than select-then-insert, which would race with
+  // a concurrent thesis run on the same name.
+  const admin = createAdminClient();
+  const { data: stocks, error: stockError } = await admin
+    .from("stocks")
+    .upsert(
+      accepted.map((row) => ({
+        ticker: row.ticker,
+        yahoo_symbol: row.yahooSymbol!,
+        exchange: row.exchange!,
+        last_price: row.lastPrice,
+        last_price_at: new Date().toISOString(),
+      })),
+      { onConflict: "yahoo_symbol" },
+    )
+    .select("id, yahoo_symbol");
+
+  if (stockError || !stocks) {
+    return NextResponse.json(
+      { error: stockError?.message ?? "Failed to record the stocks being imported" },
+      { status: 500 },
+    );
+  }
+  const stockIdBySymbol = new Map(stocks.map((s) => [s.yahoo_symbol, s.id]));
+
+  // --- the audit row, written FIRST ---------------------------------------
+  // `status` defaults to 'failed', so a run that dies below leaves an honest
+  // record rather than none at all.
+  const { data: batch, error: batchError } = await supabase
+    .from("portfolio_imports")
+    .insert({
+      source_filename: input.source_filename,
+      market,
+      as_of_date: input.as_of_date,
+      total_rows: input.rows.length + (input.skipped?.length ?? 0),
+    })
+    .select("*")
+    .single();
+
+  if (batchError || !batch) {
+    return NextResponse.json(
+      { error: batchError?.message ?? "Failed to open an import batch" },
+      { status: 500 },
+    );
+  }
+
+  // --- the four inserts ---------------------------------------------------
+  // Ids are generated up front so nothing depends on PostgREST returning
+  // inserted rows in the order they were sent. Four round trips for the whole
+  // batch, not four per row.
+  const theses: ThesisInsert[] = [];
+  const tradePlans: TradePlanInsert[] = [];
+  const positions: PositionInsert[] = [];
+  const entries: EntryInsert[] = [];
+
+  for (const row of accepted) {
+    const note = input.rows[row.index]?.note?.trim();
+    const thesisId = crypto.randomUUID();
+    const tradePlanId = crypto.randomUUID();
+    const positionId = crypto.randomUUID();
+    const stockId = stockIdBySymbol.get(row.yahooSymbol!)!;
+
+    theses.push({
+      id: thesisId,
+      // NOT NULL, so it always says something. The trader's own words when
+      // they gave them: a later per-holding review is only as grounded as this.
+      input_text:
+        note && note.length > 0
+          ? note
+          : `Imported holding — ${row.ticker}. No stated reason recorded at import.`,
+      mode: "stock_only",
+      status: "active",
+      markets: [market],
+      // Setting `ticker` is exactly what this field is for: it may only ever be
+      // set when the TRADER named the stock, and owning it is the strongest
+      // form of naming it.
+      ticker: row.ticker,
+      stock_id: stockId,
+      source: "imported",
+      import_batch_id: batch.id,
+    });
+    // Every level null: no analysis produced a trade plan, and inventing an
+    // entry zone or a stop for a position this app never sized would be worse
+    // than admitting there isn't one. The row exists because
+    // `positions.trade_plan_id` is NOT NULL and the position detail page reads
+    // it with `.single()`.
+    tradePlans.push({ id: tradePlanId, thesis_id: thesisId });
+    positions.push({
+      id: positionId,
+      thesis_id: thesisId,
+      trade_plan_id: tradePlanId,
+      stock_id: stockId,
+      ticker: row.ticker,
+      status: "active",
+    });
+    entries.push({
+      id: crypto.randomUUID(),
+      position_id: positionId,
+      date: row.date ?? input.as_of_date,
+      quantity: row.quantity!,
+      price: row.averagePrice!,
+      tranche: "T1",
+      notes: `Imported from ${input.source_filename}. Cost basis is a broker average; the date is approximate.`,
+    });
+  }
+
+  const thesisIds = theses.map((t) => t.id!);
+
+  const failed = async (message: string) => {
+    // `trade_plans`, `positions` and `entries` all cascade from `theses`, so
+    // deleting the theses unwinds a half-written batch completely. The audit
+    // row stays, at its default 'failed', carrying the reason.
+    await supabase.from("theses").delete().in("id", thesisIds);
+    await supabase
+      .from("portfolio_imports")
+      // row 0 is not a line in the trader's file — it is the batch itself.
+      .update({ errors: [...errors, { row: 0, ticker: "", reason: `Import failed: ${message}` }] })
+      .eq("id", batch.id);
+    return NextResponse.json({ error: message }, { status: 500 });
+  };
+
+  const thesisWrite = await supabase.from("theses").insert(theses);
+  if (thesisWrite.error) return failed(thesisWrite.error.message);
+
+  const planWrite = await supabase.from("trade_plans").insert(tradePlans);
+  if (planWrite.error) return failed(planWrite.error.message);
+
+  const positionWrite = await supabase.from("positions").insert(positions);
+  if (positionWrite.error) return failed(positionWrite.error.message);
+
+  const entryWrite = await supabase.from("entries").insert(entries);
+  if (entryWrite.error) return failed(entryWrite.error.message);
+
+  const { data: finished, error: finishError } = await supabase
+    .from("portfolio_imports")
+    .update({
+      imported_rows: accepted.length,
+      skipped_rows: errors.length,
+      status: errors.length > 0 ? "partial" : "completed",
+      errors,
+    })
+    .eq("id", batch.id)
+    .select("*")
+    .single();
+
+  if (finishError) {
+    // The holdings are in. Failing the request now would tell the trader their
+    // import failed when it did not — the audit row is the lesser loss.
+    console.error("[portfolio-import] batch written but not marked complete", finishError);
+  }
+
+  if (input.objective !== undefined && input.objective.length > 0) {
+    const { error: profileError } = await supabase
+      .from("portfolio_profiles")
+      .upsert({ objective: input.objective, updated_at: new Date().toISOString() });
+    if (profileError) {
+      console.error("[portfolio-import] failed to save the portfolio objective", profileError);
+    }
+  }
+
+  return NextResponse.json(
+    { batch: finished ?? batch, imported: accepted.length, skipped: errors },
+    { status: 201 },
+  );
+}
+
+/** Past batches, newest first — the audit trail behind "what did I import?". */
+export async function GET() {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("portfolio_imports")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  return NextResponse.json({ imports: data ?? [] });
+}

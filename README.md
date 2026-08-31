@@ -53,6 +53,7 @@ flowchart LR
     F -->|No| H[Costs nothing]
     G --> I[Background poller<br/>watches your levels]
     I --> J[Daily email digest<br/>when something is hit]
+    L["Import holdings<br/>(broker CSV)"] -->|arrives with no plan| G
 ```
 
 The key design decision: **you never pick from a list of names the system hasn't
@@ -130,6 +131,48 @@ Two Supabase Edge Functions run on `pg_cron`:
   writes alerts. De-duplicates so a persistently-breached stop doesn't spam you.
 - **`daily-digest`** — once a day after the US close, emails everything unsent.
 
+### Import Holdings
+
+Every position above is one Jarvis *originated*. Most traders arrive owning things already, and
+those holdings were structurally invisible to this app: `positions.thesis_id` and
+`positions.trade_plan_id` are both `NOT NULL` and both come out of the memorandum flow, so a book
+that predates Jarvis could not be represented at all.
+
+`/positions/import` takes any broker's holdings CSV — a ticker column, a quantity and an average
+cost, however they happen to be named. Zerodha Kite Console's export maps itself; anything else
+you remap from a dropdown. **The file is parsed in your browser and never uploaded**: only the
+three columns you map are ever sent anywhere, so the account numbers and ISINs a broker export
+carries stay on your machine.
+
+Then every row is priced and shown to you *before anything is written* — resolved company name,
+exchange, quantity, cost — with anything questionable flagged in place rather than dropped: a
+symbol that doesn't resolve in the market you chose, a zero cost basis (bonus shares), a name you
+already hold an open position in. You fix it, confirm it, or leave it out, and the batch records
+what was skipped and why.
+
+An imported holding then becomes an ordinary position: **one synthetic thesis, an all-null trade
+plan, one position, one entry.** That is the whole design. The Cockpit totals it, the positions
+table ranks it, weighted-average entry works on it and the Journal can review it, with no
+special-casing anywhere — because it is not a different kind of row.
+
+Two honest consequences, both visible in the UI:
+
+- **It arrives with no stop, no targets and no time exit**, so `poll-prices` has nothing to alert
+  on until you set levels yourself. The app has no basis to invent a stop for a position it never
+  analysed. Those rows carry an `Imported` badge for exactly this reason.
+- **A holdings export has one average cost, not a trade history**, so the import writes a single
+  collapsed `T1` entry and stamps it with one "held since" date you supply, labelled as the
+  approximation it is.
+
+A batch is one market — the same symbol is listed in two of them at very different prices in
+different currencies, so this is asked, never guessed. Imported holdings deliberately do **not**
+appear under `/thesis`, which lists analyses you ran; thirty of them would bury the ones that are.
+
+> One pre-existing rough edge this makes easy to hit: the Cockpit's open-P&L total sums rupees and
+> dollars without converting, because `stocks` has no currency column (the same gap that keeps
+> CN/EU/EM disabled). Per-position numbers are correct and correctly symboled; the single combined
+> total is not, once you hold both.
+
 ---
 
 ## Screens
@@ -142,6 +185,7 @@ Two Supabase Edge Functions run on `pg_cron`:
 | `/thesis` | Every thesis you've run |
 | `/thesis/[id]` | **The memorandum** |
 | `/positions` · `/positions/[id]` | Open positions, entries, exits |
+| `/positions/import` | Import holdings you already own from a broker CSV |
 | `/feed` | Intelligence feed |
 | `/journal` | Trade journal and post-mortems |
 | `/discovery` | Opportunity discovery |
@@ -224,12 +268,14 @@ app/
     dashboard/         The cockpit
     thesis/[id]/       The memorandum
     positions/         Position tracking
+    positions/import/  CSV holdings import
   api/                 Route handlers
 proxy.ts               Session gate (was middleware.ts)
 components/
   layout/              Header, icon rail, mobile nav, thesis drawer
   thesis/              Memorandum: comparative grid, tabs, back-trade dialog
   council/             Roster, consult picker, council report tab
+  positions/import/    CSV wizard: column mapping, resolve preview
   settings/            Spend panel
 lib/
   jarvis-memorandum.ts     Memorandum schema + prompt + normalizer  ← start here
@@ -237,6 +283,9 @@ lib/
   jarvis-thesis-prompt.ts  Thesis structuring + candidate shortlist
   jarvis-thesis-parser.ts  Fenced-JSON extraction, trade-plan geometry
   markets.ts               Market → exchanges/currency registry (one source of truth)
+  csv.ts                   RFC 4180 reader (quoted commas, CRLF, BOM) + number parsing
+  portfolio-import.ts      Column detection, row validation, import row shapes
+  portfolio/resolve.ts     Prices and vets a CSV batch — writes nothing
   market-data.ts           yahoo-finance2 wrapper (quotes, OHLCV, fundamentals)
   llm/openrouter.ts        Provider + the fetch that reads OpenRouter's real cost
   llm/meter.ts             The ONLY door to the model — spends and records together
@@ -307,6 +356,7 @@ erDiagram
     positions ||--o{ exits : "closed by"
     positions ||--o{ position_alerts : "triggers"
     stocks ||--o{ thesis_candidates : "priced as"
+    portfolio_imports ||--o{ theses : "created (source='imported')"
 ```
 
 `thesis_memorandums.document` is one validated JSONB blob rather than forty columns: it is
@@ -316,9 +366,16 @@ instead of crashing the page. `thesis_council_reports.document` follows the same
 is why re-running a consult is a single upsert rather than a delete and an insert that could
 leave a synthesis pointing at opinions no longer there.
 
-Not in the diagram: `llm_usage`, the append-only spend ledger, and `llm_budgets`, a sparse table
-of per-account limit overrides. Both hang off `auth.users` rather than off anything above — see
-[Cost](#cost).
+An imported holding is not a new shape in this diagram, and that is the point: it is a `theses`
+row with `source = 'imported'`, an all-null `trade_plans` row, a `positions` row and one `entries`
+row, so every query, metric and job above already handles it. `portfolio_imports` is the audit
+record of the upload that made them; deleting one leaves the holdings alone
+(`on delete set null`).
+
+Not in the diagram: `llm_usage`, the append-only spend ledger, `llm_budgets`, a sparse table
+of per-account limit overrides, and `portfolio_profiles`, an optional one-line statement of what
+the whole book is for. All three hang off `auth.users` rather than off anything above — for the
+first two, see [Cost](#cost).
 
 ---
 
@@ -332,8 +389,9 @@ npx tsc --noEmit
 
 Tests cover the parts where being wrong is expensive: JSON extraction, schema validation
 and graceful degradation, trade-plan geometry, weighted-average entry maths, risk/reward
-calculations, market-hours logic across timezones and DST boundaries, budget arithmetic, and the
-two invariants that stop a model-named ticker becoming a recommendation.
+calculations, market-hours logic across timezones and DST boundaries, budget arithmetic, CSV
+parsing and broker-column detection, and the two invariants that stop a model-named ticker
+becoming a recommendation.
 
 There are no tests that call the live model — those cost money and are non-deterministic.
 The prompts are exercised manually.
