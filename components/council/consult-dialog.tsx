@@ -16,13 +16,30 @@ import { CouncilDisclaimer } from "./disclaimer";
  * It states the call count as the selection changes rather than gating a large
  * panel behind a warning: the trader is the one paying, so the number is
  * information they should have, not a decision to take away from them.
+ *
+ * Shared by both consult surfaces. The thesis Council and the portfolio
+ * Council pick from the SAME roster with the same minimum and the same
+ * disclaimer — only the copy and which slice of the spend ledger prices the
+ * estimate differ, so those are props rather than a second component.
  */
 export function ConsultDialog({
   onClose,
   onConfirm,
+  eyebrow = "Second opinion",
+  title = "Consult Investment Council",
+  blurb = "Each member reads this memorandum and the whole priced field, then gives their own verdict — including naming a different winner.",
+  /** Ledger prefix the cost estimate is averaged over. */
+  featurePrefix = "council_",
+  /** An extra line under the call count — e.g. work that is not a model call. */
+  costNote,
 }: {
   onClose: () => void;
   onConfirm: (memberIds: string[]) => void;
+  eyebrow?: string;
+  title?: string;
+  blurb?: string;
+  featurePrefix?: string;
+  costNote?: string;
 }) {
   const [members, setMembers] = useState<CouncilMember[] | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -53,7 +70,7 @@ export function ConsultDialog({
           const usage = await usageRes.json();
           if (!cancelled && usageRes.ok) {
             const council = (usage.byFeature ?? []).filter((f: { feature: string }) =>
-              f.feature.startsWith("council_"),
+              f.feature.startsWith(featurePrefix),
             );
             const calls = council.reduce((n: number, f: { calls: number }) => n + f.calls, 0);
             const spent = council.reduce((n: number, f: { costUsd: number }) => n + f.costUsd, 0);
@@ -80,7 +97,7 @@ export function ConsultDialog({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [featurePrefix]);
 
   function toggle(id: string) {
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -108,15 +125,12 @@ export function ConsultDialog({
         </button>
 
         <p className="text-[10px] font-extrabold uppercase tracking-widest text-primary">
-          Second opinion
+          {eyebrow}
         </p>
         <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-on-surface">
-          Consult Investment Council
+          {title}
         </h2>
-        <p className="mt-1.5 text-xs text-on-surface-variant">
-          Each member reads this memorandum and the whole priced field, then gives their own
-          verdict — including naming a different winner.
-        </p>
+        <p className="mt-1.5 text-xs text-on-surface-variant">{blurb}</p>
 
         {error && (
           <p className="mt-4 rounded-lg bg-error-container px-4 py-3 text-sm text-error">{error}</p>
@@ -185,6 +199,10 @@ export function ConsultDialog({
                 `Select ${short} more — a council is at least ${COUNCIL_CONSULT_MIN}.`
               )}
             </p>
+
+            {costNote && ready && (
+              <p className="mt-1.5 text-[11px] text-on-surface-variant/70">{costNote}</p>
+            )}
 
             {overBudget && (
               <p className="mt-2 rounded-lg bg-error-container px-3 py-2 text-[11px] text-error">
