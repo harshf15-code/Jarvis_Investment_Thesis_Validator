@@ -44,6 +44,10 @@ export async function listTheses() {
   const { data, error } = await supabase
     .from("theses")
     .select("*")
+    // `/thesis` lists analyses the trader ran. The synthetic thesis behind an
+    // imported holding (0020) is a carrier for a position, not an analysis —
+    // thirty of them would bury the ones that are. They live on `/positions`.
+    .neq("source", "imported")
     .order("created_at", { ascending: false });
   if (error) fail(error.message);
   return data ?? [];
@@ -155,7 +159,7 @@ export async function listOpenPositions() {
       supabase.from("entries").select("*").in("position_id", positionIds),
       supabase.from("stocks").select("*").in("id", stockIds),
       supabase.from("trade_plans").select("*").in("id", tradePlanIds),
-      supabase.from("theses").select("id, conviction_tier").in("id", thesisIds),
+      supabase.from("theses").select("id, conviction_tier, source").in("id", thesisIds),
     ]);
 
   const entriesByPosition = new Map<string, { quantity: number; price: number }[]>();
@@ -174,5 +178,8 @@ export async function listOpenPositions() {
     tradePlan: tradePlanById.get(p.trade_plan_id),
     weightedAverage: computeWeightedAverageEntry(entriesByPosition.get(p.id) ?? []),
     convictionTier: thesisById.get(p.thesis_id)?.conviction_tier ?? undefined,
+    // Imported holdings have no trade plan behind them (0020), and the table
+    // says so rather than rendering an all-null plan like an analysed one.
+    source: thesisById.get(p.thesis_id)?.source ?? "jarvis",
   }));
 }

@@ -75,7 +75,7 @@ describe("POST /api/prices/refresh", () => {
     vi.mocked(createAdminClient).mockReturnValue(writer.client as never);
     vi.mocked(getQuote).mockImplementation(async (symbol: string) => {
       if (symbol === "BROKEN") throw new Error("no quote");
-      return { price: 150.25, asOf: new Date("2026-08-27T10:00:00Z") };
+      return { price: 150.25, asOf: new Date("2026-08-27T10:00:00Z"), name: "Apple Inc." };
     });
 
     const res = await postWith(["s1", "s2"]);

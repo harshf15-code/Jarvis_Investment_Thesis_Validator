@@ -6,7 +6,7 @@ import Link from "next/link";
 import { computeDistanceToStop, computePositionPnl } from "@/lib/position-metrics";
 import { formatCurrency } from "@/lib/format";
 import { ConvictionBadge } from "@/components/thesis/conviction-badge";
-import type { ConvictionTier, ExchangeCode } from "@/lib/types";
+import type { ConvictionTier, ExchangeCode, ThesisSource } from "@/lib/types";
 
 export type PositionRow = {
   position: { id: string; ticker: string; status: string };
@@ -22,6 +22,9 @@ export type PositionRow = {
   } | undefined;
   weightedAverage: { totalQuantity: number; averagePrice: number };
   convictionTier?: ConvictionTier;
+  /** `imported` when this position came from a CSV rather than a memorandum
+   *  (0020) — which is why its stop, targets and time exit are all empty. */
+  source?: ThesisSource;
 };
 
 type SortKey = "distanceToStop" | "returnPct" | "thesisDate";
@@ -96,6 +99,14 @@ export function PositionsTable({ rows }: { rows: PositionRow[] }) {
                   <Link href={`/positions/${row.position.id}`} className="font-medium text-on-surface hover:text-primary">
                     {row.position.ticker}
                   </Link>
+                  {row.source === "imported" && (
+                    <span
+                      title="Imported from a CSV — no Jarvis trade plan behind it, so it has no stop or targets yet."
+                      className="ml-2 rounded-full bg-surface-container-highest px-1.5 py-0.5 align-middle font-mono text-[9px] tracking-wider text-on-surface/50 uppercase"
+                    >
+                      Imported
+                    </span>
+                  )}
                 </td>
                 <td className="p-3 font-mono tabular-nums">{formatCurrency(row.weightedAverage.averagePrice, exchange)}</td>
                 <td className="p-3 font-mono tabular-nums">{price !== null ? formatCurrency(price, exchange) : "Price unavailable"}</td>

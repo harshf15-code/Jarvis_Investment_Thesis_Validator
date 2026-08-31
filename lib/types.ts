@@ -52,6 +52,15 @@ export type LlmFeature =
  */
 export type LlmCostSource = "reported" | "estimated";
 
+/**
+ * Where a thesis came from (0020). `imported` marks the synthetic thesis a CSV
+ * holdings import creates so a pre-existing position can live in the same
+ * tables as an analysed one — a LABEL for provenance, not a different kind of
+ * row. It is what tells the UI a position has no real trade plan behind it,
+ * and what a later per-holding watch scopes itself by.
+ */
+export type ThesisSource = "jarvis" | "imported";
+
 export type Json =
   | string
   | number
@@ -115,6 +124,12 @@ export type Thesis = {
   raw_llm_response: string | null;
   /** Set once a macro thesis's bake-off is resolved to one name (see `ThesisCandidate`). */
   selected_candidate_id: string | null;
+  /** `imported` when this thesis exists only to carry a holding the trader
+   *  already owned (0020). Those rows are hidden from `/thesis`, which lists
+   *  analyses, and badged on `/positions`, which lists what is owned. */
+  source: ThesisSource;
+  /** The CSV upload that created this thesis, when one did. */
+  import_batch_id: string | null;
 };
 
 /**
@@ -391,6 +406,53 @@ export type Opportunity = {
   watching_only: boolean;
 };
 
+/**
+ * `portfolio_imports` (0020) — one row per CSV holdings upload.
+ *
+ * An audit record, not a queue: it is written before the holdings and updated
+ * after, so a run that dies partway leaves `status: "failed"` rather than
+ * nothing. `errors` explains every row that was skipped, which is what lets a
+ * trader answer "what did I import last Tuesday, and did anything fail".
+ */
+export type PortfolioImport = {
+  id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string;
+  created_at: string;
+  source_filename: string;
+  /** A batch prices against exactly one market — see `lib/markets.ts`. */
+  market: MarketCode;
+  /** The approximate purchase date stamped on every entry in this batch. */
+  as_of_date: string;
+  total_rows: number;
+  imported_rows: number;
+  skipped_rows: number;
+  status: PortfolioImportStatus;
+  errors: PortfolioImportError[];
+};
+
+export type PortfolioImportStatus = "completed" | "partial" | "failed";
+
+/** One skipped row, and why. Shape of an element of `PortfolioImport.errors`. */
+export type PortfolioImportError = {
+  /** 1-based line number in the trader's file, header included. */
+  row: number;
+  ticker: string;
+  reason: string;
+};
+
+/**
+ * `portfolio_profiles` (0020) — what the trader is trying to do with the book
+ * as a whole. Optional, one row per user, and nothing reads it yet: it is
+ * collected during the import because that is the one moment a trader is
+ * already thinking about their portfolio as a portfolio.
+ */
+export type PortfolioProfile = {
+  user_id: string;
+  objective: string | null;
+  updated_at: string;
+};
+
 // --- Insert types (columns with a SQL default or that are nullable become optional) ---
 
 export type StockInsert = Pick<Stock, "ticker" | "yahoo_symbol" | "exchange"> &
@@ -415,6 +477,8 @@ export type ThesisInsert = Pick<Thesis, "input_text" | "mode" | "markets"> &
       | "bear_cases"
       | "raw_llm_response"
       | "selected_candidate_id"
+      | "source"
+      | "import_batch_id"
     >
   >;
 
@@ -667,6 +731,19 @@ export type LlmBudgetStatus = {
   has_override: boolean;
 };
 
+export type PortfolioImportInsert = Pick<
+  PortfolioImport,
+  "source_filename" | "market" | "as_of_date" | "total_rows"
+> &
+  Partial<
+    Pick<
+      PortfolioImport,
+      "id" | "created_at" | "imported_rows" | "skipped_rows" | "status" | "errors"
+    >
+  >;
+
+export type PortfolioProfileInsert = Partial<Pick<PortfolioProfile, "objective" | "updated_at">>;
+
 export type StockUpdate = Partial<StockInsert>;
 export type ThesisUpdate = Partial<ThesisInsert>;
 export type TradePlanUpdate = Partial<TradePlanInsert>;
@@ -678,6 +755,8 @@ export type TradeJournalEntryUpdate = Partial<TradeJournalEntryInsert>;
 export type PositionAlertUpdate = Partial<PositionAlertInsert>;
 export type IntelligenceSignalUpdate = Partial<IntelligenceSignalInsert>;
 export type OpportunityUpdate = Partial<OpportunityInsert>;
+export type PortfolioImportUpdate = Partial<PortfolioImportInsert>;
+export type PortfolioProfileUpdate = Partial<PortfolioProfileInsert>;
 
 export interface Database {
   public: {
@@ -754,6 +833,18 @@ export interface Database {
         Update: OpportunityUpdate;
         Relationships: [];
       };
+      portfolio_imports: {
+        Row: PortfolioImport;
+        Insert: PortfolioImportInsert;
+        Update: PortfolioImportUpdate;
+        Relationships: [];
+      };
+      portfolio_profiles: {
+        Row: PortfolioProfile;
+        Insert: PortfolioProfileInsert;
+        Update: PortfolioProfileUpdate;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -785,6 +876,7 @@ export interface Database {
       position_alert_type: PositionAlertType;
       council_member_source: CouncilMemberSource;
       llm_feature: LlmFeature;
+      thesis_source: ThesisSource;
     };
     CompositeTypes: Record<string, never>;
   };
