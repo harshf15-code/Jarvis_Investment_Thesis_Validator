@@ -9,7 +9,9 @@ import { formatCurrency } from "@/lib/format";
  * actually shows rather than passing a since-entry number off as a daily one.
  *
  * It is also one line PER CURRENCY, because there is no exchange rate in this
- * app and inventing one is worse than showing two numbers. This used to render
+ * app and inventing one is worse than showing two numbers. The lines are
+ * ordered by position count rather than by size, since "which of these is the
+ * bigger book" is not answerable without the rate either. This used to render
  * a single blended figure — with the symbol dropped and the words "(mixed
  * currencies)" appended when the book spanned exchanges, which was an honest
  * label on a number that was still just rupees added to dollars. Each line

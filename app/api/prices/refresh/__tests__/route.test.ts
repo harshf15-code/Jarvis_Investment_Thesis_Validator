@@ -92,6 +92,33 @@ describe("POST /api/prices/refresh", () => {
     expect(writer.update).toHaveBeenCalledWith({
       last_price: 150.25,
       last_price_at: "2026-08-27T10:00:00.000Z",
+      // Re-asserted on every refresh, not written once and trusted forever:
+      // 0021 seeded `currency` from `exchange`, which is a guess, and this is
+      // the path that corrects a row seeded wrong.
+      currency: "USD",
+    });
+  });
+
+  it("leaves the stored currency alone when a quote does not report one", async () => {
+    // Overwriting a known currency with a guess would be worse than keeping
+    // the one already on the row.
+    vi.mocked(createClient).mockResolvedValue(
+      buildReadClientMock([{ id: "s1", yahoo_symbol: "AAPL" }]) as never,
+    );
+    const writer = buildWriteClientMock();
+    vi.mocked(createAdminClient).mockReturnValue(writer.client as never);
+    vi.mocked(getQuote).mockResolvedValue({
+      price: 150.25,
+      asOf: new Date("2026-08-27T10:00:00Z"),
+      name: "Apple Inc.",
+      currency: null,
+    } as never);
+
+    await postWith(["s1"]);
+
+    expect(writer.update).toHaveBeenCalledWith({
+      last_price: 150.25,
+      last_price_at: "2026-08-27T10:00:00.000Z",
     });
   });
 });

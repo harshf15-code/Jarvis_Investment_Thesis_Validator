@@ -158,7 +158,8 @@ describe("GET /api/cockpit", () => {
     const body = await res.json();
 
     expect(body.totalsByCurrency).toHaveLength(2);
-    // Largest cost basis leads: ₹10,000 of rupees ahead of $1,000 of dollars.
+    // One position each, so the tie breaks on the code — a stable order that
+    // does NOT rank ₹10,000 above $1,000 by comparing the raw numbers.
     expect(body.totalsByCurrency.map((t: { currency: string }) => t.currency)).toEqual(["INR", "USD"]);
 
     const inr = body.totalsByCurrency[0];
@@ -168,6 +169,41 @@ describe("GET /api/cockpit", () => {
     const usd = body.totalsByCurrency[1];
     expect(usd).toMatchObject({ currency: "USD", absolute: 200, positions: 1 });
     expect(usd.percent).toBeCloseTo(20);
+  });
+
+  it("orders sub-books by position count, never by comparing the raw money", async () => {
+    // The trap: ₹10,000 is a bigger NUMBER than $2,000 and worth far less.
+    // Sorting on cost basis would rank by the unit size of the currency and
+    // always put rupees first, which is the cross-currency arithmetic this
+    // whole change removes.
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({
+        positions: [
+          POSITION,
+          { ...POSITION, id: "p2", ticker: "MSFT", stock_id: "s1" },
+          { ...POSITION, id: "p3", ticker: "INFY", stock_id: "s2" },
+        ],
+        entries: [
+          { position_id: "p1", quantity: 10, price: 100 },
+          { position_id: "p2", quantity: 10, price: 100 },
+          { position_id: "p3", quantity: 10, price: 1000 },
+        ],
+        exits: [],
+        stocks: [
+          { id: "s1", last_price: 120, exchange: "US", currency: "USD" },
+          { id: "s2", last_price: 1200, exchange: "NSE", currency: "INR" },
+        ],
+        trade_plans: [{ id: "tp1", stop_loss: 90, target_1: null, target_2: null, time_exit_date: FUTURE }],
+        theses: [{ id: "t1", conviction_tier: "I" }],
+        jarvis_recommendations: [],
+      }) as never,
+    );
+
+    const body = await (await GET()).json();
+
+    // USD leads on two positions against one, despite ₹10,000 > $2,000.
+    expect(body.totalsByCurrency.map((t: { currency: string }) => t.currency)).toEqual(["USD", "INR"]);
+    expect(body.totalsByCurrency[0].positions).toBe(2);
   });
 
   it("keeps NSE and BSE in one rupee total rather than splitting by exchange", async () => {

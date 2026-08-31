@@ -23,9 +23,16 @@
 
 alter table stocks add column currency text;
 
--- Deterministic, so no backfill job and no network call: `exchange_code` is
--- ('NSE','BSE','US') and nothing else, and both Indian exchanges quote in
--- rupees.
+-- Seeded from `exchange`, which needs no backfill job and no network call:
+-- `exchange_code` is ('NSE','BSE','US') and nothing else, and both Indian
+-- exchanges quote in rupees.
+--
+-- This is a good SEED and not a fact. A US-exchange row holds a bare Yahoo
+-- ticker, and a bare ticker can resolve to a foreign listing quoting in
+-- something else. So every price-write path -- the on-demand refresh, the
+-- memorandum run and the `poll-prices` job -- re-asserts `currency` from the
+-- quote it already has in hand, and a row seeded wrong corrects itself the
+-- first time anything prices it rather than being trusted forever.
 update stocks set currency = case when exchange = 'US' then 'USD' else 'INR' end;
 
 alter table stocks alter column currency set not null;

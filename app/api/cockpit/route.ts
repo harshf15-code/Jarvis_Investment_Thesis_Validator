@@ -102,8 +102,14 @@ export async function GET() {
     };
   });
 
-  // Largest book first, so the dominant currency leads rather than whichever
-  // position happened to be priced first.
+  // Ordered by POSITION COUNT, then currency code.
+  //
+  // Not by cost basis: comparing ₹155,000 against $2,000 to decide which book
+  // is "bigger" is the same cross-currency arithmetic this whole change exists
+  // to remove — it ranks by the unit size of the money, so rupees would always
+  // lead. Position count is currency-neutral and genuinely comparable, and the
+  // code breaks ties so the order is stable between requests rather than
+  // depending on which position happened to be priced first.
   const totalsByCurrency = [...totals.entries()]
     .map(([currency, t]) => ({
       currency,
@@ -112,7 +118,7 @@ export async function GET() {
       percent: t.costBasis > 0 ? (t.absolute / t.costBasis) * 100 : 0,
       positions: t.positions,
     }))
-    .sort((a, b) => b.costBasis - a.costBasis);
+    .sort((a, b) => b.positions - a.positions || a.currency.localeCompare(b.currency));
 
   // De-duplicated: two open positions can sit on the same ticker (separate
   // theses), and the rail should show one chip per ticker, not one per row.

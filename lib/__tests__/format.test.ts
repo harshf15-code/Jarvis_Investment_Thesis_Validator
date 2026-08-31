@@ -32,6 +32,16 @@ describe("formatCurrency", () => {
     expect(formatCurrency(6052, "SGD").replace(/\u00a0/g, " ")).toBe("SGD 6,052.00");
   });
 
+  it("renders GBp as pence, not as a hundred times too many pounds", () => {
+    // Yahoo quotes LSE listings in pence and calls it "GBp". `Intl`
+    // canonicalises that to GBP case-insensitively, so without a special case
+    // 430.5 pence renders as £430.50 — a hundredfold overstatement, right next
+    // to a P&L figure.
+    expect(formatCurrency(430.5, "GBp")).toBe("430.5p");
+    // Real pounds are untouched.
+    expect(formatCurrency(430.5, "GBP")).toBe("£430.50");
+  });
+
   it("is case-insensitive about the currency code", () => {
     expect(formatCurrency(2500, "inr")).toBe("₹2,500.00");
   });

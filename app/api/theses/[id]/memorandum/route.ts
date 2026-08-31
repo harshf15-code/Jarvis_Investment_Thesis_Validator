@@ -323,7 +323,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       stockIdByTicker.set(r.ticker, existing.id);
       await stocksAdmin
         .from("stocks")
-        .update({ last_price: r.price, last_price_at: r.priceAsOf?.toISOString() ?? null })
+        .update({
+          last_price: r.price,
+          last_price_at: r.priceAsOf?.toISOString() ?? null,
+          // Re-asserted from the quote — see the note in prices/refresh.
+          ...(r.currency ? { currency: r.currency } : {}),
+        })
         .eq("id", existing.id);
       continue;
     }

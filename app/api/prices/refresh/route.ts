@@ -61,7 +61,17 @@ export async function POST(request: NextRequest) {
       prices[stock.id] = { price: quote.price, asOf: quote.asOf.toISOString() };
       await stocksAdmin
         .from("stocks")
-        .update({ last_price: quote.price, last_price_at: quote.asOf.toISOString() })
+        .update({
+          last_price: quote.price,
+          last_price_at: quote.asOf.toISOString(),
+          // Currency is re-asserted from the quote on every refresh, not
+          // written once and trusted forever. 0021 backfilled it from
+          // `exchange`, which is a good guess and not a fact: a bare US ticker
+          // can resolve to a foreign listing, and a row that was seeded USD
+          // would otherwise be aggregated as dollars for the rest of time. The
+          // quote is the authority, and this is the path that keeps saying so.
+          ...(quote.currency ? { currency: quote.currency } : {}),
+        })
         .eq("id", stock.id);
     } catch {
       // One symbol failing (delisted, rate-limited, transient network error)

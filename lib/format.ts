@@ -20,6 +20,15 @@ import type { ExchangeCode } from "@/lib/types";
  * the source now, and it comes off the quote itself.
  */
 export function formatCurrency(value: number, currency: string): string {
+  // `GBp` is Yahoo's code for PENCE, and it is a real value in `stocks`
+  // (0021's constraint allows it deliberately). `Intl` canonicalises the code
+  // case-insensitively to GBP, so 430.5 pence would render as £430.50 —
+  // a hundredfold overstatement, on a number sitting next to a P&L figure.
+  // Pence has no `Intl` currency of its own, so it is rendered the way the LSE
+  // quotes it.
+  if (currency.toLowerCase() === "gbp" && currency !== "GBP") {
+    return `${value.toLocaleString("en-GB", { maximumFractionDigits: 2 })}p`;
+  }
   return new Intl.NumberFormat(localeForCurrency(currency), {
     style: "currency",
     currency,

@@ -126,8 +126,9 @@ the model proposed. From there the app tracks the position, computes weighted-av
 entry across tranches, logs exits, and keeps a trade journal so you can review whether
 the thesis was right for the reasons you thought.
 
-Every stock stores the currency it is quoted in, so the Cockpit's open P&L is **one line per
-currency** rather than a single blended figure. A book holding INFY and AAPL sees a ₹ total and a
+Every stock stores the currency it is quoted in — re-read from the quote on every price refresh,
+not written once and trusted — so the Cockpit's open P&L is **one line per currency** rather than a
+single blended figure. A book holding INFY and AAPL sees a ₹ total and a
 $ total, each true. There is no exchange rate anywhere in this app, and a stale one misstates a
 portfolio silently, so it shows several correct numbers instead of one convenient wrong one.
 
