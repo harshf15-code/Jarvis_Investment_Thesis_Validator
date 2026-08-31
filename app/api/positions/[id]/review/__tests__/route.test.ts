@@ -29,7 +29,7 @@ const fenced = (o: unknown) => ({ text: "```json\n" + JSON.stringify(o) + "\n```
 
 const captured = { reviews: [] as Record<string, unknown>[], signals: [] as Record<string, unknown>[] };
 
-function buildMock(opts: { thesisText?: string } = {}) {
+function buildMock(opts: { thesisText?: string; exits?: { quantity: number }[] } = {}) {
   return {
     from: vi.fn().mockImplementation((table: string) => {
       if (table === "positions") {
@@ -77,6 +77,13 @@ function buildMock(opts: { thesisText?: string } = {}) {
         return {
           select: () => ({
             eq: async () => ({ data: [{ quantity: 10, price: 1400, date: "2026-08-01" }], error: null }),
+          }),
+        };
+      }
+      if (table === "exits") {
+        return {
+          select: () => ({
+            eq: async () => ({ data: opts.exits ?? [], error: null }),
           }),
         };
       }
@@ -191,6 +198,39 @@ describe("POST /api/positions/[id]/review", () => {
     await POST(post(), { params });
     const prompt = vi.mocked(generateText).mock.calls[0][0].prompt as string;
     expect(prompt).toContain("Bought for the cash conversion.");
+  });
+
+  it("reviews the quantity still held, not the quantity ever bought", async () => {
+    // A partial_exit position trimmed from 10 shares to 4 is 4 shares of
+    // capital at risk. Reviewing it as 10 overstates the position the read is
+    // about — and the scheduler deliberately keeps watching partial exits, so
+    // this is their normal case.
+    vi.mocked(createClient).mockResolvedValue(buildMock({ exits: [{ quantity: 6 }] }) as never);
+    await POST(post(), { params });
+    const prompt = vi.mocked(generateText).mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("Quantity: 4");
+  });
+
+  it("fails rather than reviewing a position whose entries could not be read", async () => {
+    // Supabase resolves with an `error` field rather than throwing, so
+    // ignoring it would turn a database failure into a zero-quantity position
+    // reviewed and saved as though it were real.
+    const mock = buildMock();
+    const realFrom = mock.from;
+    mock.from = vi.fn().mockImplementation((table: string) => {
+      if (table === "entries") {
+        return { select: () => ({ eq: async () => ({ data: null, error: { message: "boom" } }) }) };
+      }
+      return realFrom(table);
+    });
+    vi.mocked(createClient).mockResolvedValue(mock as never);
+
+    const res = await POST(post(), { params });
+
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/entries/);
+    expect(generateText).not.toHaveBeenCalled();
+    expect(captured.reviews).toEqual([]);
   });
 
   it("500s rather than saving a review it could not parse", async () => {

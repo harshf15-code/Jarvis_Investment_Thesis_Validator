@@ -505,8 +505,15 @@ export type HoldingReview = {
 export type HoldingWatchState = {
   position_id: string;
   user_id: string;
-  /** Null means never reviewed — which is how an import queues one. */
+  /** Null means never successfully reviewed — which is how an import queues one. */
   last_checked_at: string | null;
+  /**
+   * When the drain last TRIED, whatever came of it. The queue is ordered on
+   * this, not on `last_checked_at`: a holding that fails every time keeps a
+   * null `last_checked_at` forever, so ordering on that would hand back the
+   * same doomed rows every hour and starve everything behind them.
+   */
+  last_attempted_at: string | null;
   fundamentals: Json;
   next_earnings_date: string | null;
   last_earnings_seen: string | null;
@@ -526,7 +533,12 @@ export type HoldingWatchStateInsert = Pick<HoldingWatchState, "position_id"> &
   Partial<
     Pick<
       HoldingWatchState,
-      "user_id" | "last_checked_at" | "fundamentals" | "next_earnings_date" | "last_earnings_seen"
+      | "user_id"
+      | "last_checked_at"
+      | "last_attempted_at"
+      | "fundamentals"
+      | "next_earnings_date"
+      | "last_earnings_seen"
     >
   >;
 

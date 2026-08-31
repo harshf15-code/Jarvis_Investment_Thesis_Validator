@@ -150,12 +150,18 @@ moved more than 15%, Jarvis writes a read and puts it in your Feed and the daily
 moved, it records that it looked and **spends nothing** — that branch is what makes watching a
 large book affordable.
 
+A Feed row says an earnings *date has passed*, never that a report was published — this app has no
+filing or transcript source, and a date Yahoo only projected is labelled as an estimate.
+
 > **What this deliberately is not.** The obvious ask is "tell me what management said". This app
 > has no news feed, no transcripts and no live search, so it would have to invent that, and an
 > invented quote attributed to a real executive is the worst thing this codebase could produce. The
 > prompt forbids it explicitly: only a date, a number, or a change between two numbers may be
 > asserted as fact, and everything else is written as Jarvis's own read. An earnings date the data
 > provider only *estimated* is labelled as an estimate.
+
+The weekly schedule covers **imported holdings only** in v1. A Jarvis-originated position can be
+re-read whenever you ask, and its panel says so rather than promising a schedule nothing keeps.
 
 Two more consequences worth knowing. If you never told Jarvis why you bought something, it says
 there is no stated thesis to test and leans `UNCLEAR` rather than inventing a reason to grade. And

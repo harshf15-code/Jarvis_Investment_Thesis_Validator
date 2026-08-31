@@ -34,11 +34,19 @@ export function HoldingReviewsPanel({
   reviews,
   /** An existing watch row that has never run — the initial read is queued. */
   queued,
+  /**
+   * Whether the SCHEDULED watch actually covers this position. v1 scopes it to
+   * imported holdings, so a Jarvis-originated position can be re-read on
+   * demand but will never be re-read on a schedule — and telling that trader
+   * it is "re-checked weekly" would be a promise nothing keeps.
+   */
+  watched,
   onReviewed,
 }: {
   positionId: string;
   reviews: HoldingReview[];
   queued: boolean;
+  watched: boolean;
   onReviewed: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -68,7 +76,9 @@ export function HoldingReviewsPanel({
             Jarvis on this holding
           </h2>
           <p className="mt-1 text-xs text-on-surface-variant">
-            Re-checked weekly against the earnings calendar and this company&apos;s fundamentals.
+            {watched
+              ? "Re-checked weekly against the earnings calendar and this company's fundamentals."
+              : "Run on demand. The weekly watch covers imported holdings only, so this one is re-read when you ask."}{" "}
             Not news — Jarvis has no feed and says so rather than inventing one.
           </p>
         </div>

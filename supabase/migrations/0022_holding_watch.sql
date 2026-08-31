@@ -67,9 +67,14 @@ create policy "holding_reviews_owner_all" on holding_reviews
 create table holding_watch_state (
   position_id uuid primary key references positions(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade default auth.uid(),
-  -- NULL means never reviewed. That is the queue: an import writes these rows
-  -- with a null here, and the drain picks up nulls before anything else.
+  -- NULL means never successfully reviewed. That is the queue: an import writes
+  -- these rows with a null here, and the drain picks up nulls first.
   last_checked_at timestamptz,
+  -- When the drain last TRIED, whatever came of it. Distinct from
+  -- `last_checked_at` on purpose: the first orders the queue, the second
+  -- records success, and collapsing them into one column is what would let a
+  -- permanently failing holding block every holding behind it.
+  last_attempted_at timestamptz,
   fundamentals jsonb not null default '{}',
   -- The next earnings date Yahoo knew about at the last check, and the one we
   -- have already told the trader has passed. Two columns, because "an earnings
@@ -80,8 +85,31 @@ create table holding_watch_state (
 );
 
 create index idx_holding_watch_state_user_id on holding_watch_state (user_id);
--- The drain's query: oldest unchecked first, nulls before anything.
-create index idx_holding_watch_state_due on holding_watch_state (last_checked_at nulls first);
+-- The drain's query: oldest ATTEMPT first, nulls before anything.
+--
+-- Ordering on `last_checked_at` would starve the queue. A holding that fails
+-- every time -- a delisted symbol, an account permanently over budget -- keeps
+-- a null `last_checked_at` forever, so a nulls-first LIMIT would hand back the
+-- same doomed rows every hour and nothing behind them would ever be reached.
+-- `last_attempted_at` is stamped on every outcome including failure, so a
+-- failing row rotates to the back and retries next cycle instead of blocking
+-- the queue.
+create index idx_holding_watch_state_due on holding_watch_state (last_attempted_at nulls first);
+
+-- Existing imported holdings have to be queued too.
+--
+-- This migration ships after the import feature, so a trader may already own
+-- imported positions. Creating an empty table would leave every one of them
+-- silently unwatched -- the drain only ever reads this table, and only the
+-- import route writes to it -- so they would wait forever for a first read
+-- nobody had queued.
+insert into holding_watch_state (position_id, user_id)
+select p.id, p.user_id
+  from positions p
+  join theses t on t.id = p.thesis_id
+ where t.source = 'imported'
+   and p.status in ('active', 'partial_exit')
+on conflict (position_id) do nothing;
 
 alter table holding_watch_state enable row level security;
 create policy "holding_watch_state_owner_all" on holding_watch_state
@@ -97,7 +125,7 @@ create policy "holding_watch_state_owner_all" on holding_watch_state
 -- such column, so a watch flag could reach the Feed but never the email. Same
 -- column, same meaning, so the digest can do for signals exactly what it
 -- already does for alerts.
-alter table intelligence_signals add column emailed_at timestamptz;
+alter table intelligence_signals add column if not exists emailed_at timestamptz;
 
 
 -- 5. The budget check has to work without a session ---------------------------

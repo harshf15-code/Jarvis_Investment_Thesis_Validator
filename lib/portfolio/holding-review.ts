@@ -66,18 +66,45 @@ export async function reviewHolding(input: {
   if (positionError) return { status: "failed", error: positionError.message };
   if (!position) return { status: "failed", error: "Position not found" };
 
-  const [{ data: thesis }, { data: stock }, { data: entries }, { data: profile }, { data: state }] =
-    await Promise.all([
-      supabase.from("theses").select("id, input_text, source").eq("id", position.thesis_id).maybeSingle(),
-      supabase.from("stocks").select("ticker, yahoo_symbol, currency, last_price").eq("id", position.stock_id).maybeSingle(),
-      supabase.from("entries").select("quantity, price, date").eq("position_id", positionId),
-      supabase.from("portfolio_profiles").select("objective").eq("user_id", userId).maybeSingle(),
-      supabase.from("holding_watch_state").select("*").eq("position_id", positionId).maybeSingle(),
-    ]);
+  const [thesisRes, stockRes, entriesRes, exitsRes, profileRes, stateRes] = await Promise.all([
+    supabase.from("theses").select("id, input_text, source").eq("id", position.thesis_id).maybeSingle(),
+    supabase.from("stocks").select("ticker, yahoo_symbol, currency, last_price").eq("id", position.stock_id).maybeSingle(),
+    supabase.from("entries").select("quantity, price, date").eq("position_id", positionId),
+    supabase.from("exits").select("quantity").eq("position_id", positionId),
+    supabase.from("portfolio_profiles").select("objective").eq("user_id", userId).maybeSingle(),
+    supabase.from("holding_watch_state").select("*").eq("position_id", positionId).maybeSingle(),
+  ]);
+
+  // Supabase resolves with an `error` field rather than throwing, so ignoring
+  // these would turn a database failure into a plausible-looking review: a
+  // failed `entries` read becomes a zero-quantity position, and a failed
+  // `theses` read becomes "the trader recorded no reason". Both would then be
+  // written to the ledger and shown as a real read.
+  for (const [what, res] of [
+    ["thesis", thesisRes],
+    ["stock", stockRes],
+    ["entries", entriesRes],
+    ["exits", exitsRes],
+    ["portfolio objective", profileRes],
+    ["watch state", stateRes],
+  ] as const) {
+    if (res.error) return { status: "failed", error: `Could not read the ${what}: ${res.error.message}` };
+  }
+
+  const thesis = thesisRes.data;
+  const stock = stockRes.data;
+  const entries = entriesRes.data;
+  const profile = profileRes.data;
+  const state = stateRes.data;
 
   if (!stock?.yahoo_symbol) {
     return { status: "failed", error: `${position.ticker} has no resolved listing to read` };
   }
+
+  // Exits subtracted, so a position trimmed from 100 shares to 20 is reviewed
+  // as the 20 still at risk. The drain deliberately watches `partial_exit`
+  // positions, so this is the normal case for them, not an edge one.
+  const exited = (exitsRes.data ?? []).reduce((sum, e) => sum + e.quantity, 0);
 
   const previous: WatchState = {
     fundamentals: (state?.fundamentals as Record<string, unknown> | null) ?? {},
@@ -103,24 +130,37 @@ export async function reviewHolding(input: {
 
   const detected = detectTriggers({ state: previous, observed, today });
 
-  const writeState = async (checked: boolean) => {
-    await supabase.from("holding_watch_state").upsert(
+  /**
+   * Advances the watch state. Returns an error message when it could not.
+   *
+   * Not fire-and-forget: if a review and its Feed row are saved but the state
+   * write fails, the next hourly drain sees the same trigger against the same
+   * stale snapshot and spends another model call — a duplicate review, a
+   * duplicate Feed row and a duplicate line in the digest, repeating every
+   * hour until it happens to succeed.
+   */
+  const writeState = async (checked: boolean): Promise<string | null> => {
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("holding_watch_state").upsert(
       {
         position_id: positionId,
         user_id: userId,
         fundamentals: detected.nextState.fundamentals as Json,
         next_earnings_date: detected.nextState.nextEarningsDate,
         last_earnings_seen: detected.nextState.lastEarningsSeen,
-        ...(checked ? { last_checked_at: new Date().toISOString() } : {}),
+        last_attempted_at: now,
+        ...(checked ? { last_checked_at: now } : {}),
       },
       { onConflict: "position_id" },
     );
+    return error ? error.message : null;
   };
 
   // Nothing moved and nobody asked. Record that we looked and spend nothing —
   // this is the branch that keeps a weekly watch over a large book affordable.
   if (!force && !isInitial && detected.triggers.length === 0) {
-    await writeState(true);
+    const stateError = await writeState(true);
+    if (stateError) return { status: "failed", error: stateError };
     return { status: "unchanged" };
   }
 
@@ -132,24 +172,31 @@ export async function reviewHolding(input: {
     return { status: "skipped", reason: budget.message };
   }
 
-  // `manual` covers both a trader asking and the first-ever read. Otherwise
-  // the calendar wins over a fundamentals move — an earnings date is a harder
-  // fact and the more useful headline.
-  const trigger: HoldingReviewTrigger =
-    force || isInitial
+  // The calendar wins over a fundamentals move — an earnings date is a harder
+  // fact and the more useful headline. `manual` covers a trader asking and the
+  // first-ever read of a holding with nothing notable about it.
+  //
+  // An initial read that DOES find an earnings date keeps the calendar
+  // trigger, and that is not cosmetic. Forcing it to `manual` meant a holding
+  // imported with earnings the following week never reached the Feed — and
+  // because the initial run had already recorded that date as seen, the next
+  // weekly run would not fire on it either. The event simply vanished.
+  const calendar = detected.triggers.includes("earnings_calendar");
+  const trigger: HoldingReviewTrigger = calendar
+    ? "earnings_calendar"
+    : force || isInitial
       ? "manual"
-      : detected.triggers.includes("earnings_calendar")
-        ? "earnings_calendar"
-        : (detected.triggers[0] ?? "scheduled");
+      : (detected.triggers[0] ?? "scheduled");
 
   const weightedAverage = computeWeightedAverageEntry(entries ?? []);
+  const remaining = weightedAverage.totalQuantity - exited;
   const heldSince = (entries ?? []).map((e) => e.date).sort()[0] ?? null;
 
   const context = buildHoldingReviewContext({
     ticker: position.ticker,
     companyName: null,
     currency: stock.currency,
-    quantity: weightedAverage.totalQuantity,
+    quantity: remaining,
     averagePrice: weightedAverage.averagePrice,
     currentPrice: price,
     rationale: rationaleFrom(thesis?.input_text ?? null, position.ticker),
@@ -196,11 +243,13 @@ export async function reviewHolding(input: {
     return { status: "failed", error: reviewError?.message ?? "Failed to save the review" };
   }
 
-  // A Feed row only for a read the watch went looking for. An initial read and
-  // a trader-requested re-run are already on screen where they were asked for;
-  // putting them in the Feed too would make the Feed a log rather than a list
-  // of things that need attention.
-  const flagged = trigger === "earnings_calendar" || trigger === "fundamentals_delta";
+  // A Feed row for a development the watch found, never for the mere act of
+  // looking. A trader-requested re-run is already on the screen they asked
+  // from, and putting that in the Feed would make it a log rather than a list
+  // of things needing attention — but a real earnings date or fundamentals
+  // move found during an INITIAL read is exactly what the Feed is for, which
+  // is why this follows the trigger rather than excluding `isInitial`.
+  const flagged = !force && (trigger === "earnings_calendar" || trigger === "fundamentals_delta");
   if (flagged) {
     const { error: signalError } = await supabase.from("intelligence_signals").insert({
       user_id: userId,
@@ -212,6 +261,7 @@ export async function reviewHolding(input: {
         lean: parsed.data.lean,
         passedEarnings: detected.passedEarnings,
         upcomingEarnings: detected.upcomingEarnings,
+        earningsDateIsEstimate: observed.earningsDateIsEstimate,
         changes: detected.changes,
       }),
     });
@@ -222,7 +272,14 @@ export async function reviewHolding(input: {
     }
   }
 
-  await writeState(true);
+  const stateError = await writeState(true);
+  if (stateError) {
+    // The review is saved and the Feed row is out; only the bookkeeping
+    // failed. Reported so the caller counts it as a failure and the row is
+    // retried, rather than silently re-reviewing this holding every hour.
+    console.error(`[holding-watch] ${positionId} reviewed but state not advanced: ${stateError}`);
+    return { status: "failed", error: `Review saved but the watch state could not be advanced: ${stateError}` };
+  }
   return { status: "reviewed", trigger, reviewId: review.id, flagged };
 }
 

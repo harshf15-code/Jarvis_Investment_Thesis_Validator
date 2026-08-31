@@ -154,8 +154,19 @@ export function detectTriggers(input: {
     upcomingEarnings: upcoming,
     passedEarnings: passed,
     nextState: {
-      fundamentals: observed.fundamentals,
-      nextEarningsDate: upcoming,
+      // MERGED over the previous baseline, not replaced by it.
+      //
+      // Yahoo drops a module or an individual field from time to time, and the
+      // last known value stays true when it does. Replacing wholesale would
+      // erase that baseline, so when the metric reappeared there would be
+      // nothing to compare it against and a real move would pass unnoticed —
+      // the watch would go quietest exactly when the data got flaky.
+      fundamentals: { ...state.fundamentals, ...observed.fundamentals },
+      // A tracked date is retired only once it has actually PASSED or been
+      // replaced by a later one. If Yahoo simply stops reporting a future
+      // date, keeping it is what lets the "it has been and gone" trigger still
+      // fire when that day arrives.
+      nextEarningsDate: upcoming ?? (passed !== null ? null : state.nextEarningsDate),
       // Only claim to have spoken about a date once we actually have.
       lastEarningsSeen: approaching ? upcoming : state.lastEarningsSeen,
     },
@@ -418,17 +429,30 @@ export function buildHoldingReviewContext(input: {
  *
  * Built here rather than asked of the model: a Feed row is a claim about what
  * happened, and what happened is something this code knows exactly.
+ *
+ * It knows LESS than it is tempting to write. A passed calendar date means the
+ * date is behind us — NOT that a report was published, and certainly not what
+ * it said; this app has no filing or transcript source. And Yahoo's date is
+ * sometimes its own projection, which must not be printed as a fixture. Both
+ * are stated the way the earlier wording did not: "earnings reported
+ * 2026-08-20" asserted a report nobody had seen, in the one place — the Feed
+ * and the digest email — where the claim travels furthest from its evidence.
  */
 export function signalHeadline(input: {
   ticker: string;
   lean: HoldingLean;
   passedEarnings: string | null;
   upcomingEarnings: string | null;
+  earningsDateIsEstimate?: boolean;
   changes: FundamentalChange[];
 }): string {
   const reasons: string[] = [];
-  if (input.passedEarnings) reasons.push(`earnings reported ${input.passedEarnings}`);
-  else if (input.upcomingEarnings) reasons.push(`earnings due ${input.upcomingEarnings}`);
+  const estimated = input.earningsDateIsEstimate ? " (estimated)" : "";
+  if (input.passedEarnings) {
+    reasons.push(`earnings date ${input.passedEarnings} has passed${estimated}`);
+  } else if (input.upcomingEarnings) {
+    reasons.push(`earnings date ${input.upcomingEarnings}${estimated}`);
+  }
   if (input.changes.length === 1) reasons.push(`${input.changes[0].label.toLowerCase()} moved`);
   else if (input.changes.length > 1) reasons.push(`${input.changes.length} fundamentals moved`);
   const why = reasons.length > 0 ? reasons.join(", ") : "a scheduled re-check";

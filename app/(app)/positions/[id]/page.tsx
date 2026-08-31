@@ -231,6 +231,7 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
           positionId={position.id}
           reviews={detail.reviews ?? []}
           queued={detail.watch !== null && detail.watch.last_checked_at === null}
+          watched={thesis?.source === "imported"}
           // Not `handleSaved`: that one pushes to the journal when a position
           // has just gone to zero. A new read only needs the page re-fetched.
           onReviewed={() => setReloadKey((k) => k + 1)}

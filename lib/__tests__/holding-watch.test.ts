@@ -137,6 +137,39 @@ describe("detectTriggers — earnings", () => {
   });
 });
 
+describe("detectTriggers — flaky provider data", () => {
+  it("keeps a baseline metric Yahoo temporarily stopped reporting", () => {
+    // Replacing the baseline wholesale would erase the old value, so when the
+    // metric came back there would be nothing to compare it against — the
+    // watch would go quietest exactly when the data got flaky.
+    const first = fire(
+      state({ fundamentals: { trailingPE: 20, profitMargins: 0.2 } }),
+      observed({ fundamentals: { trailingPE: 21 } }),
+    );
+    expect(first.nextState.fundamentals).toEqual({ trailingPE: 21, profitMargins: 0.2 });
+
+    // And the preserved baseline still detects a real move when it returns.
+    const second = fire(
+      state(first.nextState),
+      observed({ fundamentals: { trailingPE: 21, profitMargins: 0.1 } }),
+    );
+    expect(second.triggers).toContain("fundamentals_delta");
+  });
+
+  it("keeps tracking a future earnings date Yahoo stopped reporting", () => {
+    // Dropping it would mean the "it has been and gone" trigger could never
+    // fire for that date.
+    const tracked = "2026-09-20";
+    const result = fire(state({ nextEarningsDate: tracked }), observed({ earningsDates: [] }));
+    expect(result.nextState.nextEarningsDate).toBe(tracked);
+
+    // ...and it still fires once the day arrives.
+    const later = fire(state(result.nextState), observed({ earningsDates: [] }), "2026-09-21");
+    expect(later.passedEarnings).toBe(tracked);
+    expect(later.nextState.nextEarningsDate).toBeNull();
+  });
+});
+
 describe("detectTriggers — the first run", () => {
   it("fires nothing but records a baseline", () => {
     // There is no previous snapshot to diff against, so every metric would
@@ -199,7 +232,37 @@ describe("the Feed row", () => {
           { key: "trailingPE", label: "Trailing P/E", previous: 20, current: 30, percentChange: 50 },
         ],
       }),
-    ).toBe("INFY: earnings reported 2026-08-20, trailing p/e moved — Jarvis leans TRIM");
+    ).toBe("INFY: earnings date 2026-08-20 has passed, trailing p/e moved — Jarvis leans TRIM");
+  });
+
+  it("never claims a report was published, only that a date passed", () => {
+    // The Feed and the digest are where a claim travels furthest from its
+    // evidence. All this app knows is that a calendar date is behind us — it
+    // has no filing, no transcript and no idea what was said.
+    const headline = signalHeadline({
+      ticker: "INFY",
+      lean: "STAY",
+      passedEarnings: "2026-08-20",
+      upcomingEarnings: null,
+      changes: [],
+    });
+    expect(headline).not.toMatch(/reported/);
+    expect(headline).toContain("has passed");
+  });
+
+  it("marks an estimated earnings date as estimated", () => {
+    // Yahoo projects dates. Printing a projection as a fixture is the same
+    // class of claim the whole feature refuses to make.
+    expect(
+      signalHeadline({
+        ticker: "TCS",
+        lean: "STAY",
+        passedEarnings: null,
+        upcomingEarnings: "2026-09-04",
+        earningsDateIsEstimate: true,
+        changes: [],
+      }),
+    ).toContain("2026-09-04 (estimated)");
   });
 
   it("counts multiple movers rather than listing them all", () => {
@@ -213,6 +276,6 @@ describe("the Feed row", () => {
         { key: "b", label: "B", previous: 1, current: 2, percentChange: 100 },
       ],
     });
-    expect(headline).toBe("TCS: earnings due 2026-09-04, 2 fundamentals moved — Jarvis leans STAY");
+    expect(headline).toBe("TCS: earnings date 2026-09-04, 2 fundamentals moved — Jarvis leans STAY");
   });
 });

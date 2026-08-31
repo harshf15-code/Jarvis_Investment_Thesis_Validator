@@ -54,9 +54,15 @@ export async function POST(request: Request) {
   // as an `or`.
   const { data: pending, error } = await supabase
     .from("holding_watch_state")
-    .select("position_id, user_id, last_checked_at")
+    .select("position_id, user_id, last_checked_at, last_attempted_at")
     .or(`last_checked_at.is.null,last_checked_at.lt.${due}`)
-    .order("last_checked_at", { ascending: true, nullsFirst: true })
+    // Ordered on the ATTEMPT, not the check. A holding that fails every time —
+    // a delisted symbol, an account permanently over budget — never gets a
+    // `last_checked_at`, so ordering on that would hand back the same doomed
+    // WATCH_BATCH rows every hour and nothing behind them would ever be
+    // reached. Every outcome stamps `last_attempted_at`, so a failing row
+    // rotates to the back and retries next cycle.
+    .order("last_attempted_at", { ascending: true, nullsFirst: true })
     .limit(WATCH_BATCH);
 
   if (error) {
@@ -70,9 +76,17 @@ export async function POST(request: Request) {
   // watch to imported holdings per the PRD; the table is keyed by position_id
   // rather than by source so widening it later is a query change, not a
   // migration.
-  const { data: eligible } = await supabase
+  //
+  // `user_id` is selected because the QUEUE ROW'S owner cannot be trusted. RLS
+  // on `holding_watch_state` checks only that a writer owns the row they
+  // insert, and the foreign key to `positions` does not require the two owners
+  // to match — so an authenticated account could queue its own `user_id`
+  // against someone else's `position_id`, and this service-role job would
+  // happily read the victim's thesis and entries. The position's own owner is
+  // the only authority here.
+  const { data: eligible, error: eligibleError } = await supabase
     .from("positions")
-    .select("id, thesis_id, theses!inner(source)")
+    .select("id, user_id, thesis_id, theses!inner(source)")
     .in(
       "id",
       pending.map((p) => p.position_id),
@@ -83,18 +97,56 @@ export async function POST(request: Request) {
     .in("status", ["active", "partial_exit"])
     .eq("theses.source", "imported");
 
-  const eligibleIds = new Set((eligible ?? []).map((p) => p.id));
+  // Stop rather than proceed with an empty set. A transient failure here would
+  // otherwise read as "every one of these positions is closed" and the loop
+  // below would DELETE up to WATCH_BATCH valid queue rows, permanently
+  // dropping those holdings from monitoring.
+  if (eligibleError) {
+    return NextResponse.json({ error: eligibleError.message }, { status: 500 });
+  }
+
+  const ownerByPosition = new Map((eligible ?? []).map((p) => [p.id, p.user_id]));
 
   const tally = { checked: 0, reviewed: 0, unchanged: 0, skipped: 0, failed: 0 };
   const flagged: string[] = [];
+
+  /**
+   * Rotates a row to the back of the queue without claiming it was checked.
+   *
+   * The skip and failure paths return before `reviewHolding` advances any
+   * state, so without this a row that fails every time — or belongs to an
+   * account permanently over budget — keeps its null `last_attempted_at` and
+   * is re-selected every hour, starving every holding behind it. Stamping the
+   * attempt (and NOT `last_checked_at`) rotates it while keeping it due.
+   */
+  const recordAttempt = async (positionId: string) => {
+    const { error: attemptError } = await supabase
+      .from("holding_watch_state")
+      .update({ last_attempted_at: new Date().toISOString() })
+      .eq("position_id", positionId);
+    if (attemptError) {
+      console.error(`[holding-watch] could not stamp an attempt on ${positionId}:`, attemptError);
+    }
+  };
 
   // Sequential on purpose. Each iteration can make a model call, and running
   // 25 of those concurrently would spend a slice of the daily cap faster than
   // `checkBudget` — a pre-flight, not a reservation — can observe it.
   for (const row of pending) {
-    if (!eligibleIds.has(row.position_id)) {
+    const owner = ownerByPosition.get(row.position_id);
+    if (owner === undefined) {
       // Closed, or no longer an imported holding. Drop it from the queue so it
       // stops being drained forever.
+      await supabase.from("holding_watch_state").delete().eq("position_id", row.position_id);
+      continue;
+    }
+    if (owner !== row.user_id) {
+      // The queue row claims an owner the position does not have. Nothing
+      // legitimate produces this; it is what a forged row looks like. Delete
+      // it and review nothing.
+      console.error(
+        `[holding-watch] queue row for ${row.position_id} claims a different owner than the position; dropping it`,
+      );
       await supabase.from("holding_watch_state").delete().eq("position_id", row.position_id);
       continue;
     }
@@ -102,7 +154,8 @@ export async function POST(request: Request) {
     try {
       const outcome = await reviewHolding({
         supabase,
-        userId: row.user_id,
+        // The POSITION's owner, never the queue row's.
+        userId: owner,
         positionId: row.position_id,
         force: false,
       });
@@ -113,15 +166,18 @@ export async function POST(request: Request) {
         tally.unchanged += 1;
       } else if (outcome.status === "skipped") {
         tally.skipped += 1;
+        await recordAttempt(row.position_id);
       } else {
         tally.failed += 1;
         console.error(`[holding-watch] ${row.position_id}: ${outcome.error}`);
+        await recordAttempt(row.position_id);
       }
     } catch (err) {
       // One bad symbol must not abort the slice — the remaining holdings in
       // this batch have nothing to do with it.
       tally.failed += 1;
       console.error(`[holding-watch] ${row.position_id} threw:`, err);
+      await recordAttempt(row.position_id);
     }
   }
 

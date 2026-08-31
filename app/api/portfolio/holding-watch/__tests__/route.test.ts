@@ -32,6 +32,7 @@ type Captured = {
   signals: Record<string, unknown>[];
   watchUpserts: Record<string, unknown>[];
   watchDeletes: string[];
+  attempts: Record<string, unknown>[];
 };
 
 /**
@@ -41,7 +42,7 @@ type Captured = {
  */
 function buildAdminMock(opts: {
   pending?: { position_id: string; user_id: string; last_checked_at: string | null }[];
-  eligible?: { id: string; thesis_id: string }[];
+  eligible?: { id: string; user_id: string; thesis_id: string }[];
   state?: Record<string, unknown> | null;
   thesisText?: string;
   captured: Captured;
@@ -49,7 +50,7 @@ function buildAdminMock(opts: {
   const pending = opts.pending ?? [
     { position_id: "pos-1", user_id: "user-1", last_checked_at: null },
   ];
-  const eligible = opts.eligible ?? [{ id: "pos-1", thesis_id: "th-1" }];
+  const eligible = opts.eligible ?? [{ id: "pos-1", user_id: "user-1", thesis_id: "th-1" }];
 
   const from = vi.fn().mockImplementation((table: string) => {
     if (table === "holding_watch_state") {
@@ -64,6 +65,12 @@ function buildAdminMock(opts: {
           opts.captured.watchUpserts.push(row);
           return { error: null };
         },
+        update: (row: Record<string, unknown>) => ({
+          eq: async (_col: string, id: string) => {
+            opts.captured.attempts.push({ position_id: id, ...row });
+            return { error: null };
+          },
+        }),
         delete: () => ({
           eq: async (_col: string, id: string) => {
             opts.captured.watchDeletes.push(id);
@@ -118,6 +125,9 @@ function buildAdminMock(opts: {
         }),
       };
     }
+    if (table === "exits") {
+      return { select: () => ({ eq: async () => ({ data: [], error: null }) }) };
+    }
     if (table === "portfolio_profiles") {
       return {
         select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
@@ -155,7 +165,7 @@ function post(secret: string | null = SECRET) {
 }
 
 function captured(): Captured {
-  return { reviews: [], signals: [], watchUpserts: [], watchDeletes: [] };
+  return { reviews: [], signals: [], watchUpserts: [], watchDeletes: [], attempts: [] };
 }
 
 describe("POST /api/portfolio/holding-watch", () => {
@@ -279,8 +289,8 @@ describe("POST /api/portfolio/holding-watch", () => {
           { position_id: "pos-2", user_id: "user-2", last_checked_at: null },
         ],
         eligible: [
-          { id: "pos-1", thesis_id: "th-1" },
-          { id: "pos-2", thesis_id: "th-1" },
+          { id: "pos-1", user_id: "user-1", thesis_id: "th-1" },
+          { id: "pos-2", user_id: "user-2", thesis_id: "th-1" },
         ],
       }) as never,
     );
@@ -306,6 +316,134 @@ describe("POST /api/portfolio/holding-watch", () => {
     expect(generateText).not.toHaveBeenCalled();
   });
 
+  it("refuses to drain when the eligibility lookup fails, deleting nothing", async () => {
+    // The bug this guards: a transient error made `eligible` null, every row
+    // looked closed, and the loop deleted up to WATCH_BATCH valid queue rows —
+    // permanently dropping those holdings from monitoring.
+    const cap = captured();
+    const mock = buildAdminMock({ captured: cap });
+    const realFrom = mock.from;
+    mock.from = vi.fn().mockImplementation((table: string) => {
+      if (table === "positions") {
+        return {
+          select: () => ({
+            in: () => ({ in: () => ({ eq: async () => ({ data: null, error: { message: "boom" } }) }) }),
+          }),
+        };
+      }
+      return realFrom(table);
+    });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+
+    const res = await POST(post());
+
+    expect(res.status).toBe(500);
+    expect(cap.watchDeletes).toEqual([]);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("never reviews a position whose owner differs from the queue row", async () => {
+    // RLS on `holding_watch_state` checks only that a writer owns the row they
+    // insert, and the FK to `positions` does not require the two owners to
+    // match — so an account could queue its own user_id against someone else's
+    // position_id and have this service-role job read their book.
+    const cap = captured();
+    vi.mocked(createAdminClient).mockReturnValue(
+      buildAdminMock({
+        captured: cap,
+        pending: [{ position_id: "pos-1", user_id: "attacker", last_checked_at: null }],
+        eligible: [{ id: "pos-1", user_id: "victim", thesis_id: "th-1" }],
+      }) as never,
+    );
+
+    const body = await (await POST(post())).json();
+
+    expect(generateText).not.toHaveBeenCalled();
+    expect(body).toMatchObject({ checked: 0, reviewed: 0 });
+    // The forged row is dropped rather than left to be retried every hour.
+    expect(cap.watchDeletes).toEqual(["pos-1"]);
+  });
+
+  it("rotates a skipped row so it cannot starve the queue", async () => {
+    // A permanently over-budget account keeps a null `last_checked_at`, so
+    // without an attempt stamp the nulls-first LIMIT would hand back the same
+    // rows every hour and nothing behind them would ever be reached.
+    const cap = captured();
+    vi.mocked(createAdminClient).mockReturnValue(buildAdminMock({ captured: cap }) as never);
+    vi.mocked(getHoldingSnapshot).mockResolvedValue({
+      fundamentals: {}, earningsDates: [], earningsDateIsEstimate: false,
+    } as never);
+    vi.mocked(checkBudget).mockResolvedValue({
+      ok: false, window: "daily", message: "over budget",
+    } as never);
+
+    await POST(post());
+
+    expect(cap.attempts).toHaveLength(1);
+    expect(cap.attempts[0]).toMatchObject({ position_id: "pos-1" });
+    expect(cap.attempts[0].last_attempted_at).toBeTruthy();
+    // Still due: the attempt rotates it, it does not mark it checked.
+    expect(cap.attempts[0].last_checked_at).toBeUndefined();
+  });
+
+  it("rotates a failed row too", async () => {
+    const cap = captured();
+    vi.mocked(createAdminClient).mockReturnValue(buildAdminMock({ captured: cap }) as never);
+    vi.mocked(getHoldingSnapshot).mockRejectedValue(new Error("Yahoo is unhappy"));
+
+    const body = await (await POST(post())).json();
+
+    expect(body).toMatchObject({ failed: 1 });
+    expect(cap.attempts).toHaveLength(1);
+  });
+
+  it("flags an imported holding whose first read finds imminent earnings", async () => {
+    // The hole this closes: `isInitial` forced the trigger to `manual`, so the
+    // Feed never saw it — and because the initial run recorded the date as
+    // seen, the next weekly run would not fire on it either. An earnings event
+    // days away simply vanished.
+    const cap = captured();
+    vi.mocked(createAdminClient).mockReturnValue(buildAdminMock({ captured: cap }) as never);
+    const soon = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+    vi.mocked(getHoldingSnapshot).mockResolvedValue({
+      fundamentals: {}, earningsDates: [soon], earningsDateIsEstimate: false,
+    } as never);
+
+    const body = await (await POST(post())).json();
+
+    expect(body).toMatchObject({ reviewed: 1, flagged: 1 });
+    expect(cap.reviews[0]).toMatchObject({ trigger: "earnings_calendar" });
+    expect(cap.signals[0].headline).toContain(soon);
+    // And it never says a report was published.
+    expect(cap.signals[0].headline).not.toMatch(/reported/);
+  });
+
+  it("counts a failed watch-state write as a failure, not a success", async () => {
+    // Otherwise the next hourly run sees the same trigger against the same
+    // stale snapshot and spends another model call — a duplicate review, Feed
+    // row and digest line, every hour until it happens to succeed.
+    const cap = captured();
+    const mock = buildAdminMock({ captured: cap });
+    const realFrom = mock.from;
+    mock.from = vi.fn().mockImplementation((table: string) => {
+      if (table === "holding_watch_state") {
+        return {
+          ...realFrom(table),
+          upsert: async () => ({ error: { message: "write failed" } }),
+        };
+      }
+      return realFrom(table);
+    });
+    vi.mocked(createAdminClient).mockReturnValue(mock as never);
+    vi.mocked(getHoldingSnapshot).mockResolvedValue({
+      fundamentals: {}, earningsDates: [], earningsDateIsEstimate: false,
+    } as never);
+
+    const body = await (await POST(post())).json();
+
+    expect(body).toMatchObject({ failed: 1, reviewed: 0 });
+  });
+
   it("keeps going when one holding throws", async () => {
     const cap = captured();
     vi.mocked(createAdminClient).mockReturnValue(
@@ -316,8 +454,8 @@ describe("POST /api/portfolio/holding-watch", () => {
           { position_id: "pos-2", user_id: "user-1", last_checked_at: null },
         ],
         eligible: [
-          { id: "pos-1", thesis_id: "th-1" },
-          { id: "pos-2", thesis_id: "th-1" },
+          { id: "pos-1", user_id: "user-1", thesis_id: "th-1" },
+          { id: "pos-2", user_id: "user-1", thesis_id: "th-1" },
         ],
       }) as never,
     );
