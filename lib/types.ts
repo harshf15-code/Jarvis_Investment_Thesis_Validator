@@ -43,7 +43,9 @@ export type LlmFeature =
   | "council_opinion"
   | "council_synthesis"
   | "journal"
-  | "holding_review";
+  | "holding_review"
+  | "portfolio_council_opinion"
+  | "portfolio_council_synthesis";
 
 /**
  * `reported` is OpenRouter's own charge for the call, read off the raw response
@@ -480,6 +482,25 @@ export type HoldingReviewTrigger =
   | "scheduled";
 
 /**
+ * `portfolio_council_reports` (0023) — one Council consult on the whole book.
+ *
+ * Append-only, unlike `thesis_council_reports`, which is keyed
+ * `unique (thesis_id, market)` and replaced in place. A memorandum is rewritten
+ * on every re-run so an old report on it is stale by definition; a portfolio is
+ * not rewritten, it changes, and comparing two dates is the point.
+ */
+export type PortfolioCouncilReportRow = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  document: Json;
+  /** What was reviewed and at what prices, so a report cannot silently read as
+   *  current once the book has moved on. */
+  holdings_snapshot: Json;
+  raw_llm_response: string | null;
+};
+
+/**
  * `holding_reviews` (0022) — one Jarvis read of one holding, append-only.
  *
  * `document` is a `HoldingReview` from `lib/holding-watch.ts`, re-validated on
@@ -520,6 +541,14 @@ export type HoldingWatchState = {
 };
 
 // --- Insert types (columns with a SQL default or that are nullable become optional) ---
+
+export type PortfolioCouncilReportInsert = Pick<
+  PortfolioCouncilReportRow,
+  "document" | "holdings_snapshot"
+> &
+  Partial<Pick<PortfolioCouncilReportRow, "id" | "user_id" | "created_at" | "raw_llm_response">>;
+
+export type PortfolioCouncilReportUpdate = Partial<PortfolioCouncilReportInsert>;
 
 export type HoldingReviewInsert = Pick<
   HoldingReview,
@@ -942,6 +971,12 @@ export interface Database {
         Row: PortfolioProfile;
         Insert: PortfolioProfileInsert;
         Update: PortfolioProfileUpdate;
+        Relationships: [];
+      };
+      portfolio_council_reports: {
+        Row: PortfolioCouncilReportRow;
+        Insert: PortfolioCouncilReportInsert;
+        Update: PortfolioCouncilReportUpdate;
         Relationships: [];
       };
       holding_reviews: {

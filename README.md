@@ -104,6 +104,32 @@ A consult costs **N + 1 model calls** and zero market-data lookups; the member c
 parallel, so a seven-member panel takes about as long as a three-member one. If one member's call
 fails, its card says so and the rest of the report still renders.
 
+### The Council on your whole portfolio
+
+The same roster, asked a different question. Not "should I own this stock" but "does this
+collection of things make sense together" — concentration, sizing, diversification — which is what
+an actual advisor looks at first.
+
+Every holding is **re-priced live before the panel reads it**, so the consult costs N+1 model calls
+*plus* a price and fundamentals fetch per position. That makes it meaningfully slower than a thesis
+consult, and the confirm step says so before you commit to it.
+
+Members give a per-holding trim/add/hold call **only where they have a real view**. Silence on a
+position is a legitimate answer and renders as "no view"; a full member × holding grid of
+low-conviction HOLDs would bury the one or two calls that actually matter. A call naming a ticker
+you do not hold is dropped after the parse — the argument survives, the unownable instruction does
+not — and the "more than one member said the same thing" line is counted from the surviving cards
+rather than taken from the model's own summary of them.
+
+> **Weights are within a currency, never across.** A weight is a share of a total, and there is no
+> honest total across ₹ and $ without an exchange rate this app does not hold. So a mixed book is
+> presented to the panel as separate sub-books, and each member is told outright that cross-currency
+> concentration is outside what they can judge. In testing all three personas said so themselves.
+
+Each consult is a **new** entry, never a replace: a portfolio changes, and comparing what the
+Council said in June with what it says now is the point. Every report stores what it reviewed and at
+what prices, so it cannot quietly read as current once your book has moved on.
+
 ### The memorandum
 
 One screen, produced in a single pass:
@@ -224,6 +250,7 @@ thirty of them would bury the ones that are.
 | `/thesis/[id]` | **The memorandum** |
 | `/positions` · `/positions/[id]` | Open positions, entries, exits |
 | `/positions/import` | Import holdings you already own from a broker CSV |
+| `/positions/council` | The Investment Council on your whole portfolio |
 | `/feed` | Intelligence feed |
 | `/journal` | Trade journal and post-mortems |
 | `/discovery` | Opportunity discovery |
@@ -329,6 +356,7 @@ lib/
   jarvis-thesis-parser.ts  Fenced-JSON extraction, trade-plan geometry
   markets.ts               Market → exchanges/currency registry (one source of truth)
   holding-watch.ts         What counts as a development worth a model call
+  jarvis-portfolio-council.ts  Council on the whole book — per-currency sub-books
   csv.ts                   RFC 4180 reader (quoted commas, CRLF, BOM) + number parsing
   portfolio-import.ts      Column detection, row validation, import row shapes
   portfolio/resolve.ts     Prices and vets a CSV batch — writes nothing
@@ -406,6 +434,7 @@ erDiagram
     portfolio_imports ||--o{ theses : "created (source='imported')"
     positions ||--o{ holding_reviews : "re-read weekly"
     positions ||--o| holding_watch_state : "what changed since"
+    council_members ||--o{ portfolio_council_reports : "consulted on the book"
 ```
 
 `thesis_memorandums.document` is one validated JSONB blob rather than forty columns: it is
