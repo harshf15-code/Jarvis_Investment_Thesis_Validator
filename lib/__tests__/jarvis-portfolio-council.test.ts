@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aggregateByListing,
   buildPortfolioOpinionUserContext,
+  consensusCalls,
   callsByTicker,
   normalizePortfolioCouncilReport,
   parsePortfolioOpinion,
@@ -42,6 +44,7 @@ function report(over: Partial<PortfolioCouncilReport> = {}): PortfolioCouncilRep
       { member_id: "m1", member_name: "A", source: "builtin", opinion: OPINION as never, error: null },
     ],
     synthesis: null,
+    synthesis_skipped: null,
     generated_at: "2026-08-31T00:00:00Z",
     ...over,
   };
@@ -85,6 +88,85 @@ describe("splitByCurrency", () => {
       holding({ currency: "INR", averagePrice: 10, quantity: 1 }),
     ]);
     expect(books[0].currency).toBe("USD");
+  });
+});
+
+describe("aggregateByListing", () => {
+  it("collapses two positions in the same listing into one holding", () => {
+    // A trader can hold the same name through separate theses. Left apart, the
+    // panel sees INFY twice at half the weight and judges the concentration of
+    // neither — the one number a structural read most depends on.
+    const [merged] = aggregateByListing([
+      holding({ ticker: "INFY", quantity: 10, averagePrice: 1000, currentPrice: 1200 }),
+      holding({ ticker: "INFY", quantity: 30, averagePrice: 2000, currentPrice: 1200 }),
+    ]);
+    expect(merged.quantity).toBe(40);
+    // Cost re-weighted across both legs: (10*1000 + 30*2000) / 40.
+    expect(merged.averagePrice).toBe(1750);
+  });
+
+  it("keeps the same ticker in two currencies apart", () => {
+    // The NSE line and the NYSE ADR are different instruments, which is the
+    // whole reason a batch names one market.
+    const out = aggregateByListing([
+      holding({ ticker: "INFY", currency: "INR" }),
+      holding({ ticker: "INFY", currency: "USD" }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it("keeps every rationale and does not lose a planned leg", () => {
+    const [merged] = aggregateByListing([
+      holding({ ticker: "INFY", rationale: "Cash conversion.", hasTradePlan: false, imported: true }),
+      holding({ ticker: "INFY", rationale: "Buyback.", hasTradePlan: true, imported: false }),
+    ]);
+    expect(merged.rationale).toBe("Cash conversion. / Buyback.");
+    expect(merged.hasTradePlan).toBe(true);
+    // Only wholly-imported when every leg was.
+    expect(merged.imported).toBe(false);
+  });
+});
+
+describe("consensusCalls", () => {
+  it("names only a call more than one member actually made", () => {
+    // The UI renders this under "More than one member said the same thing", so
+    // a lone opinion promoted into a panel view would make that label false.
+    const r = report({
+      opinions: [
+        { member_id: "1", member_name: "A", source: "builtin", opinion: { ...OPINION, holding_calls: [{ ticker: "INFY", call: "TRIM", reason: "r" }] } as never, error: null },
+        { member_id: "2", member_name: "B", source: "builtin", opinion: { ...OPINION, holding_calls: [{ ticker: "INFY", call: "TRIM", reason: "r" }] } as never, error: null },
+        { member_id: "3", member_name: "C", source: "builtin", opinion: { ...OPINION, holding_calls: [{ ticker: "TCS", call: "ADD", reason: "r" }] } as never, error: null },
+      ],
+    });
+    expect(consensusCalls(r)).toEqual(["INFY TRIM"]);
+  });
+
+  it("ignores agreement to do nothing", () => {
+    // "Three members agree to hold" is not a headline; HOLD recommends no action.
+    const r = report({
+      opinions: [
+        { member_id: "1", member_name: "A", source: "builtin", opinion: { ...OPINION, holding_calls: [{ ticker: "INFY", call: "HOLD", reason: "r" }] } as never, error: null },
+        { member_id: "2", member_name: "B", source: "builtin", opinion: { ...OPINION, holding_calls: [{ ticker: "INFY", call: "HOLD", reason: "r" }] } as never, error: null },
+      ],
+    });
+    expect(consensusCalls(r)).toEqual([]);
+  });
+
+  it("replaces a synthesis claim the cards do not support", () => {
+    // `loudest_calls` is model output about other model output. Left as
+    // written it could name a ticker normalisation had just stripped.
+    const normalized = normalizePortfolioCouncilReport(
+      report({
+        opinions: [
+          { member_id: "1", member_name: "A", source: "builtin", opinion: { ...OPINION, holding_calls: [{ ticker: "NVDA", call: "TRIM", reason: "r" }] } as never, error: null },
+        ],
+        synthesis: {
+          summary: "s", where_they_agree: [], where_they_diverge: [], loudest_calls: ["NVDA TRIM"],
+        } as never,
+      }),
+      ["INFY"],
+    );
+    expect(normalized.synthesis?.loudest_calls).toEqual([]);
   });
 });
 

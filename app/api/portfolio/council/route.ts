@@ -12,6 +12,7 @@ import {
   parsePortfolioOpinion,
   parsePortfolioSynthesis,
   splitByCurrency,
+  aggregateByListing,
   JARVIS_PORTFOLIO_SYNTHESIS_SYSTEM_PROMPT,
   type CouncilHolding,
   type PortfolioCouncilReport,
@@ -89,23 +90,55 @@ export async function POST(request: Request) {
     );
   }
 
-  const [{ data: stocks }, { data: theses }, { data: tradePlans }, { data: entries }, { data: profile }] =
-    await Promise.all([
-      supabase.from("stocks").select("id, ticker, yahoo_symbol, currency, last_price").in("id", positions.map((p) => p.stock_id)),
-      supabase.from("theses").select("id, input_text, source").in("id", positions.map((p) => p.thesis_id)),
-      supabase.from("trade_plans").select("id, stop_loss, target_1").in("id", positions.map((p) => p.trade_plan_id)),
-      supabase.from("entries").select("position_id, quantity, price").in("position_id", positions.map((p) => p.id)),
-      supabase.from("portfolio_profiles").select("objective").eq("user_id", user.id).maybeSingle(),
-    ]);
+  const positionIds = positions.map((p) => p.id);
+  const [stocksRes, thesesRes, plansRes, entriesRes, exitsRes, profileRes] = await Promise.all([
+    supabase.from("stocks").select("id, ticker, yahoo_symbol, currency, last_price").in("id", positions.map((p) => p.stock_id)),
+    supabase.from("theses").select("id, input_text, source").in("id", positions.map((p) => p.thesis_id)),
+    // Every field that can establish a plan, not just two of them. A position
+    // with only a second target or a time exit is still planned, and telling
+    // the panel it has "no stop, no targets and no time exit" would be false.
+    supabase
+      .from("trade_plans")
+      .select("id, stop_loss, target_1, target_2, time_exit_date, time_exit_condition")
+      .in("id", positions.map((p) => p.trade_plan_id)),
+    supabase.from("entries").select("position_id, quantity, price").in("position_id", positionIds),
+    supabase.from("exits").select("position_id, quantity").in("position_id", positionIds),
+    supabase.from("portfolio_profiles").select("objective").eq("user_id", user.id).maybeSingle(),
+  ]);
 
-  const stockById = new Map((stocks ?? []).map((s) => [s.id, s]));
-  const thesisById = new Map((theses ?? []).map((t) => [t.id, t]));
-  const planById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
+  // Supabase resolves with an `error` field rather than throwing, so ignoring
+  // these would let a failed read look like legitimately absent data — and the
+  // route would spend N+1 model calls telling every member that positions have
+  // no rationale, no plan and no objective.
+  for (const [what, res] of [
+    ["stocks", stocksRes],
+    ["theses", thesesRes],
+    ["trade plans", plansRes],
+    ["entries", entriesRes],
+    ["exits", exitsRes],
+    ["portfolio objective", profileRes],
+  ] as const) {
+    if (res.error) {
+      return NextResponse.json(
+        { error: `Could not read your ${what}: ${res.error.message}` },
+        { status: 500 },
+      );
+    }
+  }
+
+  const profile = profileRes.data;
+  const stockById = new Map((stocksRes.data ?? []).map((s) => [s.id, s]));
+  const thesisById = new Map((thesesRes.data ?? []).map((t) => [t.id, t]));
+  const planById = new Map((plansRes.data ?? []).map((t) => [t.id, t]));
   const entriesByPosition = new Map<string, { quantity: number; price: number }[]>();
-  for (const e of entries ?? []) {
+  for (const e of entriesRes.data ?? []) {
     const list = entriesByPosition.get(e.position_id) ?? [];
     list.push({ quantity: e.quantity, price: e.price });
     entriesByPosition.set(e.position_id, list);
+  }
+  const exitedByPosition = new Map<string, number>();
+  for (const e of exitsRes.data ?? []) {
+    exitedByPosition.set(e.position_id, (exitedByPosition.get(e.position_id) ?? 0) + e.quantity);
   }
 
   // --- 2. refresh every holding ------------------------------------------
@@ -119,7 +152,11 @@ export async function POST(request: Request) {
       const stock = stockById.get(position.stock_id);
       if (!stock?.yahoo_symbol) return null;
       const weightedAverage = computeWeightedAverageEntry(entriesByPosition.get(position.id) ?? []);
-      if (weightedAverage.totalQuantity <= 0) return null;
+      // Exits subtracted: a position trimmed from 100 shares to 20 is 20
+      // shares of capital, and reviewing it as 100 overstates its weight, its
+      // market value and the sizing every member is asked to judge.
+      const remaining = weightedAverage.totalQuantity - (exitedByPosition.get(position.id) ?? 0);
+      if (remaining <= 0) return null;
 
       const [quote, fundamentals] = await Promise.all([
         // A holding that will not price is INCLUDED with its number marked
@@ -136,21 +173,37 @@ export async function POST(request: Request) {
         ticker: position.ticker,
         companyName: quote?.name ?? null,
         currency: stock.currency,
-        quantity: weightedAverage.totalQuantity,
+        quantity: remaining,
         averagePrice: weightedAverage.averagePrice,
-        currentPrice: quote?.price ?? stock.last_price ?? null,
+        // NULL when the live fetch failed, deliberately — not the cached
+        // `last_price`. This consult's whole premise is that every holding was
+        // re-priced just now, and quietly substituting a stored number would
+        // stamp a stale quote with a fresh `as_of` and let it carry a weight
+        // as though it were live. Unavailable is the honest answer.
+        currentPrice: quote?.price ?? null,
         fundamentals,
         rationale: rationaleFor(thesis, position.ticker),
-        hasTradePlan: plan?.stop_loss != null || plan?.target_1 != null,
+        hasTradePlan:
+          plan != null &&
+          (plan.stop_loss != null ||
+            plan.target_1 != null ||
+            plan.target_2 != null ||
+            plan.time_exit_date != null ||
+            plan.time_exit_condition != null),
         imported: thesis?.source === "imported",
       };
     },
   );
 
-  const book = holdings.filter((h): h is CouncilHolding => h !== null);
+  // Aggregated before weighting: two positions in the same listing are one
+  // holding as far as concentration is concerned.
+  const book = aggregateByListing(holdings.filter((h): h is CouncilHolding => h !== null));
   if (book.length < MIN_HOLDINGS) {
     return NextResponse.json(
-      { error: "Not enough of your positions could be valued to review how the portfolio is built." },
+      {
+        error:
+          "There aren't enough distinct holdings here to review how the portfolio is built — two positions in the same listing are one holding.",
+      },
       { status: 400 },
     );
   }
@@ -218,6 +271,11 @@ export async function POST(request: Request) {
   // --- 4. synthesis ------------------------------------------------------
   let synthesis: PortfolioSynthesis | null = null;
   let synthesisRaw = "";
+  // Why there is no combined read, when there is none. "Fewer than two
+  // answered" and "the synthesis call failed" are different facts, and telling
+  // a trader the first when the second happened contradicts the tally they can
+  // see immediately above it.
+  let synthesisSkipped: "too_few" | "failed" | null = answered.length < 2 ? "too_few" : null;
   // Below two answers there is nothing to synthesise: spending a model call to
   // restate one card would be spend without information.
   if (answered.length >= 2) {
@@ -233,15 +291,22 @@ export async function POST(request: Request) {
       synthesisRaw = result.text;
       const parsed = parsePortfolioSynthesis(result.text);
       if (parsed.ok) synthesis = parsed.data;
+      else synthesisSkipped = "failed";
     } catch {
       // A failed synthesis costs the summary block only. Every member card
       // still renders.
       synthesis = null;
+      synthesisSkipped = "failed";
     }
   }
 
   const report: PortfolioCouncilReport = normalizePortfolioCouncilReport(
-    { opinions, synthesis, generated_at: new Date().toISOString() },
+    {
+      opinions,
+      synthesis,
+      synthesis_skipped: synthesis ? null : synthesisSkipped,
+      generated_at: new Date().toISOString(),
+    },
     book.map((h) => h.ticker),
   );
 
@@ -284,16 +349,38 @@ export async function POST(request: Request) {
   return NextResponse.json({ report: saved }, { status: 201 });
 }
 
-/** Past consults, newest first. */
-export async function GET() {
+/** How many consults one page of history returns. */
+const HISTORY_PAGE = 20;
+
+/**
+ * Past consults, newest first.
+ *
+ * Paged rather than capped. The table is append-only precisely so a trader can
+ * compare what the Council said about the same book at two points in time, and
+ * an unconditional `limit` would make every report past the twentieth
+ * unreachable — quietly defeating the one reason the rows are kept.
+ * `?before=<ISO timestamp>` walks backwards from there.
+ */
+export async function GET(request: Request) {
   const supabase = await createClient();
-  const { data, error } = await supabase
+  const before = new URL(request.url).searchParams.get("before");
+
+  let query = supabase
     .from("portfolio_council_reports")
     .select("*")
     .order("created_at", { ascending: false })
-    .limit(20);
+    .limit(HISTORY_PAGE);
+  if (before) query = query.lt("created_at", before);
+
+  const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ reports: data ?? [] });
+
+  const reports = data ?? [];
+  return NextResponse.json({
+    reports,
+    // Null when this is the last page, so the client knows to stop offering.
+    nextBefore: reports.length === HISTORY_PAGE ? reports[reports.length - 1].created_at : null,
+  });
 }
 
 /**

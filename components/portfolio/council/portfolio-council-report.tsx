@@ -87,8 +87,11 @@ export function PortfolioCouncilReportView({
           </div>
         ) : (
           <p className="text-sm text-on-surface-variant">
-            No combined read — fewer than two members answered, and restating one card would be
-            spend without information.
+            {/* Two different facts. Saying the first when the second happened
+                contradicts the tally immediately above this line. */}
+            {report.synthesis_skipped === "failed"
+              ? "No combined read — the synthesis call did not come back. Every member's card below is unaffected."
+              : "No combined read — fewer than two members answered, and restating one card would be spend without information."}
           </p>
         )}
       </section>

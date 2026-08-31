@@ -12,9 +12,16 @@ export const dynamic = "force-dynamic";
 
 export default async function PortfolioCouncilPage() {
   const rows = await listOpenPositions();
-  // De-duplicated: two open positions can sit on the same ticker via separate
-  // theses, and the per-holding table should show one row per holding.
-  const heldTickers = [...new Set(rows.map((r) => r.position.ticker))].sort();
+  // Quantity per ticker, aggregated across separate theses in the same name —
+  // the same collapse the consult itself does. Quantities and not just tickers,
+  // because trimming a position changes every weight in its sub-book and a
+  // stored report should say so rather than reading as current.
+
+  const currentQuantities = new Map<string, number>();
+  for (const row of rows) {
+    const ticker = row.position.ticker.toUpperCase();
+    currentQuantities.set(ticker, (currentQuantities.get(ticker) ?? 0) + remainingOf(row));
+  }
 
   return (
     <div>
@@ -31,8 +38,13 @@ export default async function PortfolioCouncilPage() {
         stock, but whether this collection of things makes sense together.
       </p>
       <div className="mt-6">
-        <PortfolioCouncilClient heldTickers={heldTickers} positionCount={rows.length} />
+        <PortfolioCouncilClient currentQuantities={currentQuantities} positionCount={rows.length} />
       </div>
     </div>
   );
+}
+
+/** Shares still held: everything entered, less everything exited. */
+function remainingOf(row: Awaited<ReturnType<typeof listOpenPositions>>[number]): number {
+  return row.weightedAverage.totalQuantity - (row.exitedQuantity ?? 0);
 }

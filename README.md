@@ -118,7 +118,8 @@ Members give a per-holding trim/add/hold call **only where they have a real view
 position is a legitimate answer and renders as "no view"; a full member × holding grid of
 low-conviction HOLDs would bury the one or two calls that actually matter. A call naming a ticker
 you do not hold is dropped after the parse — the argument survives, the unownable instruction does
-not.
+not — and the "more than one member said the same thing" line is counted from the surviving cards
+rather than taken from the model's own summary of them.
 
 > **Weights are within a currency, never across.** A weight is a share of a total, and there is no
 > honest total across ₹ and $ without an exchange rate this app does not hold. So a mixed book is

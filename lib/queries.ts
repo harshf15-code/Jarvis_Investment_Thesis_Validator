@@ -154,9 +154,10 @@ export async function listOpenPositions() {
   const tradePlanIds = [...new Set(positions.map((p) => p.trade_plan_id))];
   const thesisIds = [...new Set(positions.map((p) => p.thesis_id))];
 
-  const [{ data: entries }, { data: stocks }, { data: tradePlans }, { data: theses }] =
+  const [{ data: entries }, { data: exits }, { data: stocks }, { data: tradePlans }, { data: theses }] =
     await Promise.all([
       supabase.from("entries").select("*").in("position_id", positionIds),
+      supabase.from("exits").select("position_id, quantity").in("position_id", positionIds),
       supabase.from("stocks").select("*").in("id", stockIds),
       supabase.from("trade_plans").select("*").in("id", tradePlanIds),
       supabase.from("theses").select("id, conviction_tier, source").in("id", thesisIds),
@@ -168,6 +169,10 @@ export async function listOpenPositions() {
     list.push({ quantity: e.quantity, price: e.price });
     entriesByPosition.set(e.position_id, list);
   }
+  const exitedByPosition = new Map<string, number>();
+  for (const e of exits ?? []) {
+    exitedByPosition.set(e.position_id, (exitedByPosition.get(e.position_id) ?? 0) + e.quantity);
+  }
   const stockById = new Map((stocks ?? []).map((s) => [s.id, s]));
   const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
   const thesisById = new Map((theses ?? []).map((t) => [t.id, t]));
@@ -177,6 +182,8 @@ export async function listOpenPositions() {
     stock: stockById.get(p.stock_id),
     tradePlan: tradePlanById.get(p.trade_plan_id),
     weightedAverage: computeWeightedAverageEntry(entriesByPosition.get(p.id) ?? []),
+    /** Shares sold so far. A `partial_exit` position holds the remainder. */
+    exitedQuantity: exitedByPosition.get(p.id) ?? 0,
     convictionTier: thesisById.get(p.thesis_id)?.conviction_tier ?? undefined,
     // Imported holdings have no trade plan behind them (0020), and the table
     // says so rather than rendering an all-null plan like an analysed one.

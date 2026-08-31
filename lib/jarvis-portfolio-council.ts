@@ -83,8 +83,17 @@ export type PortfolioSynthesis = z.infer<typeof PortfolioSynthesisSchema>;
 /** The contract for `portfolio_council_reports.document`. */
 export const PortfolioCouncilReportSchema = z.object({
   opinions: z.array(PortfolioMemberOpinionSchema).min(1),
-  /** Null when fewer than two members answered — see the route. */
+  /** Null when there is no combined read — `synthesis_skipped` says why. */
   synthesis: PortfolioSynthesisSchema.nullable(),
+  /**
+   * Why the combined read is missing. `too_few` means fewer than two members
+   * answered and asking would have been spend without information; `failed`
+   * means the call or its parse did not come back. Two different facts, and
+   * reporting the first when the second happened contradicts the tally shown
+   * beside it. Nullable with `.catch` so a report written before this field
+   * existed still renders.
+   */
+  synthesis_skipped: z.enum(["too_few", "failed"]).nullable().catch(null),
   generated_at: z.string(),
 });
 
@@ -118,6 +127,44 @@ export type CurrencyBook = {
     weightPct: number | null;
   })[];
 };
+
+/**
+ * Collapses two open positions in the same listing into one holding.
+ *
+ * A trader can hold the same ticker through separate theses, and the report's
+ * per-holding table already renders one row per ticker. Left un-aggregated the
+ * panel is shown INFY twice at 45% each and judges the concentration of
+ * neither — the one number a structural read most depends on. Quantities add,
+ * the cost basis is re-weighted across both, and the rationale of each is kept
+ * so nothing the trader wrote is dropped.
+ */
+export function aggregateByListing(holdings: CouncilHolding[]): CouncilHolding[] {
+  const byKey = new Map<string, CouncilHolding[]>();
+  for (const h of holdings) {
+    // Currency is part of the key: the same ticker on two markets is two
+    // different instruments, which is the whole reason a batch names one.
+    const key = `${h.ticker.toUpperCase()}|${h.currency}`;
+    byKey.set(key, [...(byKey.get(key) ?? []), h]);
+  }
+
+  return [...byKey.values()].map((group) => {
+    if (group.length === 1) return group[0];
+    const quantity = group.reduce((sum, h) => sum + h.quantity, 0);
+    const cost = group.reduce((sum, h) => sum + h.averagePrice * h.quantity, 0);
+    const rationales = group.map((h) => h.rationale).filter((r): r is string => !!r);
+    return {
+      ...group[0],
+      quantity,
+      averagePrice: quantity > 0 ? cost / quantity : 0,
+      // Any priced leg gives the listing a price; they are the same listing.
+      currentPrice: group.find((h) => h.currentPrice !== null)?.currentPrice ?? null,
+      rationale: rationales.length > 0 ? rationales.join(" / ") : null,
+      // Planned if ANY leg is planned; imported only if EVERY leg was.
+      hasTradePlan: group.some((h) => h.hasTradePlan),
+      imported: group.every((h) => h.imported),
+    };
+  });
+}
 
 /**
  * Splits the book by currency and computes weights WITHIN each currency.
@@ -186,7 +233,7 @@ export function normalizePortfolioCouncilReport(
   heldTickers: readonly string[],
 ): PortfolioCouncilReport {
   const held = new Set(heldTickers.map((t) => t.trim().toUpperCase()));
-  return {
+  const normalized: PortfolioCouncilReport = {
     ...report,
     opinions: report.opinions.map((m) => {
       if (!m.opinion) return m;
@@ -199,6 +246,43 @@ export function normalizePortfolioCouncilReport(
       return { ...m, opinion: { ...m.opinion, holding_calls: calls } };
     }),
   };
+
+  // `loudest_calls` is model output about other model output, and the UI
+  // renders it under "More than one member said the same thing". Left as
+  // written it could name a ticker nobody holds — normalisation having just
+  // stripped that very call from the cards — or promote a lone opinion into a
+  // panel view. Recomputed from the normalised cards so the claim and the
+  // evidence beneath it cannot disagree.
+  if (normalized.synthesis) {
+    normalized.synthesis = {
+      ...normalized.synthesis,
+      loudest_calls: consensusCalls(normalized),
+    };
+  }
+  return normalized;
+}
+
+/**
+ * Tickers where MORE THAN ONE member landed on the same TRIM or ADD.
+ *
+ * HOLD is excluded: it recommends no action, so "three members agree to do
+ * nothing" is not a headline. A single member's call is an opinion, not a
+ * panel view — which is exactly what the label above this list claims.
+ */
+export function consensusCalls(report: PortfolioCouncilReport): string[] {
+  const votes = new Map<string, number>();
+  for (const m of report.opinions) {
+    if (!m.opinion) continue;
+    for (const call of m.opinion.holding_calls) {
+      if (call.call === "HOLD") continue;
+      const key = `${call.ticker} ${call.call}`;
+      votes.set(key, (votes.get(key) ?? 0) + 1);
+    }
+  }
+  return [...votes.entries()]
+    .filter(([, n]) => n > 1)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([key]) => key);
 }
 
 export type PortfolioTally = {

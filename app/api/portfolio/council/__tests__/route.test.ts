@@ -50,11 +50,20 @@ const fenced = (o: unknown) => ({ text: "```json\n" + JSON.stringify(o) + "\n```
 
 let saved: Record<string, unknown> | null = null;
 
-function buildMock(opts: { positions?: number; members?: number; objective?: string | null } = {}) {
+function buildMock(
+  opts: {
+    positions?: number;
+    members?: number;
+    objective?: string | null;
+    exits?: { position_id: string; quantity: number }[];
+    tickers?: string[];
+    currencies?: string[];
+  } = {},
+) {
   const count = opts.positions ?? 2;
   const positions = Array.from({ length: count }, (_, i) => ({
     id: `pos-${i}`,
-    ticker: i === 0 ? "INFY" : `T${i}`,
+    ticker: opts.tickers?.[i] ?? (i === 0 ? "INFY" : `T${i}`),
     thesis_id: `th-${i}`,
     trade_plan_id: `tp-${i}`,
     stock_id: `st-${i}`,
@@ -74,7 +83,7 @@ function buildMock(opts: { positions?: number; members?: number; objective?: str
                 id: p.stock_id,
                 ticker: p.ticker,
                 yahoo_symbol: `${p.ticker}.NS`,
-                currency: i === 0 ? "INR" : "USD",
+                currency: opts.currencies?.[i] ?? (i === 0 ? "INR" : "USD"),
                 last_price: 1000,
               })),
               error: null,
@@ -100,7 +109,14 @@ function buildMock(opts: { positions?: number; members?: number; objective?: str
         return {
           select: () => ({
             in: async () => ({
-              data: positions.map((p) => ({ id: p.trade_plan_id, stop_loss: null, target_1: null })),
+              data: positions.map((p) => ({
+                id: p.trade_plan_id,
+                stop_loss: null,
+                target_1: null,
+                target_2: null,
+                time_exit_date: null,
+                time_exit_condition: null,
+              })),
               error: null,
             }),
           }),
@@ -113,6 +129,13 @@ function buildMock(opts: { positions?: number; members?: number; objective?: str
               data: positions.map((p) => ({ position_id: p.id, quantity: 10, price: 1400 })),
               error: null,
             }),
+          }),
+        };
+      }
+      if (table === "exits") {
+        return {
+          select: () => ({
+            in: async () => ({ data: opts.exits ?? [], error: null }),
           }),
         };
       }
@@ -269,6 +292,73 @@ describe("POST /api/portfolio/council", () => {
     for (const o of doc.opinions) {
       expect(o.opinion?.holding_calls.map((c) => c.ticker)).toEqual(["INFY"]);
     }
+  });
+
+  it("reviews the quantity still held, not the quantity ever bought", async () => {
+    // A partial exit overstates weight, market value and the sizing every
+    // member is asked to judge if the exits are not subtracted.
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({ exits: [{ position_id: "pos-0", quantity: 6 }] }) as never,
+    );
+    await POST(post());
+    const snap = saved!.holdings_snapshot as { books: { holdings: { ticker: string; quantity: number }[] }[] };
+    const infy = snap.books.flatMap((b) => b.holdings).find((h) => h.ticker === "INFY");
+    expect(infy?.quantity).toBe(4);
+  });
+
+  it("does not pass a cached price off as freshly fetched", async () => {
+    // The consult's whole premise is that every holding was re-priced just
+    // now. Substituting `stocks.last_price` would stamp a stale quote with a
+    // fresh `as_of` and let it carry a weight as though it were live.
+    vi.mocked(getQuote).mockRejectedValue(new Error("provider down"));
+    await POST(post());
+    const snap = saved!.holdings_snapshot as { books: { holdings: { current_price: number | null; weight_pct: number | null }[] }[] };
+    const all = snap.books.flatMap((b) => b.holdings);
+    expect(all.every((h) => h.current_price === null)).toBe(true);
+    expect(all.every((h) => h.weight_pct === null)).toBe(true);
+  });
+
+  it("collapses two positions in the same listing into one holding", async () => {
+    vi.mocked(createClient).mockResolvedValue(
+      // Same listing means same ticker AND same currency — the NSE line and
+      // the NYSE ADR are different instruments and stay apart.
+      buildMock({
+        positions: 3,
+        tickers: ["INFY", "INFY", "TCS"],
+        currencies: ["INR", "INR", "INR"],
+      }) as never,
+    );
+    await POST(post());
+    const prompt = vi.mocked(generateText).mock.calls[0][0].prompt as string;
+    // One row, not two half-weighted ones.
+    expect(prompt.match(/- INFY/g)).toHaveLength(1);
+  });
+
+  it("500s rather than telling the panel a failed read means no rationale", async () => {
+    const mock = buildMock();
+    const realFrom = mock.from;
+    mock.from = vi.fn().mockImplementation((table: string) => {
+      if (table === "theses") {
+        return { select: () => ({ in: async () => ({ data: null, error: { message: "boom" } }) }) };
+      }
+      return realFrom(table);
+    });
+    vi.mocked(createClient).mockResolvedValue(mock as never);
+
+    const res = await POST(post());
+    expect(res.status).toBe(500);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("says the synthesis failed, rather than claiming too few answered", async () => {
+    vi.mocked(generateText).mockImplementation(async (args) => {
+      if ((args.system as string).includes("summarising")) throw new Error("synthesis down");
+      return fenced(OPINION) as never;
+    });
+    await POST(post());
+    const doc = saved!.document as { synthesis: unknown; synthesis_skipped: string };
+    expect(doc.synthesis).toBeNull();
+    expect(doc.synthesis_skipped).toBe("failed");
   });
 
   it("records what it reviewed and at what prices", async () => {

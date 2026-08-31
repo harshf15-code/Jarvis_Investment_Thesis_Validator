@@ -19,13 +19,17 @@ import type { PortfolioCouncilReportRow } from "@/lib/types";
  * half a verdict as though it were whole.
  */
 export function PortfolioCouncilClient({
-  heldTickers,
+  currentQuantities,
   positionCount,
 }: {
-  heldTickers: string[];
+  /** Ticker → quantity still held, so staleness sees a trim, not just a sale. */
+  currentQuantities: Map<string, number>;
   positionCount: number;
 }) {
   const [reports, setReports] = useState<PortfolioCouncilReportRow[] | null>(null);
+  /** Cursor for the next page of history; null once there is no more. */
+  const [nextBefore, setNextBefore] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [running, setRunning] = useState(false);
@@ -40,6 +44,7 @@ export function PortfolioCouncilClient({
         if (cancelled) return;
         if (!res.ok) throw new Error(body.error ?? "Could not load past consults.");
         setReports(body.reports ?? []);
+        setNextBefore(body.nextBefore ?? null);
         setSelectedId(body.reports?.[0]?.id ?? null);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -49,6 +54,22 @@ export function PortfolioCouncilClient({
       cancelled = true;
     };
   }, []);
+
+  async function loadOlder() {
+    if (!nextBefore) return;
+    setLoadingMore(true);
+    try {
+      const res = await fetch(`/api/portfolio/council?before=${encodeURIComponent(nextBefore)}`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not load older consults.");
+      setReports((prev) => [...(prev ?? []), ...(body.reports ?? [])]);
+      setNextBefore(body.nextBefore ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function consult(memberIds: string[]) {
     setPicking(false);
@@ -74,16 +95,24 @@ export function PortfolioCouncilClient({
   const selected = reports?.find((r) => r.id === selectedId) ?? null;
   const parsed = selected ? PortfolioCouncilReportSchema.safeParse(selected.document) : null;
   const snapshot = selected?.holdings_snapshot as
-    | { as_of?: string; books?: { holdings: { ticker: string }[] }[] }
+    | { as_of?: string; books?: { holdings: { ticker: string; quantity: number }[] }[] }
     | undefined;
 
-  // The book has moved on if what was reviewed no longer matches what is held.
-  const reviewed = new Set(
-    (snapshot?.books ?? []).flatMap((b) => b.holdings.map((h) => h.ticker)),
-  );
+  const reviewedHoldings = (snapshot?.books ?? []).flatMap((b) => b.holdings);
+  // The tickers the REPORT reviewed, not the ones held now. A historical
+  // report must show the book it actually judged: passing today's list would
+  // drop a sold holding along with every call made about it, and add a
+  // newly-bought one as "No view" from a panel that never saw it.
+  const reviewedTickers = [...new Set(reviewedHoldings.map((h) => h.ticker))].sort();
+
+  // Stale when the book has moved on — by ticker OR by size. Comparing only
+  // the ticker set would miss adding to a position or trimming one, which
+  // changes every weight in the sub-book the structural read is about.
+  const reviewedQty = new Map(reviewedHoldings.map((h) => [h.ticker, h.quantity]));
   const stale =
-    reviewed.size > 0 &&
-    (reviewed.size !== heldTickers.length || heldTickers.some((t) => !reviewed.has(t)));
+    reviewedHoldings.length > 0 &&
+    (reviewedQty.size !== currentQuantities.size ||
+      [...currentQuantities].some(([ticker, qty]) => reviewedQty.get(ticker) !== qty));
 
   return (
     <div className="flex flex-col gap-6">
@@ -109,6 +138,16 @@ export function PortfolioCouncilClient({
               </option>
             ))}
           </select>
+        )}
+        {nextBefore && (
+          <button
+            type="button"
+            onClick={loadOlder}
+            disabled={loadingMore}
+            className="rounded-full bg-white/5 px-4 py-2 text-xs text-on-surface-variant transition-colors hover:bg-white/10 hover:text-on-surface disabled:opacity-40"
+          >
+            {loadingMore ? "Loading…" : "Load older consults"}
+          </button>
         )}
       </div>
 
@@ -138,7 +177,7 @@ export function PortfolioCouncilClient({
       {parsed?.success && (
         <PortfolioCouncilReportView
           report={parsed.data as PortfolioCouncilReport}
-          heldTickers={heldTickers}
+          heldTickers={reviewedTickers}
           asOf={snapshot?.as_of ?? selected?.created_at ?? null}
           stale={stale}
         />
