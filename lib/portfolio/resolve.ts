@@ -31,9 +31,24 @@ export async function resolveImportRows(
   supabase: UserClient,
   rows: DraftImportRow[],
   market: MarketCode,
+  /**
+   * Row indices the CALLER already knows are repeats, from the whole file.
+   *
+   * The preview is chunked, so a ticker appearing at row 3 and row 40 lands in
+   * two different requests and neither can see the other — the trader would be
+   * shown two clean rows and then find the second one silently skipped at
+   * commit, having never been offered the checkbox. The client, which holds the
+   * whole file, supplies this. It only ever ADDS a warning, and the commit
+   * route computes its own over the full set, so nothing here is load-bearing
+   * on client-supplied data.
+   */
+  knownRepeats: readonly number[] = [],
 ): Promise<ResolvedImportRow[]> {
   const exchanges = exchangesFor(market);
+  // Two index spaces meet here: `repeats` is by position within this chunk,
+  // `knownRepeats` is by row index in the trader's file.
   const repeats = repeatedTickerIndices(rows.map((r) => r.ticker));
+  const knownRepeatSet = new Set(knownRepeats);
   const held = await tickersAlreadyHeld(supabase);
 
   const resolved: ResolvedImportRow[] = rows.map((row) => ({
@@ -69,7 +84,7 @@ export async function resolveImportRows(
     }
   });
 
-  for (const [index, row] of resolved.entries()) {
+  for (const [position, row] of resolved.entries()) {
     const invalid = rowValidationError(row);
     if (invalid !== null) {
       row.status = "invalid";
@@ -77,7 +92,7 @@ export async function resolveImportRows(
     } else if (row.yahooSymbol === null) {
       row.status = "unresolved";
       row.reason = `No listing found for ${row.ticker} in this market`;
-    } else if (repeats.has(index)) {
+    } else if (repeats.has(position) || knownRepeatSet.has(row.index)) {
       row.status = "duplicate";
       row.reason = `${row.ticker} appears more than once in this file`;
     } else if (held.has(row.ticker.toUpperCase())) {

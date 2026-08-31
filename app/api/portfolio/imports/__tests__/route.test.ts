@@ -102,16 +102,21 @@ function buildSupabaseMock(opts: { held?: string[]; failOn?: string } = {}) {
 }
 
 function buildAdminMock() {
+  const upserted: Record<string, unknown>[][] = [];
   return {
+    _upserted: upserted,
     from: vi.fn().mockReturnValue({
-      upsert: vi.fn().mockReturnValue({
-        select: vi.fn().mockImplementation(async () => ({
-          data: [
-            { id: "stock-infy", yahoo_symbol: "INFY.NS" },
-            { id: "stock-tcs", yahoo_symbol: "TCS.NS" },
-          ],
-          error: null,
-        })),
+      upsert: vi.fn().mockImplementation((rows: Record<string, unknown>[]) => {
+        upserted.push(rows);
+        return {
+          select: vi.fn().mockImplementation(async () => ({
+            data: [
+              { id: "stock-infy", yahoo_symbol: "INFY.NS" },
+              { id: "stock-tcs", yahoo_symbol: "TCS.NS" },
+            ],
+            error: null,
+          })),
+        };
       }),
     }),
   };
@@ -132,13 +137,15 @@ function post(body: Record<string, unknown>) {
 
 describe("POST /api/portfolio/imports", () => {
   let supabase: ReturnType<typeof buildSupabaseMock>;
+  let admin: ReturnType<typeof buildAdminMock>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
     supabase = buildSupabaseMock();
+    admin = buildAdminMock();
     vi.mocked(createClient).mockResolvedValue(supabase as never);
-    vi.mocked(createAdminClient).mockReturnValue(buildAdminMock() as never);
+    vi.mocked(createAdminClient).mockReturnValue(admin as never);
     vi.mocked(getQuote).mockImplementation(async (symbol: string) => {
       if (symbol === "INFY.NS" || symbol === "TCS.NS") {
         return { price: 1600, asOf: new Date("2026-08-31T10:00:00Z"), name: "A Company" };
@@ -268,9 +275,46 @@ describe("POST /api/portfolio/imports", () => {
     expect(supabase._calls.theses).toHaveLength(0);
   });
 
+  it("sends one stock row per symbol when a repeated ticker is confirmed twice", async () => {
+    // A trader may legitimately want two positions in one name, but sending the
+    // same conflict key twice makes Postgres refuse the whole ON CONFLICT
+    // statement — failing the import before the audit row even exists.
+    const res = await POST(
+      post({
+        rows: [
+          { ticker: "INFY", quantity: 10, averagePrice: 1450, confirmedDuplicate: true },
+          { ticker: "INFY", quantity: 3, averagePrice: 1600, confirmedDuplicate: true },
+        ],
+      }),
+    );
+    expect(res.status).toBe(201);
+    // Two holdings, one stock row.
+    expect(supabase._calls.theses[0]).toHaveLength(2);
+    expect(admin._upserted[0]).toHaveLength(1);
+    expect(admin._upserted[0][0]).toMatchObject({ yahoo_symbol: "INFY.NS" });
+  });
+
+  it("refuses a date that is not a real calendar day", async () => {
+    // `2026-02-31` matches a YYYY-MM-DD shape check and then 500s on the
+    // insert; it has to be a 400 the trader can read.
+    expect((await POST(post({ as_of_date: "2026-02-31" }))).status).toBe(400);
+    expect(
+      (await POST(post({ rows: [{ ticker: "INFY", quantity: 1, averagePrice: 1, date: "2026-02-31" }] })))
+        .status,
+    ).toBe(400);
+  });
+
+  it("accepts a local date that is a day ahead of the server's UTC date", async () => {
+    // The browser sends the trader's LOCAL calendar date and this server
+    // answers in UTC. In Auckland those are routinely different days, and that
+    // is not the mistake the future-date guard is for.
+    const utcTomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    expect((await POST(post({ as_of_date: utcTomorrow }))).status).toBe(201);
+  });
+
   it("refuses a cost basis dated in the future", async () => {
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
-    const res = await POST(post({ as_of_date: tomorrow }));
+    const wellPastAnyTimezone = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    const res = await POST(post({ as_of_date: wellPastAnyTimezone }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/cannot be in the future/);
   });

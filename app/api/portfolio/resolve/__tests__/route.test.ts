@@ -137,6 +137,21 @@ describe("POST /api/portfolio/resolve", () => {
     expect(body.rows[1].status).toBe("unresolved");
   });
 
+  it("flags a repeat the client saw in another chunk of the same file", async () => {
+    // The preview is chunked, so a ticker at row 3 and row 40 lands in two
+    // different requests. Without the client's whole-file view the trader is
+    // shown two clean rows and the second is silently skipped at commit,
+    // having never been offered the checkbox.
+    const res = await POST(post({ rows: [row({ index: 40 })], repeatedIndices: [40] }));
+    const body = await res.json();
+    expect(body.rows[0].status).toBe("duplicate");
+    expect(body.rows[0].reason).toMatch(/more than once/);
+  });
+
+  it("refuses a row whose date is not a real calendar day", async () => {
+    expect((await POST(post({ rows: [row({ date: "2026-02-31" })] }))).status).toBe(400);
+  });
+
   it("refuses a chunk larger than the resolve limit", async () => {
     const rows = Array.from({ length: 26 }, (_, i) => row({ index: i, ticker: `T${i}` }));
     expect((await POST(post({ rows }))).status).toBe(400);

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  assignColumn,
   IMPORT_COLUMN_LABELS,
   type ColumnMapping,
   type ImportColumnKey,
@@ -36,7 +37,9 @@ export function ColumnMapper({
             <select
               value={mapping[key] ?? ""}
               onChange={(e) =>
-                onChange({ ...mapping, [key]: e.target.value === "" ? null : Number(e.target.value) })
+                onChange(
+                  assignColumn(mapping, key, e.target.value === "" ? null : Number(e.target.value)),
+                )
               }
               className={`sunken rounded-lg px-3 py-2 text-sm text-on-surface focus:ring-1 focus:ring-primary/40 focus:outline-none ${
                 missing ? "ring-1 ring-error/50" : ""

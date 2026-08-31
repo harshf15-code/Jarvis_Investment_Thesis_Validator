@@ -11,7 +11,9 @@ import { MARKETS, MARKET_ORDER } from "@/lib/markets";
 import {
   buildDraftRows,
   detectColumns,
+  localToday,
   MAX_IMPORT_ROWS,
+  repeatedTickerIndices,
   RESOLVE_CHUNK,
   type ColumnMapping,
   type DraftImportRow,
@@ -48,7 +50,8 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
   // India by default: this is a Kite export far more often than not, and
   // probing the wrong market resolves INFY to a NYSE ADR priced in dollars.
   const [market, setMarket] = useState<MarketCode>("IN");
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
+  // The trader's own calendar, not UTC — see `localToday`.
+  const [asOfDate, setAsOfDate] = useState(localToday());
   const [objective, setObjective] = useState("");
 
   const [resolved, setResolved] = useState<ResolvedImportRow[]>([]);
@@ -62,6 +65,21 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
   const mappingReady =
     mapping.ticker !== null && mapping.quantity !== null && mapping.averagePrice !== null;
 
+  /**
+   * Everything derived from the previous file, mapping or market.
+   *
+   * `confirmed` and `notes` are keyed by ROW INDEX, so carrying them across a
+   * new file would silently apply a duplicate confirmation given for one
+   * holding to whatever now sits at that line — which is the one decision in
+   * this flow that must always be made deliberately.
+   */
+  function clearPreview() {
+    setResolved([]);
+    setConfirmed(new Set());
+    setNotes({});
+    setStep("upload");
+  }
+
   async function handleFile(file: File | undefined) {
     if (!file) return;
     setError(null);
@@ -72,6 +90,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
         setError("That file has no rows in it.");
         return;
       }
+      clearPreview();
       setFileName(file.name);
       setHeaders(parsed.headers);
       setRawRows(parsed.rows);
@@ -100,12 +119,20 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
       // Chunked because each row costs up to one Yahoo quote per exchange in
       // the chosen market. One request for 200 rows would time out; eight
       // bounded ones with a progress line will not.
+      // Computed over the WHOLE file, because a ticker repeated at rows 3 and
+      // 40 falls in two different chunks and neither request could see the
+      // other. Without this the preview shows both as clean and the second is
+      // then skipped at commit, never having been offered the checkbox.
+      const repeatedIndices = [...repeatedTickerIndices(drafts.map((d) => d.ticker))].map(
+        (position) => drafts[position].index,
+      );
+
       for (let i = 0; i < drafts.length; i += RESOLVE_CHUNK) {
         const chunk: DraftImportRow[] = drafts.slice(i, i + RESOLVE_CHUNK);
         const res = await fetch("/api/portfolio/resolve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ market, rows: chunk }),
+          body: JSON.stringify({ market, rows: chunk, repeatedIndices }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.error ?? "Couldn't price these holdings.");
@@ -191,6 +218,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
                 type="file"
                 accept=".csv,text/csv"
                 className="hidden"
+                disabled={busy}
                 onChange={(e) => void handleFile(e.target.files?.[0])}
               />
             </label>
@@ -208,7 +236,10 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
                       type="button"
                       disabled={!meta.live || busy}
                       aria-pressed={market === code}
-                      onClick={() => setMarket(code)}
+                      onClick={() => {
+                        setMarket(code);
+                        clearPreview();
+                      }}
                       title={meta.live ? undefined : "Coming soon"}
                       className={cn(
                         "rounded-full border px-3 py-1.5 text-xs transition-colors",
@@ -244,7 +275,14 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
                 </p>
               </div>
 
-              <ColumnMapper headers={headers} mapping={mapping} onChange={setMapping} />
+              <ColumnMapper
+                headers={headers}
+                mapping={mapping}
+                onChange={(next) => {
+                  setMapping(next);
+                  clearPreview();
+                }}
+              />
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
@@ -326,7 +364,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
                 <input
                   type="date"
                   value={asOfDate}
-                  max={new Date().toISOString().slice(0, 10)}
+                  max={localToday()}
                   onChange={(e) => setAsOfDate(e.target.value)}
                   className="sunken rounded-lg px-3 py-2 text-sm text-on-surface focus:ring-1 focus:ring-primary/40 focus:outline-none"
                 />

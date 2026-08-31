@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { currentUser } from "@/lib/auth/user";
 import { isLiveMarket } from "@/lib/markets";
-import { RESOLVE_CHUNK } from "@/lib/portfolio-import";
+import { MAX_IMPORT_ROWS, RESOLVE_CHUNK } from "@/lib/portfolio-import";
 import { resolveImportRows } from "@/lib/portfolio/resolve";
 import { createClient } from "@/lib/supabase/server";
 import type { MarketCode } from "@/lib/types";
@@ -26,12 +26,15 @@ const DraftRowSchema = z.object({
   ticker: z.string().trim().max(40),
   quantity: z.number().nullable(),
   averagePrice: z.number().nullable(),
-  date: z.string().nullable(),
+  date: z.iso.date().nullable(),
 });
 
 const ResolveInputSchema = z.object({
   market: z.string(),
   rows: z.array(DraftRowSchema).min(1).max(RESOLVE_CHUNK),
+  /** Row indices the client knows are repeats from elsewhere in the same file —
+   *  see `resolveImportRows`. A warning only; the commit route recomputes. */
+  repeatedIndices: z.array(z.number().int().min(0)).max(MAX_IMPORT_ROWS).optional(),
 });
 
 export async function POST(request: Request) {
@@ -54,7 +57,7 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { market, rows } = parsed.data;
+  const { market, rows, repeatedIndices } = parsed.data;
 
   if (!isLiveMarket(market)) {
     return NextResponse.json(
@@ -65,7 +68,12 @@ export async function POST(request: Request) {
 
   const supabase = await createClient();
   try {
-    const resolved = await resolveImportRows(supabase, rows, market as MarketCode);
+    const resolved = await resolveImportRows(
+      supabase,
+      rows,
+      market as MarketCode,
+      repeatedIndices ?? [],
+    );
     return NextResponse.json({ rows: resolved });
   } catch (err) {
     return NextResponse.json(

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assignColumn,
   buildDraftRows,
   detectColumns,
+  localToday,
   normalizeTicker,
   parseImportDate,
   repeatedTickerIndices,
@@ -107,6 +109,54 @@ describe("parseImportDate", () => {
     expect(parseImportDate("")).toBe(null);
     expect(parseImportDate(undefined)).toBe(null);
     expect(parseImportDate("04-Xxx-2026")).toBe(null);
+  });
+
+  it("refuses a day that does not exist", () => {
+    // A shape check alone lets these through, and a date Postgres will refuse
+    // is one the preview has to refuse first — otherwise the row looks
+    // importable right up until it 500s the commit.
+    expect(parseImportDate("2026-02-31")).toBe(null);
+    expect(parseImportDate("31-Apr-2026")).toBe(null);
+    expect(parseImportDate("2026-13-01")).toBe(null);
+  });
+
+  it("accepts a real leap day and refuses a fake one", () => {
+    expect(parseImportDate("2024-02-29")).toBe("2024-02-29");
+    expect(parseImportDate("2026-02-29")).toBe(null);
+  });
+});
+
+describe("localToday", () => {
+  it("answers in the viewer's calendar, not UTC", () => {
+    // 8:30pm on 31 Aug in New York is already 1 Sep in UTC. Defaulting the
+    // "held since" field to UTC would stamp a cost basis with tomorrow's date.
+    const evening = new Date(2026, 7, 31, 20, 30);
+    expect(localToday(evening)).toBe("2026-08-31");
+  });
+
+  it("pads single-digit months and days", () => {
+    expect(localToday(new Date(2026, 0, 5))).toBe("2026-01-05");
+  });
+});
+
+describe("assignColumn", () => {
+  const base = { ticker: 0, quantity: 1, averagePrice: 2, date: null };
+
+  it("takes a column away from the field that held it", () => {
+    // Otherwise a trader can point both quantity and average cost at the same
+    // column and import a cost basis equal to the share count — a row that
+    // passes every validation and is simply wrong.
+    const next = assignColumn(base, "averagePrice", 1);
+    expect(next.averagePrice).toBe(1);
+    expect(next.quantity).toBe(null);
+  });
+
+  it("clears a field without disturbing the others", () => {
+    expect(assignColumn(base, "quantity", null)).toEqual({ ...base, quantity: null });
+  });
+
+  it("is a no-op when a field is reassigned to the column it already had", () => {
+    expect(assignColumn(base, "ticker", 0)).toEqual(base);
   });
 });
 

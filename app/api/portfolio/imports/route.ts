@@ -36,7 +36,9 @@ const CommitRowSchema = z.object({
   ticker: z.string().trim().min(1).max(40),
   quantity: z.number().positive(),
   averagePrice: z.number().positive(),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  // `z.iso.date()` rather than a shape regex: `2026-02-31` matches the shape
+  // and then 500s on the insert, when it should be a 400 the trader can read.
+  date: z.iso.date().nullable().optional(),
   /** The trader's own "why I bought this", if they gave one. */
   note: z.string().trim().max(2000).optional(),
   /** Set when the trader saw the duplicate warning and chose to import anyway. */
@@ -46,7 +48,7 @@ const CommitRowSchema = z.object({
 const CommitInputSchema = z.object({
   source_filename: z.string().trim().min(1).max(255),
   market: z.string(),
-  as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "as_of_date must be YYYY-MM-DD"),
+  as_of_date: z.iso.date("as_of_date must be a real YYYY-MM-DD date"),
   objective: z.string().trim().max(2000).optional(),
   rows: z.array(CommitRowSchema).min(1).max(MAX_IMPORT_ROWS),
   /** Rows the trader saw flagged and chose not to import. Recorded, not acted on. */
@@ -81,10 +83,11 @@ export async function POST(request: Request) {
   const market = input.market as MarketCode;
 
   // A cost basis dated in the future would make every return calculation on the
-  // Cockpit nonsense, and there is no legitimate way to have paid for shares
-  // tomorrow.
-  const today = new Date().toISOString().slice(0, 10);
-  if (input.as_of_date > today) {
+  // Cockpit nonsense. One day of slack, because the browser sends the trader's
+  // LOCAL calendar date and this server answers in UTC — in Auckland those are
+  // routinely different days, and that is not the mistake this guard is for.
+  const tomorrowUtc = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  if (input.as_of_date > tomorrowUtc) {
     return NextResponse.json({ error: "The 'as of' date cannot be in the future." }, { status: 400 });
   }
 
@@ -148,18 +151,28 @@ export async function POST(request: Request) {
   // `yahoo_symbol` index rather than select-then-insert, which would race with
   // a concurrent thesis run on the same name.
   const admin = createAdminClient();
+  // One payload row per symbol. A trader who confirms a ticker that appears
+  // twice in their file legitimately imports two positions in it — but sending
+  // the same conflict key twice makes Postgres refuse the whole statement
+  // ("ON CONFLICT DO UPDATE command cannot affect row a second time"), which
+  // would fail the import before the audit row even exists.
+  const stockPayload = [
+    ...new Map(
+      accepted.map((row) => [
+        row.yahooSymbol!,
+        {
+          ticker: row.ticker,
+          yahoo_symbol: row.yahooSymbol!,
+          exchange: row.exchange!,
+          last_price: row.lastPrice,
+          last_price_at: new Date().toISOString(),
+        },
+      ]),
+    ).values(),
+  ];
   const { data: stocks, error: stockError } = await admin
     .from("stocks")
-    .upsert(
-      accepted.map((row) => ({
-        ticker: row.ticker,
-        yahoo_symbol: row.yahooSymbol!,
-        exchange: row.exchange!,
-        last_price: row.lastPrice,
-        last_price_at: new Date().toISOString(),
-      })),
-      { onConflict: "yahoo_symbol" },
-    )
+    .upsert(stockPayload, { onConflict: "yahoo_symbol" })
     .select("id, yahoo_symbol");
 
   if (stockError || !stocks) {

@@ -67,6 +67,25 @@ const SYNONYMS: Record<ImportColumnKey, string[]> = {
   ],
 };
 
+/**
+ * Points `key` at column `index`, taking that column from whichever field held
+ * it. One column cannot be two fields: a trader who points both "Quantity" and
+ * "Average cost" at the same column imports a cost basis equal to the share
+ * count — a row that passes every validation and is simply wrong.
+ */
+export function assignColumn(
+  mapping: ColumnMapping,
+  key: ImportColumnKey,
+  index: number | null,
+): ColumnMapping {
+  const next: ColumnMapping = { ...mapping, [key]: index };
+  if (index === null) return next;
+  for (const other of Object.keys(next) as ImportColumnKey[]) {
+    if (other !== key && next[other] === index) next[other] = null;
+  }
+  return next;
+}
+
 /** `Avg. cost` -> `avgcost`, `Qty.` -> `qty`, `P&L` -> `pl`. */
 function normalizeHeader(header: string): string {
   return header.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -128,20 +147,41 @@ export function parseImportDate(raw: string | undefined): string | null {
   const value = raw.trim();
 
   const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  if (iso) return isoIfReal(Number(iso[1]), Number(iso[2]), Number(iso[3]));
 
   const named = value.match(/^(\d{1,2})[\s-]([A-Za-z]{3,})[\s-](\d{4})$/);
   if (named) {
     const month = MONTHS.indexOf(named[2].slice(0, 3).toLowerCase());
     if (month === -1) return null;
-    const day = Number(named[1]);
-    if (day < 1 || day > 31) return null;
-    return `${named[3]}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    return isoIfReal(Number(named[3]), month + 1, Number(named[1]));
   }
   return null;
 }
 
+/**
+ * `YYYY-MM-DD`, or null if that day does not exist. A shape check alone lets
+ * `2026-02-31` and `31-Apr-2026` through, and a date Postgres will refuse is
+ * one the preview must refuse first — otherwise a row looks importable right up
+ * until it 500s the commit.
+ */
+function isoIfReal(year: number, month: number, day: number): string | null {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const real =
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day;
+  if (!real) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** Today in the viewer's own calendar. `toISOString` would answer in UTC, which
+ *  is tomorrow for anyone east of it late in the evening — and a cost basis
+ *  dated tomorrow is the one thing the "held since" field must never default to. */
+export function localToday(now: Date = new Date()): string {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
 
 /** One CSV row reduced to the four fields this feature cares about. */
 export type DraftImportRow = {
