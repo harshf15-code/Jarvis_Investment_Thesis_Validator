@@ -42,6 +42,30 @@ export function resolveYahooSymbol(
   }
 }
 
+/**
+ * A permanent answer from Yahoo, as opposed to a transient failure.
+ *
+ * `yahoo-finance2` raises its `HTTPError` with `code` set to the HTTP status
+ * (see `lib/yahooFinanceFetch`). A 404 means Yahoo was asked and answered:
+ * this symbol has no such module. Asking twice more re-learns the same fact
+ * and bills the caller 1.5s of backoff for it.
+ *
+ * That cost is why this exists. `tryResolveTicker` probes each exchange of the
+ * chosen markets in turn, and every miss paid three `quoteSummary` round trips
+ * plus the sleeps between them — then paid the whole bill AGAIN on the second
+ * probe that runs after the model call. It is most of what put
+ * `POST /api/theses` over its function timeout in production on 2026-09-01.
+ *
+ * 408 and 429 stay retryable on purpose: those say "not now", not "never", and
+ * Yahoo rate-limits often enough that giving up on the first 429 would trade
+ * this bug for a worse one. A Node transport error carries a STRING `code`
+ * (`ECONNRESET`, `ENOTFOUND`), which the `typeof` guard leaves retryable.
+ */
+function isPermanentFailure(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "number" && code >= 400 && code < 500 && code !== 408 && code !== 429;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -53,14 +77,16 @@ function sleep(ms: number): Promise<void> {
  * (so 3 attempts total by default), with exponential backoff between
  * attempts starting at `baseDelayMs` (default 500ms: waits 500ms after the
  * 1st failure, 1000ms after the 2nd, doubling each time). Rethrows the last
- * error once retries are exhausted.
+ * error once retries are exhausted, or immediately once one of them is
+ * permanent — see `isPermanentFailure`.
  *
  * IMPORTANT: Task 11's Edge Functions run in Deno and can't import from
  * `/lib`, so they reimplement this exact logic as their own copy rather
  * than importing it. That copy must conceptually match this one — same
  * attempt count (`retries + 1`) and same backoff shape (exponential,
- * starting at `baseDelayMs`, doubling per attempt). If you change the
- * retry/backoff behavior here, update the Task 11 copy too.
+ * starting at `baseDelayMs`, doubling per attempt) and the same
+ * `isPermanentFailure` short-circuit. If you change the retry/backoff
+ * behavior here, update the Task 11 copy too.
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
@@ -75,6 +101,10 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       lastError = err;
+      // A permanent answer is already the answer. Retrying it only delays it.
+      if (isPermanentFailure(err)) {
+        break;
+      }
       const isLastAttempt = attempt === retries;
       if (isLastAttempt) {
         break;

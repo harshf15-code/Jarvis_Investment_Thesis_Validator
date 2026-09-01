@@ -39,8 +39,21 @@ function sleep(ms: number): Promise<void> {
  * semantically identical: up to `retries` retries (default 2) after the
  * initial attempt, exponential backoff starting at `baseDelayMs` (default
  * 500ms, doubling per attempt: 500ms, then 1000ms), rethrows the last error
- * once exhausted. If Task 4 changes its retry/backoff shape, mirror the
- * change here.
+ * once exhausted, and gives up immediately on a permanent failure. If Task 4
+ * changes its retry/backoff shape, mirror the change here.
+ *
+ * The short-circuit is a no-op for THIS file's only caller: `quote()` resolves
+ * `undefined` for a symbol Yahoo does not know rather than throwing, so no 404
+ * reaches it. It is transcribed anyway because the two copies drifting is the
+ * failure mode this comment exists to prevent.
+ */
+function isPermanentFailure(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "number" && code >= 400 && code < 500 && code !== 408 && code !== 429;
+}
+
+/**
+ * See above.
  */
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -55,6 +68,10 @@ async function withRetry<T>(
       return await fn();
     } catch (err) {
       lastError = err;
+      // A permanent answer is already the answer. Retrying it only delays it.
+      if (isPermanentFailure(err)) {
+        break;
+      }
       const isLastAttempt = attempt === retries;
       if (isLastAttempt) {
         break;
