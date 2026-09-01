@@ -332,3 +332,34 @@ export async function getHoldingSnapshot(yahooSymbol: string): Promise<{
     earningsDateIsEstimate: earnings?.isEarningsDateEstimate === true,
   };
 }
+
+/**
+ * Sector and industry for one symbol, as Yahoo classifies it.
+ *
+ * Its own `quoteSummary` call rather than another module bolted onto
+ * `getFundamentals`. The portfolio pattern read needs the classification and
+ * has no use for P/E or revenue growth, so one module beats four — and
+ * `getFundamentals`' existing callers would pay for a field none of them read.
+ * The opposite trade to `getHoldingSnapshot`, which merges because the holding
+ * watch genuinely needs both halves at once.
+ *
+ * Returns nulls rather than throwing when Yahoo has no `assetProfile` for the
+ * symbol — true of ETFs, some ADRs and plenty of small-caps. That is the whole
+ * contract this function is for: the read is told the sector is unknown and is
+ * instructed not to guess one, so an unclassifiable holding lands in
+ * "doesn't fit any pattern" instead of being quietly assigned a sector the
+ * model made up.
+ */
+export async function getSectorProfile(
+  yahooSymbol: string,
+): Promise<{ sector: string | null; industry: string | null }> {
+  const summary = await withRetry(() =>
+    yahooFinance.quoteSummary(yahooSymbol, { modules: ["assetProfile"] }),
+  );
+  const profile = summary.assetProfile;
+  return {
+    sector: typeof profile?.sector === "string" && profile.sector !== "" ? profile.sector : null,
+    industry:
+      typeof profile?.industry === "string" && profile.industry !== "" ? profile.industry : null,
+  };
+}

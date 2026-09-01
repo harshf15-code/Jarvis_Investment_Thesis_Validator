@@ -46,7 +46,8 @@ export type LlmFeature =
   | "holding_review"
   | "portfolio_council_opinion"
   | "portfolio_council_synthesis"
-  | "imported_exit_plan";
+  | "imported_exit_plan"
+  | "portfolio_pattern_read";
 
 /**
  * `reported` is OpenRouter's own charge for the call, read off the raw response
@@ -502,6 +503,43 @@ export type PortfolioCouncilReportRow = {
 };
 
 /**
+ * `scratchpad_notes` (0025) — one idea, in the trader's own words.
+ *
+ * `ticker` is free text on purpose: an idea can be written down before it
+ * resolves to a symbol the app has ever seen. `archived_at` is the only way a
+ * note leaves the list — there is no delete, because a note is a record of what
+ * the trader was thinking and abandoning an idea is part of that record.
+ */
+export type ScratchpadNote = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  updated_at: string;
+  body: string;
+  ticker: string | null;
+  archived_at: string | null;
+};
+
+/**
+ * `portfolio_pattern_reads` (0025) — one Jarvis read of what the whole book
+ * says about the trader's taste, append-only for the same reason
+ * `portfolio_council_reports` is: a portfolio changes rather than being
+ * rewritten, and comparing two dates is the point.
+ *
+ * `document` is a `PatternRead` from `lib/jarvis-scratchpad.ts`, re-validated
+ * on read like every other JSONB document in this schema.
+ */
+export type PortfolioPatternReadRow = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  document: Json;
+  /** Which holdings were reviewed, and how they were classified. */
+  holdings_snapshot: Json;
+  raw_llm_response: string | null;
+};
+
+/**
  * `holding_reviews` (0022) — one Jarvis read of one holding, append-only.
  *
  * `document` is a `HoldingReview` from `lib/holding-watch.ts`, re-validated on
@@ -550,6 +588,21 @@ export type PortfolioCouncilReportInsert = Pick<
   Partial<Pick<PortfolioCouncilReportRow, "id" | "user_id" | "created_at" | "raw_llm_response">>;
 
 export type PortfolioCouncilReportUpdate = Partial<PortfolioCouncilReportInsert>;
+
+export type ScratchpadNoteInsert = Pick<ScratchpadNote, "body"> &
+  Partial<
+    Pick<ScratchpadNote, "id" | "user_id" | "created_at" | "updated_at" | "ticker" | "archived_at">
+  >;
+
+export type ScratchpadNoteUpdate = Partial<ScratchpadNoteInsert>;
+
+export type PortfolioPatternReadInsert = Pick<
+  PortfolioPatternReadRow,
+  "document" | "holdings_snapshot"
+> &
+  Partial<Pick<PortfolioPatternReadRow, "id" | "user_id" | "created_at" | "raw_llm_response">>;
+
+export type PortfolioPatternReadUpdate = Partial<PortfolioPatternReadInsert>;
 
 export type HoldingReviewInsert = Pick<
   HoldingReview,
@@ -984,6 +1037,18 @@ export interface Database {
         Row: HoldingReview;
         Insert: HoldingReviewInsert;
         Update: HoldingReviewUpdate;
+        Relationships: [];
+      };
+      scratchpad_notes: {
+        Row: ScratchpadNote;
+        Insert: ScratchpadNoteInsert;
+        Update: ScratchpadNoteUpdate;
+        Relationships: [];
+      };
+      portfolio_pattern_reads: {
+        Row: PortfolioPatternReadRow;
+        Insert: PortfolioPatternReadInsert;
+        Update: PortfolioPatternReadUpdate;
         Relationships: [];
       };
       holding_watch_state: {
