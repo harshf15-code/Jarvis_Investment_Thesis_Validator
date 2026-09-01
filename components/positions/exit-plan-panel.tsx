@@ -5,6 +5,7 @@ import { Target } from "lucide-react";
 
 import { formatCurrency } from "@/lib/format";
 import {
+  hasExitLevels,
   validateApprovedLevels,
   type ExitPlanLevels,
   type ExitPlanProposal,
@@ -73,13 +74,18 @@ export function ExitPlanPanel({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Rebuild is a two-step: the button arms the confirm, the confirm builds. */
+  const [confirming, setConfirming] = useState(false);
 
-  const levelsSet =
-    tradePlan.stop_loss != null || tradePlan.target_1 != null || tradePlan.target_2 != null;
+  // Levels already saved. While a rebuild's proposal is open this stays true —
+  // nothing is written until Save — which is exactly what lets each field show
+  // what it is replacing.
+  const levelsSet = hasExitLevels(tradePlan);
   const edited = new Set(tradePlan.edited_fields ?? []);
 
   async function build() {
     setBusy(true);
+    setConfirming(false);
     setError(null);
     try {
       const res = await fetch(`/api/positions/${positionId}/exit-plan`, { method: "POST" });
@@ -164,21 +170,53 @@ export function ExitPlanPanel({
             watch alerts you on.
           </p>
         </div>
-        {!proposed && !levelsSet && hasRationale && (
+        {!proposed && !confirming && hasRationale && (
           <button
             type="button"
-            onClick={build}
+            // With levels already set this only arms the confirm below. An
+            // overwrite of numbers the trader is trading against should never
+            // be one click away.
+            onClick={levelsSet ? () => setConfirming(true) : build}
             disabled={busy}
             className="flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-40"
           >
             <Target className="size-3.5" />
-            {busy ? "Building…" : "Build Exit Plan"}
+            {busy ? "Building…" : levelsSet ? "Rebuild" : "Build Exit Plan"}
           </button>
         )}
       </div>
 
       {error && (
         <p className="rounded-lg bg-error-container px-4 py-3 text-sm text-error">{error}</p>
+      )}
+
+      {confirming && !proposed && (
+        <div className="flex flex-col gap-3 rounded-lg bg-white/5 px-4 py-3">
+          <p className="text-xs leading-relaxed text-on-surface-variant">
+            This replaces the levels below with a fresh proposal. You will see the new
+            numbers next to what you have now and can change any of them before
+            anything saves. Trims and exits you have already logged are history — a
+            rebuild never touches them.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={build}
+              disabled={busy}
+              className="rounded-full bg-primary px-4 py-2 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {busy ? "Building…" : "Rebuild"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              disabled={busy}
+              className="rounded-full px-4 py-2 text-xs text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-40"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
 
       {proposed && draft ? (
@@ -194,18 +232,21 @@ export function ExitPlanPanel({
             <LevelField
               label="Stop"
               hint={proposed.proposal.reasoning.stop_loss}
+              current={current(tradePlan.stop_loss, currency)}
               value={draft.stop_loss}
               onChange={(v) => setDraft({ ...draft, stop_loss: v })}
             />
             <LevelField
               label="Target 1"
               hint={proposed.proposal.reasoning.target_1}
+              current={current(tradePlan.target_1, currency)}
               value={draft.target_1}
               onChange={(v) => setDraft({ ...draft, target_1: v })}
             />
             <LevelField
               label="Target 2"
               hint={proposed.proposal.reasoning.target_2}
+              current={current(tradePlan.target_2, currency)}
               value={draft.target_2}
               onChange={(v) => setDraft({ ...draft, target_2: v })}
             />
@@ -213,6 +254,7 @@ export function ExitPlanPanel({
               label="Time exit"
               type="date"
               hint={proposed.proposal.reasoning.time_exit}
+              current={tradePlan.time_exit_date}
               value={draft.time_exit_date}
               onChange={(v) => setDraft({ ...draft, time_exit_date: v })}
             />
@@ -292,6 +334,10 @@ export function ExitPlanPanel({
             The ladder above now tracks these, and the price watch will flag a breach.
             An asterisk marks a level you changed from what Jarvis proposed.
           </p>
+          <p className="text-xs text-on-surface-variant/70">
+            Rebuild if the reason you own {ticker} has changed, or if these levels have
+            drifted away from where it trades now.
+          </p>
         </div>
       ) : hasRationale ? (
         <p className="text-sm text-on-surface-variant">
@@ -309,17 +355,29 @@ export function ExitPlanPanel({
   );
 }
 
+/** Formats a saved level for the "Currently …" line, or null when unset. */
+function current(value: number | null, currency: string): string | null {
+  return value != null ? formatCurrency(value, currency) : null;
+}
+
 function LevelField({
   label,
   hint,
   value,
   onChange,
+  current = null,
   type = "number",
 }: {
   label: string;
   hint: string | null;
   value: string;
   onChange: (value: string) => void;
+  /**
+   * What this level is set to today. Present only on a rebuild, so replacing a
+   * number the trader is already trading against is a comparison rather than a
+   * coin flip.
+   */
+  current?: string | null;
   type?: "number" | "date";
 }) {
   return (
@@ -334,6 +392,11 @@ function LevelField({
         placeholder={type === "number" ? "None" : ""}
         className="sunken rounded-lg px-3.5 py-2.5 font-mono text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary/40 focus:outline-none"
       />
+      {current && (
+        <span className="font-mono text-[10px] text-on-surface-variant/60">
+          Currently {current}
+        </span>
+      )}
       {hint && <span className="text-xs text-on-surface-variant">{hint}</span>}
     </label>
   );

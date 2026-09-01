@@ -237,11 +237,13 @@ export const LEVEL_LABEL: Record<"stop_loss" | "target_1" | "target_2", string> 
 };
 
 /**
- * Whether this plan still has nothing to watch.
+ * Whether this plan already has something for the ladder and the price watch
+ * to track.
  *
- * One definition, because the panel decides whether to offer the build and the
- * route decides whether to allow it, and those two disagreeing would mean a
- * button that 400s.
+ * The panel's predicate for choosing between "build" and "rebuild" copy. The
+ * route deliberately does NOT gate on it: a rebuild is always allowed (the
+ * trader confirms the overwrite first), so a POST against a plan that already
+ * carries levels is a legitimate request rather than one to refuse.
  */
 export function hasExitLevels(
   plan: { stop_loss: number | null; target_1: number | null; target_2: number | null } | null,
