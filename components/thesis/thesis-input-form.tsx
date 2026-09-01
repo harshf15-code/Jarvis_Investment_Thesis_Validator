@@ -5,7 +5,13 @@ import { useState } from "react";
 import { SendHorizontal } from "lucide-react";
 
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import {
+  ThesisProgressPanel,
+  initialSteps,
+  type StepState,
+} from "@/components/thesis/thesis-progress-panel";
 import { MARKETS, MARKET_ORDER } from "@/lib/markets";
+import { readProgress, type ThesisStep } from "@/lib/thesis-progress";
 import { cn } from "@/lib/utils";
 import type { MarketCode } from "@/lib/types";
 
@@ -38,6 +44,10 @@ export function ThesisInputForm({
   const [namesStocks, setNamesStocks] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What the route has told us it is doing. Never advanced by the client — a
+  // step moves only when a line arrives saying it did.
+  const [steps, setSteps] = useState<Record<ThesisStep, StepState>>(initialSteps);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
 
   function toggleMarket(m: MarketCode) {
     setMarkets((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
@@ -47,6 +57,8 @@ export function ThesisInputForm({
     if (!inputText.trim() || markets.length === 0) return;
     setLoading(true);
     setError(null);
+    setSteps(initialSteps());
+    setStartedAt(Date.now());
     try {
       const res = await fetch("/api/theses", {
         method: "POST",
@@ -57,15 +69,48 @@ export function ThesisInputForm({
           names_stocks: namesStocks,
         }),
       });
-      const body = await res.json().catch(() => ({}));
+
+      // The guards that can refuse cheaply — bad input, no session, no budget —
+      // still answer with a status and a plain JSON body. Only a run that got
+      // past them streams, so this branch stays exactly as it was.
       if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? "Jarvis is thinking... Taking longer than usual.");
       }
-      onSaved?.(body.thesis.id);
-      router.push(`/thesis/${body.thesis.id}`);
+
+      let created: { thesis: { id: string } } | null = null;
+      for await (const event of readProgress(res.body)) {
+        if (event.kind === "step") {
+          setSteps((prev) => ({
+            ...prev,
+            [event.step]: {
+              status: event.status,
+              // A done event without a detail must not wipe one an earlier
+              // active event carried.
+              detail: event.detail ?? prev[event.step].detail,
+            },
+          }));
+        } else if (event.kind === "failed") {
+          throw new Error(event.error);
+        } else {
+          created = event.payload;
+        }
+      }
+
+      // The stream ending with no terminal event means the connection dropped
+      // mid-run. The thesis may well have been saved; what is certain is that
+      // this request cannot say so, and silently landing on a blank page would
+      // be worse than saying that.
+      if (!created) {
+        throw new Error("The connection dropped before Jarvis finished. Check your thesis list before re-running.");
+      }
+
+      onSaved?.(created.thesis.id);
+      router.push(`/thesis/${created.thesis.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
       setLoading(false);
+      setStartedAt(null);
     }
   }
 
@@ -166,7 +211,7 @@ export function ThesisInputForm({
 
       {loading && (
         <>
-          <p className="text-xs text-primary">Structuring the thesis…</p>
+          <ThesisProgressPanel steps={steps} startedAt={startedAt} />
           <SkeletonLoader lines={4} />
         </>
       )}

@@ -15,6 +15,12 @@ import { currencyForExchange, isLiveMarket, exchangesFor } from "@/lib/markets";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { listTheses } from "@/lib/queries";
+import { formatCurrency } from "@/lib/format";
+import {
+  type ThesisCreated,
+  type ThesisProgressEvent,
+  type ThesisStep,
+} from "@/lib/thesis-progress";
 import type { ExchangeCode, MarketCode, ThesisInsert } from "@/lib/types";
 
 /**
@@ -107,6 +113,254 @@ async function tryResolveTicker(
   return null;
 }
 
+/**
+ * A failure that happens after the response has already begun.
+ *
+ * Once the first byte is on the wire the status line is spent, so these can no
+ * longer be a 502 or a 500 — they arrive as the run's terminal event instead.
+ * The message is the same one the non-streaming version returned, because the
+ * message is what the trader actually reads.
+ */
+class ThesisRunError extends Error {}
+
+/**
+ * Runs the thesis, reporting each step as it finishes.
+ *
+ * Split out from `POST` so that the guards which CAN still set a status code
+ * stay where they can, and everything that has to be reported mid-flight lives
+ * behind one `emit`. Nothing in here is emitted speculatively: a step is marked
+ * done after the work it names has returned.
+ */
+async function runThesis(
+  input: {
+    inputText: string;
+    namesStocks: boolean;
+    markets: MarketCode[];
+    userId: string;
+  },
+  emit: (event: ThesisProgressEvent) => void,
+): Promise<ThesisCreated> {
+  const { inputText, namesStocks, markets, userId } = input;
+  const step = (id: ThesisStep, status: "active" | "done", detail?: string) =>
+    emit({ kind: "step", step: id, status, detail: detail ?? null });
+
+  // The budget check has already passed — `POST` will not open a stream
+  // otherwise — so this reports a fact rather than starting one.
+  step("budget", "done");
+
+  const supabase = await createClient();
+
+  // Every exchange across the chosen markets, deduped — the universe this
+  // thesis is allowed to resolve names from.
+  const exchanges = [...new Set(markets.flatMap((m) => exchangesFor(m)))];
+
+  // Heuristic resolution — a context-fetching optimization, not the final
+  // mode/ticker answer (see Task 7's design note). Skipped entirely when the
+  // trader says they named no stock: there is nothing to look for, and it
+  // saves up to `exchanges.length` live Yahoo round trips.
+  step("resolve", "active");
+  const heuristicTicker = namesStocks ? extractPossibleTicker(inputText) : null;
+  const resolved = heuristicTicker ? await tryResolveTicker(heuristicTicker, exchanges) : null;
+
+  let stockId: string | null = null;
+  if (resolved) {
+    const { data: existingStock, error: stockLookupError } = await supabase
+      .from("stocks")
+      .select("id")
+      .eq("yahoo_symbol", resolved.yahooSymbol)
+      .maybeSingle();
+
+    if (stockLookupError) {
+      throw new ThesisRunError(stockLookupError.message);
+    }
+
+    if (existingStock) {
+      stockId = existingStock.id;
+    } else {
+      // `stocks` is a shared market-data cache that `authenticated` may read
+      // but not write (0014) — otherwise one account could rewrite the price
+      // every account sees. Maintaining it is a service-role job.
+      const { data: newStock, error: stockInsertError } = await createAdminClient()
+        .from("stocks")
+        .insert({
+          ticker: heuristicTicker!,
+          yahoo_symbol: resolved.yahooSymbol,
+          exchange: resolved.exchange,
+          currency: resolved.currency,
+          last_price: resolved.price,
+          last_price_at: resolved.priceAsOf.toISOString(),
+        })
+        .select("id")
+        .single();
+      if (stockInsertError || !newStock) {
+        throw new ThesisRunError(stockInsertError?.message ?? "Failed to create stock row");
+      }
+      stockId = newStock.id;
+    }
+  }
+
+  // The price is the evidence. A trader who typed HAL and sees "HAL on NSE ·
+  // ₹4,512" knows the run is anchored to the listing they meant before the
+  // thesis exists; "no name resolved" tells them, equally usefully, that this
+  // is about to be a field-building run rather than a single-stock one.
+  step(
+    "resolve",
+    "done",
+    !namesStocks
+      ? "No stock named — building the field"
+      : resolved
+        ? `${heuristicTicker} on ${resolved.exchange} · ${formatCurrency(resolved.price, resolved.currency)}`
+        : "No listing priced yet",
+  );
+
+  const userContext = buildJarvisThesisUserContext({
+    inputText,
+    marketContext: resolved
+      ? {
+          yahooSymbol: resolved.yahooSymbol,
+          exchange: resolved.exchange,
+          price: resolved.price,
+          priceAsOf: resolved.priceAsOf,
+          fundamentals: resolved.fundamentals,
+        }
+      : undefined,
+  });
+
+  step("generate", "active");
+  let rawResponse: string;
+  try {
+    const result = await meteredGenerateText({
+      userId,
+      feature: "thesis",
+      system: JARVIS_THESIS_SYSTEM_PROMPT,
+      prompt: userContext,
+    });
+    rawResponse = result.text;
+  } catch (err) {
+    throw new ThesisRunError(`Jarvis model call failed: ${errorMessage(err)}`);
+  }
+  if (!rawResponse) {
+    throw new ThesisRunError("Jarvis returned an empty response");
+  }
+  step("generate", "done");
+
+  step("parse", "active");
+  const parsed = parseThesisResponse(rawResponse);
+
+  /**
+   * The ticker the trader actually named — never one the model volunteered.
+   *
+   * `theses.ticker` is not a label. The memorandum route branches on it to
+   * choose between "this stock vs its peers" and "build a basket from the
+   * thesis", and the peer path seeds it first and never drops it. That is the
+   * authority of the trader's own conviction, so only the trader may grant it:
+   *
+   *   - `names_stocks` false -> null, whatever the model said.
+   *   - `thesis_only` -> already null (`normalizeExtract` in the parser).
+   *   - otherwise -> the model's ticker, but only once it has actually
+   *     resolved on an exchange in the chosen markets. An unresolvable name
+   *     cannot be priced, so seeding it would poison the comparison for a
+   *     stock nobody can buy.
+   *
+   * A robotics thesis previously came back anchored to ZBRA on exactly this
+   * path, with the name appearing nowhere in the trader's text.
+   */
+  const modelTicker = parsed.extraction.ok ? parsed.extraction.data.ticker : heuristicTicker;
+  let extractedTicker: string | null = null;
+  if (namesStocks && modelTicker) {
+    // The heuristic only sees UPPERCASE tokens, so "Bajaj Auto" resolves
+    // nothing while the model correctly reads it as BAJAJ-AUTO. Reuse the
+    // earlier lookup when it was for this same ticker, otherwise spend one
+    // more probe rather than discarding a stock the trader really did name.
+    const hit =
+      resolved && heuristicTicker === modelTicker
+        ? resolved
+        : await tryResolveTicker(modelTicker, exchanges);
+    extractedTicker = hit ? modelTicker : null;
+  }
+
+  const mode = parsed.extraction.ok ? parsed.extraction.data.mode : "thesis_only";
+  step("parse", "done", extractedTicker ? `Anchored to ${extractedTicker}` : `Read as ${mode}`);
+
+  step("save", "active");
+
+  // US-10 duplicate-thesis warning — informational only, never blocks.
+  let duplicateWarning: ThesisCreated["duplicateWarning"] = null;
+  if (extractedTicker) {
+    // Error intentionally swallowed here: this lookup is purely informational
+    // (US-10), so a transient read failure should not block thesis creation —
+    // it just means the warning is silently skipped for this request. Do not
+    // "fix" this into an early return.
+    const { data: existingTheses } = await supabase
+      .from("theses")
+      .select("id, status, created_at")
+      .eq("ticker", extractedTicker)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const existing = existingTheses?.[0];
+    if (existing) {
+      duplicateWarning = {
+        existingThesisId: existing.id,
+        status: existing.status,
+        createdAt: existing.created_at,
+      };
+    }
+  }
+
+  const insert: ThesisInsert = {
+    input_text: inputText,
+    markets,
+    mode,
+    stock_id: stockId,
+    ticker: extractedTicker,
+    market_view: parsed.extraction.ok ? parsed.extraction.data.market_view : parsed.sections.marketView || null,
+    mispricing: parsed.extraction.ok ? parsed.extraction.data.mispricing : parsed.sections.mispricing || null,
+    catalyst: parsed.extraction.ok ? parsed.extraction.data.catalyst : parsed.sections.catalyst || null,
+    time_horizon: parsed.extraction.ok ? parsed.extraction.data.time_horizon : parsed.sections.timeHorizon || null,
+    invalidation_condition: parsed.extraction.ok
+      ? parsed.extraction.data.invalidation_condition
+      : parsed.sections.invalidation || null,
+    conviction_tier: parsed.extraction.ok ? parsed.extraction.data.conviction_tier : null,
+    conviction_score: parsed.extraction.ok ? parsed.extraction.data.conviction_score : null,
+    status: "draft",
+    raw_llm_response: rawResponse,
+  };
+
+  const { data: insertedThesis, error: insertError } = await supabase
+    .from("theses")
+    .insert(insert)
+    .select("*")
+    .single();
+
+  if (insertError || !insertedThesis) {
+    throw new ThesisRunError(insertError?.message ?? "Failed to insert thesis row");
+  }
+  step("save", "done");
+
+  return {
+    thesis: insertedThesis,
+    stockSuggestions: parsed.extraction.ok ? parsed.extraction.data.stock_suggestions : [],
+    duplicateWarning,
+  };
+}
+
+/**
+ * Creates a thesis, streaming its progress as newline-delimited JSON.
+ *
+ * The run takes tens of seconds and used to be a single opaque `fetch`, which
+ * is how a 60s timeout in production read to the trader as a minute of nothing
+ * followed by an error. The body is now a line per step, written as each one
+ * finishes — see `lib/thesis-progress.ts` for the shape and for why there is no
+ * percentage in it.
+ *
+ * WHERE THE STATUS CODE STILL LIVES: every guard that can refuse cheaply — bad
+ * JSON, invalid input, no session, no budget — runs BEFORE the stream opens and
+ * still answers with its own status. That is the half a caller retries on, and
+ * it must stay machine-readable. Once the first byte is written the status is
+ * committed to 200, so a failure past that point (the model, the insert) comes
+ * back as a terminal `failed` event carrying the same message the status
+ * response used to carry.
+ */
 export async function POST(request: NextRequest) {
   const json = await request.json().catch(() => null);
   if (json === null) {
@@ -137,188 +391,36 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: budget.message }, { status });
   }
 
-  const supabase = await createClient();
-
-  // Every exchange across the chosen markets, deduped — the universe this
-  // thesis is allowed to resolve names from.
-  const exchanges = [...new Set(markets.flatMap((m) => exchangesFor(m)))];
-
-  // Heuristic resolution — a context-fetching optimization, not the final
-  // mode/ticker answer (see Task 7's design note). Skipped entirely when the
-  // trader says they named no stock: there is nothing to look for, and it
-  // saves up to `exchanges.length` live Yahoo round trips.
-  const heuristicTicker = names_stocks ? extractPossibleTicker(input_text) : null;
-  const resolved = heuristicTicker ? await tryResolveTicker(heuristicTicker, exchanges) : null;
-
-  let stockId: string | null = null;
-  if (resolved) {
-    const { data: existingStock, error: stockLookupError } = await supabase
-      .from("stocks")
-      .select("id")
-      .eq("yahoo_symbol", resolved.yahooSymbol)
-      .maybeSingle();
-
-    if (stockLookupError) {
-      return NextResponse.json({ error: stockLookupError.message }, { status: 500 });
-    }
-
-    if (existingStock) {
-      stockId = existingStock.id;
-    } else {
-      // `stocks` is a shared market-data cache that `authenticated` may read
-      // but not write (0014) — otherwise one account could rewrite the price
-      // every account sees. Maintaining it is a service-role job.
-      const { data: newStock, error: stockInsertError } = await createAdminClient()
-        .from("stocks")
-        .insert({
-          ticker: heuristicTicker!,
-          yahoo_symbol: resolved.yahooSymbol,
-          exchange: resolved.exchange,
-          currency: resolved.currency,
-          last_price: resolved.price,
-          last_price_at: resolved.priceAsOf.toISOString(),
-        })
-        .select("id")
-        .single();
-      if (stockInsertError || !newStock) {
-        return NextResponse.json(
-          { error: stockInsertError?.message ?? "Failed to create stock row" },
-          { status: 500 },
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const emit = (event: ThesisProgressEvent) => {
+        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      };
+      try {
+        const payload = await runThesis(
+          { inputText: input_text, namesStocks: names_stocks, markets, userId: user.id },
+          emit,
         );
+        emit({ kind: "done", payload });
+      } catch (err) {
+        emit({ kind: "failed", error: errorMessage(err) });
+      } finally {
+        controller.close();
       }
-      stockId = newStock.id;
-    }
-  }
-
-  const userContext = buildJarvisThesisUserContext({
-    inputText: input_text,
-    marketContext: resolved
-      ? {
-          yahooSymbol: resolved.yahooSymbol,
-          exchange: resolved.exchange,
-          price: resolved.price,
-          priceAsOf: resolved.priceAsOf,
-          fundamentals: resolved.fundamentals,
-        }
-      : undefined,
+    },
   });
 
-  let rawResponse: string;
-  try {
-    const result = await meteredGenerateText({
-      userId: user.id,
-      feature: "thesis",
-      system: JARVIS_THESIS_SYSTEM_PROMPT,
-      prompt: userContext,
-    });
-    rawResponse = result.text;
-  } catch (err) {
-    return NextResponse.json(
-      { error: `Jarvis model call failed: ${errorMessage(err)}` },
-      { status: 502 },
-    );
-  }
-  if (!rawResponse) {
-    return NextResponse.json({ error: "Jarvis returned an empty response" }, { status: 502 });
-  }
-
-  const parsed = parseThesisResponse(rawResponse);
-
-  /**
-   * The ticker the trader actually named — never one the model volunteered.
-   *
-   * `theses.ticker` is not a label. The memorandum route branches on it to
-   * choose between "this stock vs its peers" and "build a basket from the
-   * thesis", and the peer path seeds it first and never drops it. That is the
-   * authority of the trader's own conviction, so only the trader may grant it:
-   *
-   *   - `names_stocks` false -> null, whatever the model said.
-   *   - `thesis_only` -> already null (`normalizeExtract` in the parser).
-   *   - otherwise -> the model's ticker, but only once it has actually
-   *     resolved on an exchange in the chosen markets. An unresolvable name
-   *     cannot be priced, so seeding it would poison the comparison for a
-   *     stock nobody can buy.
-   *
-   * A robotics thesis previously came back anchored to ZBRA on exactly this
-   * path, with the name appearing nowhere in the trader's text.
-   */
-  const modelTicker = parsed.extraction.ok ? parsed.extraction.data.ticker : heuristicTicker;
-  let extractedTicker: string | null = null;
-  if (names_stocks && modelTicker) {
-    // The heuristic only sees UPPERCASE tokens, so "Bajaj Auto" resolves
-    // nothing while the model correctly reads it as BAJAJ-AUTO. Reuse the
-    // earlier lookup when it was for this same ticker, otherwise spend one
-    // more probe rather than discarding a stock the trader really did name.
-    const hit =
-      resolved && heuristicTicker === modelTicker
-        ? resolved
-        : await tryResolveTicker(modelTicker, exchanges);
-    extractedTicker = hit ? modelTicker : null;
-  }
-
-  // US-10 duplicate-thesis warning — informational only, never blocks.
-  let duplicateWarning: { existingThesisId: string; status: string; createdAt: string } | null = null;
-  if (extractedTicker) {
-    // Error intentionally swallowed here: this lookup is purely informational
-    // (US-10), so a transient read failure should not block thesis creation —
-    // it just means the warning is silently skipped for this request. Do not
-    // "fix" this into an early return.
-    const { data: existingTheses } = await supabase
-      .from("theses")
-      .select("id, status, created_at")
-      .eq("ticker", extractedTicker)
-      .order("created_at", { ascending: false })
-      .limit(1);
-    const existing = existingTheses?.[0];
-    if (existing) {
-      duplicateWarning = {
-        existingThesisId: existing.id,
-        status: existing.status,
-        createdAt: existing.created_at,
-      };
-    }
-  }
-
-  const insert: ThesisInsert = {
-    input_text,
-    markets,
-    mode: parsed.extraction.ok ? parsed.extraction.data.mode : "thesis_only",
-    stock_id: stockId,
-    ticker: extractedTicker,
-    market_view: parsed.extraction.ok ? parsed.extraction.data.market_view : parsed.sections.marketView || null,
-    mispricing: parsed.extraction.ok ? parsed.extraction.data.mispricing : parsed.sections.mispricing || null,
-    catalyst: parsed.extraction.ok ? parsed.extraction.data.catalyst : parsed.sections.catalyst || null,
-    time_horizon: parsed.extraction.ok ? parsed.extraction.data.time_horizon : parsed.sections.timeHorizon || null,
-    invalidation_condition: parsed.extraction.ok
-      ? parsed.extraction.data.invalidation_condition
-      : parsed.sections.invalidation || null,
-    conviction_tier: parsed.extraction.ok ? parsed.extraction.data.conviction_tier : null,
-    conviction_score: parsed.extraction.ok ? parsed.extraction.data.conviction_score : null,
-    status: "draft",
-    raw_llm_response: rawResponse,
-  };
-
-  const { data: insertedThesis, error: insertError } = await supabase
-    .from("theses")
-    .insert(insert)
-    .select("*")
-    .single();
-
-  if (insertError || !insertedThesis) {
-    return NextResponse.json(
-      { error: insertError?.message ?? "Failed to insert thesis row" },
-      { status: 500 },
-    );
-  }
-
-  return NextResponse.json(
-    {
-      thesis: insertedThesis,
-      stockSuggestions: parsed.extraction.ok ? parsed.extraction.data.stock_suggestions : [],
-      duplicateWarning,
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      // A buffered proxy would hold every line until the run finished, which is
+      // the exact failure this feature exists to remove. `no-transform` stops
+      // compression middleware from coalescing, `X-Accel-Buffering` stops nginx.
+      "Cache-Control": "no-store, no-transform",
+      "X-Accel-Buffering": "no",
     },
-    { status: 201 },
-  );
+  });
 }
 
 /** Screen HUB-3's thesis list (Task 21) — newest first. */
