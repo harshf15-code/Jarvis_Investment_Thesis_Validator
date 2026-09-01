@@ -17,7 +17,25 @@ import { createClient } from "@/lib/supabase/server";
 import { listTheses } from "@/lib/queries";
 import type { ExchangeCode, MarketCode, ThesisInsert } from "@/lib/types";
 
-export const maxDuration = 60;
+/**
+ * 180, not 60.
+ *
+ * This route is a model call with a variable Yahoo tail on BOTH sides of it:
+ * `tryResolveTicker` probes every exchange of the chosen markets before the
+ * generation, and runs again afterwards whenever the model names a ticker the
+ * heuristic did not (see the `extractedTicker` block below). On lowercase input
+ * the heuristic finds nothing at all, so the entire probe sits behind the most
+ * expensive step in the request.
+ *
+ * At 60 this was the lowest ceiling of any route in the app that calls the
+ * model — the memorandum and thesis council both sit at 180 for less work — and
+ * a first-thesis run on a cold function hit it in production on 2026-09-01: a
+ * 504 with nothing written, since the insert is the last thing that happens. A
+ * timeout here is worse than a slow response, because the function is killed
+ * outright and `meteredGenerateText`'s ledger write dies with it: OpenRouter
+ * bills for the generation and `llm_usage` never learns about it.
+ */
+export const maxDuration = 180;
 
 const CreateThesisInputSchema = z.object({
   input_text: z.string().trim().min(1, "input_text is required"),

@@ -42,6 +42,44 @@ export function resolveYahooSymbol(
   }
 }
 
+/**
+ * A permanent answer from Yahoo, as opposed to a transient failure.
+ *
+ * `yahoo-finance2` raises its `HTTPError` with `code` set to the HTTP status
+ * (see `lib/yahooFinanceFetch`). A 404 means Yahoo was asked and answered:
+ * this symbol has no such module. Asking twice more re-learns the same fact
+ * and bills the caller 1.5s of backoff for it.
+ *
+ * That cost is why this exists. `tryResolveTicker` probes each exchange of the
+ * chosen markets in turn, and every miss paid three `quoteSummary` round trips
+ * plus the sleeps between them — then paid the whole bill AGAIN on the second
+ * probe that runs after the model call. It is most of what put
+ * `POST /api/theses` over its function timeout in production on 2026-09-01.
+ *
+ * An ALLOW-LIST of one, not "4xx except the retryable ones". That was the first
+ * shape of this and it was wrong: `withRetry` backs `quote`, `chart` and every
+ * `quoteSummary` caller, so widening it spends the thesis run, the CSV import
+ * and the scheduled price poll on a guess. Yahoo answers 401 and 403 under load
+ * and when its crumb/cookie state goes stale, and this library caches the crumb
+ * at module scope for the life of the process — so those statuses say something
+ * about the session, not about the symbol, and are exactly the kind of thing a
+ * second attempt is for. 404 is the one status measured here and the one the
+ * tests below pin; anything else keeps the retries it always had.
+ *
+ * The asymmetry is the argument. Retrying a permanent failure costs two
+ * requests and 1.5s on a path that was already slow. NOT retrying a recoverable
+ * one costs the trader their thesis.
+ *
+ * A Node transport error carries a STRING `code` (`ECONNRESET`, `ENOTFOUND`),
+ * which the `typeof` guard leaves retryable.
+ */
+const PERMANENT_STATUSES = new Set([404]);
+
+function isPermanentFailure(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "number" && PERMANENT_STATUSES.has(code);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -53,14 +91,16 @@ function sleep(ms: number): Promise<void> {
  * (so 3 attempts total by default), with exponential backoff between
  * attempts starting at `baseDelayMs` (default 500ms: waits 500ms after the
  * 1st failure, 1000ms after the 2nd, doubling each time). Rethrows the last
- * error once retries are exhausted.
+ * error once retries are exhausted, or immediately once one of them is
+ * permanent — see `isPermanentFailure`.
  *
  * IMPORTANT: Task 11's Edge Functions run in Deno and can't import from
  * `/lib`, so they reimplement this exact logic as their own copy rather
  * than importing it. That copy must conceptually match this one — same
  * attempt count (`retries + 1`) and same backoff shape (exponential,
- * starting at `baseDelayMs`, doubling per attempt). If you change the
- * retry/backoff behavior here, update the Task 11 copy too.
+ * starting at `baseDelayMs`, doubling per attempt) and the same
+ * `isPermanentFailure` short-circuit. If you change the retry/backoff
+ * behavior here, update the Task 11 copy too.
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
@@ -75,6 +115,10 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       lastError = err;
+      // A permanent answer is already the answer. Retrying it only delays it.
+      if (isPermanentFailure(err)) {
+        break;
+      }
       const isLastAttempt = attempt === retries;
       if (isLastAttempt) {
         break;
