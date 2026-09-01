@@ -18,6 +18,7 @@ import type { PortfolioPatternReadRow, ScratchpadNote } from "@/lib/types";
  */
 export function ScratchpadClient({ heldTickers }: { heldTickers: string[] }) {
   const [notes, setNotes] = useState<ScratchpadNote[]>([]);
+  const [notesTruncated, setNotesTruncated] = useState(false);
   const [reads, setReads] = useState<PortfolioPatternReadRow[]>([]);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,6 +41,7 @@ export function ScratchpadClient({ heldTickers }: { heldTickers: string[] }) {
         if (!readsRes.ok) throw new Error(readsBody.error ?? "Couldn't load your pattern reads.");
         if (cancelled) return;
         setNotes(notesBody.notes ?? []);
+        setNotesTruncated(notesBody.truncated === true);
         setReads(readsBody.reads ?? []);
         setNextBefore(readsBody.nextBefore ?? null);
       } catch (err) {
@@ -105,7 +107,12 @@ export function ScratchpadClient({ heldTickers }: { heldTickers: string[] }) {
         }}
         onAcceptSuggestion={addNote}
       />
-      <NotesPanel notes={notes} onCreate={addNote} onPatch={patchNote} />
+      <NotesPanel
+        notes={notes}
+        truncated={notesTruncated}
+        onCreate={addNote}
+        onPatch={patchNote}
+      />
     </div>
   );
 }

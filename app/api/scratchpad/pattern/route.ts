@@ -56,33 +56,31 @@ export async function POST() {
     return NextResponse.json({ error: positionsError.message }, { status: 500 });
   }
 
-  // Two positions in the same name are one holding as far as a pattern goes.
-  const byTicker = new Map<string, (typeof positions)[number]>();
-  for (const p of positions ?? []) {
-    if (!byTicker.has(p.ticker)) byTicker.set(p.ticker, p);
-  }
-  const distinct = [...byTicker.values()];
-
-  if (distinct.length < MIN_PATTERN_HOLDINGS) {
+  // Two positions in the same name are one holding as far as a pattern goes,
+  // so the floor is counted in distinct names rather than rows. Checked before
+  // any further reads: refusing early costs nothing.
+  const distinctTickers = new Set((positions ?? []).map((p) => p.ticker.toUpperCase()));
+  if (distinctTickers.size < MIN_PATTERN_HOLDINGS) {
     return NextResponse.json(
       {
         error:
           `A pattern needs at least ${MIN_PATTERN_HOLDINGS} different holdings to be a pattern rather than a coincidence. ` +
-          `You have ${distinct.length}. Add more positions, or import the ones you already own.`,
+          `You have ${distinctTickers.size}. Add more positions, or import the ones you already own.`,
       },
       { status: 400 },
     );
   }
 
+  const all = positions ?? [];
   const [stocksRes, thesesRes, notesRes, profileRes] = await Promise.all([
     supabase
       .from("stocks")
       .select("id, ticker, yahoo_symbol")
-      .in("id", distinct.map((p) => p.stock_id)),
+      .in("id", all.map((p) => p.stock_id)),
     supabase
       .from("theses")
       .select("id, input_text, source, market_view, mispricing, catalyst, conviction_tier")
-      .in("id", distinct.map((p) => p.thesis_id)),
+      .in("id", all.map((p) => p.thesis_id)),
     supabase
       .from("scratchpad_notes")
       .select("body")
@@ -108,6 +106,21 @@ export async function POST() {
 
   const stockById = new Map((stocksRes.data ?? []).map((s) => [s.id, s]));
   const thesisById = new Map((thesesRes.data ?? []).map((t) => [t.id, t]));
+
+  // Collapse same-name positions AFTER the theses are in hand. Which row
+  // survives is not arbitrary: only one rationale reaches the model, so a
+  // position that has one beats a position that does not. Keeping "whichever
+  // arrived first" silently threw away the only stated reason on a holding
+  // whenever the same name was entered twice.
+  const byTicker = new Map<string, (typeof all)[number]>();
+  const explains = (p: (typeof all)[number]) =>
+    statedRationale(thesisById.get(p.thesis_id)?.input_text ?? null, p.ticker) !== null;
+  for (const p of all) {
+    const key = p.ticker.toUpperCase();
+    const held = byTicker.get(key);
+    if (!held || (explains(p) && !explains(held))) byTicker.set(key, p);
+  }
+  const distinct = [...byTicker.values()];
 
   // One symbol's classification failing must cost that holding its sector, not
   // cost the trader the whole read. An unclassified holding is already a case
@@ -165,7 +178,18 @@ export async function POST() {
     return NextResponse.json({ error: parsed.error }, { status: 502 });
   }
 
-  const read = normalizePatternRead(parsed.data, holdings.map((h) => h.ticker));
+  // Only CLASSIFIED holdings may be named in a signal. The prompt tells the
+  // model to leave an unclassified one out; this is what makes that true when
+  // it does not. Without it, a model placing LIQUIDCASE in a cluster would have
+  // it counted as explained, and the deterministic handling this feature
+  // promises would rest entirely on the model obeying an instruction.
+  //
+  // `unplacedTickers` is computed against EVERY holding, not this set, so the
+  // unclassified one still shows up as unplaced rather than disappearing.
+  const read = normalizePatternRead(
+    parsed.data,
+    holdings.filter((h) => h.sector !== null).map((h) => h.ticker),
+  );
 
   const { data: saved, error: saveError } = await supabase
     .from("portfolio_pattern_reads")

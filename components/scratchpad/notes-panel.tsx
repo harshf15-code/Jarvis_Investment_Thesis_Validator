@@ -15,10 +15,13 @@ import type { ScratchpadNote } from "@/lib/types";
  */
 export function NotesPanel({
   notes,
+  truncated,
   onCreate,
   onPatch,
 }: {
   notes: ScratchpadNote[];
+  /** More notes exist than were fetched — said out loud rather than hidden. */
+  truncated: boolean;
   onCreate: (body: string, ticker: string | null) => Promise<void>;
   onPatch: (id: string, patch: Record<string, unknown>) => Promise<void>;
 }) {
@@ -40,7 +43,12 @@ export function NotesPanel({
     () => [...new Set(live.map((n) => n.ticker).filter((t): t is string => !!t))].sort(),
     [live],
   );
-  const shown = filter ? live.filter((n) => n.ticker === filter) : live;
+  // A filter whose ticker has gone (its last note archived, or edited to
+  // something else) must stop applying. Derived rather than stored, so there is
+  // no state to strand: the alternative hides every note behind a filter the
+  // user can no longer see or clear.
+  const active = filter && tickers.includes(filter) ? filter : null;
+  const shown = active ? live.filter((n) => n.ticker === active) : live;
 
   async function save() {
     const body = draft.trim();
@@ -136,15 +144,15 @@ export function NotesPanel({
         </div>
       )}
 
-      {tickers.length > 1 && (
+      {tickers.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          <FilterChip label="All" active={filter === null} onClick={() => setFilter(null)} />
+          <FilterChip label="All" active={active === null} onClick={() => setFilter(null)} />
           {tickers.map((t) => (
             <FilterChip
               key={t}
               label={t}
-              active={filter === t}
-              onClick={() => setFilter(filter === t ? null : t)}
+              active={active === t}
+              onClick={() => setFilter(active === t ? null : t)}
             />
           ))}
         </div>
@@ -154,7 +162,7 @@ export function NotesPanel({
         <p className="text-sm text-on-surface-variant">
           {live.length === 0
             ? "Nothing here yet. A half-formed thought is worth writing down — it is the thing you will not remember later."
-            : `No notes tagged ${filter}.`}
+            : `No notes tagged ${active}.`}
         </p>
       ) : (
         <ol className="flex flex-col gap-3">
@@ -162,6 +170,13 @@ export function NotesPanel({
             <NoteCard key={note.id} note={note} onPatch={onPatch} />
           ))}
         </ol>
+      )}
+
+      {truncated && (
+        <p className="text-xs text-on-surface-variant/70">
+          Showing your most recent notes only — you have more than fit on one page, and the
+          filter and archive above cover just the ones loaded here.
+        </p>
       )}
 
       {archived.length > 0 && (
@@ -219,6 +234,7 @@ function NoteCard({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note.body);
+  const [draftTicker, setDraftTicker] = useState(note.ticker ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isArchived = note.archived_at !== null;
@@ -249,6 +265,7 @@ function NoteCard({
               type="button"
               onClick={() => {
                 setDraft(note.body);
+                setDraftTicker(note.ticker ?? "");
                 setEditing(true);
               }}
               className="rounded-full px-2 py-1 text-[10px] text-on-surface-variant transition-colors hover:text-on-surface"
@@ -280,11 +297,23 @@ function NoteCard({
             autoFocus
             className="sunken w-full rounded-lg px-3.5 py-3 text-sm text-on-surface focus:ring-1 focus:ring-primary/40 focus:outline-none"
           />
+          {/* The tag drives the filter and the "Start a thesis" link, so a typo
+              in it was previously only fixable by archiving and re-writing the
+              note. The PATCH route always accepted it. */}
+          <input
+            value={draftTicker}
+            onChange={(e) => setDraftTicker(e.target.value)}
+            maxLength={24}
+            placeholder="Ticker (optional)"
+            className="sunken rounded-lg px-3.5 py-2 font-mono text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary/40 focus:outline-none"
+          />
           <div className="flex items-center gap-2">
             <button
               type="button"
               disabled={busy}
-              onClick={() => run({ body: draft.trim() }, () => setEditing(false))}
+              onClick={() =>
+                run({ body: draft.trim(), ticker: draftTicker.trim() }, () => setEditing(false))
+              }
               className="rounded-full bg-primary px-3 py-1.5 text-[10px] font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {busy ? "Saving…" : "Save"}

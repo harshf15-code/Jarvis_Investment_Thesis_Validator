@@ -270,6 +270,7 @@ function Suggestion({
 }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   return (
     <div className="mt-1.5 flex flex-wrap items-start gap-2">
@@ -279,11 +280,17 @@ function Suggestion({
         disabled={saving || saved}
         onClick={async () => {
           setSaving(true);
+          setError(null);
           try {
             // No ticker: a suggestion may name a sector or a question rather
             // than a symbol, and guessing one would tag the note wrongly.
             await onAccept(`${text}\n\n— from Jarvis's read on ${date}, on "${theme}"`, null);
             setSaved(true);
+          } catch (err) {
+            // Without this the rejection is swallowed and the button simply
+            // re-enables, which reads as "nothing happened" rather than "that
+            // did not save" — the note is lost and the trader is not told.
+            setError(err instanceof Error ? err.message : "Couldn't save that note. Try again.");
           } finally {
             setSaving(false);
           }
@@ -292,6 +299,7 @@ function Suggestion({
       >
         {saved ? "Noted" : saving ? "Saving…" : "+ note this"}
       </button>
+      {error && <p className="w-full text-xs text-error">{error}</p>}
     </div>
   );
 }

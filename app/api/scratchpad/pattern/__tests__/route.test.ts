@@ -31,7 +31,7 @@ const READ = {
   signals: [
     {
       theme: "Defence and PSU capex",
-      tickers: ["HAL"],
+      tickers: ["HAL", "ICICIBANK"],
       note: "One supplier, one buyer.",
       also_look_at: "What happens when the order book stops growing?",
     },
@@ -51,7 +51,14 @@ const HOLDINGS = [
 
 let saved: Record<string, unknown> | null = null;
 
-function buildMock(opts: { positions?: typeof HOLDINGS; notes?: { body: string }[] } = {}) {
+function buildMock(
+  opts: {
+    positions?: typeof HOLDINGS;
+    notes?: { body: string }[];
+    /** Thesis input_text by thesis_id, for the same-name collapse test. */
+    thesisText?: Record<string, string | null>;
+  } = {},
+) {
   const positions = opts.positions ?? HOLDINGS;
   return {
     from: vi.fn().mockImplementation((table: string) => {
@@ -78,7 +85,10 @@ function buildMock(opts: { positions?: typeof HOLDINGS; notes?: { body: string }
             in: async () => ({
               data: positions.map((p) => ({
                 id: p.thesis_id,
-                input_text: `Why I own ${p.ticker}.`,
+                input_text:
+                  opts.thesisText && p.thesis_id in opts.thesisText
+                    ? opts.thesisText[p.thesis_id]
+                    : `Why I own ${p.ticker}.`,
                 source: "imported",
                 market_view: null,
                 mispricing: null,
@@ -271,5 +281,57 @@ describe("POST /api/scratchpad/pattern", () => {
     const res = await POST();
     expect(res.status).toBe(502);
     expect(saved).toBeNull();
+  });
+
+  it("refuses to let an unclassified holding be placed in a signal", async () => {
+    // The guarantee this feature promises is deterministic, so it cannot rest
+    // on the model obeying the prompt. LIQUIDCASE is held, so a held-only check
+    // would admit it; it has no sector, so it is not eligible.
+    vi.mocked(getSectorProfile).mockImplementation((async (symbol: string) =>
+      symbol.startsWith("LIQUIDCASE")
+        ? { sector: null, industry: null }
+        : { sector: "Industrials", industry: null }) as never);
+    vi.mocked(generateText).mockResolvedValue(
+      fenced({
+        ...READ,
+        signals: [{ ...READ.signals[0], tickers: ["HAL", "ICICIBANK", "LIQUIDCASE"] }],
+      }) as never,
+    );
+
+    const res = await POST();
+    const body = await res.json();
+
+    expect(res.status).toBe(201);
+    expect(body.read.document.signals[0].tickers).toEqual(["HAL", "ICICIBANK"]);
+  });
+
+  it("drops a signal the model padded down to one holding", async () => {
+    vi.mocked(generateText).mockResolvedValue(
+      fenced({ ...READ, signals: [{ ...READ.signals[0], tickers: ["HAL"] }] }) as never,
+    );
+    const res = await POST();
+    const body = await res.json();
+
+    expect(res.status).toBe(201);
+    expect(body.read.document.signals).toHaveLength(0);
+  });
+
+  it("keeps the stated reason when the same name is held twice", async () => {
+    // Collapsing same-name positions is right for a pattern, but only one
+    // rationale reaches the model. Keeping whichever row arrived first threw
+    // away the only reason the trader had written.
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({
+        positions: [
+          { id: "pos-0", ticker: "HAL", thesis_id: "th-0", stock_id: "st-0" },
+          ...HOLDINGS,
+        ],
+        thesisText: { "th-0": null, "th-1": "The order book is the whole thesis." },
+      }) as never,
+    );
+
+    await POST();
+    const prompt = vi.mocked(generateText).mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("The order book is the whole thesis.");
   });
 });

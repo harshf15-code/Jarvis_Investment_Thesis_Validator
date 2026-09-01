@@ -10,18 +10,19 @@ import {
   type PatternRead,
 } from "@/lib/jarvis-scratchpad";
 
+/** A signal is a cluster of two or more — the prompt has always said so. */
 const READ: PatternRead = {
   headline: "You buy monopolies with a policy tailwind and wait.",
   signals: [
     {
       theme: "Defence and PSU capex",
-      tickers: ["HAL"],
+      tickers: ["HAL", "BEL"],
       note: "One supplier, one buyer, a decade of orders.",
       also_look_at: "Do you have a view on what happens when the order book stops growing?",
     },
     {
       theme: "Lenders",
-      tickers: ["ICICIBANK"],
+      tickers: ["ICICIBANK", "HDFCBANK"],
       note: "A franchise bet, not a rate bet.",
       also_look_at: null,
     },
@@ -30,6 +31,8 @@ const READ: PatternRead = {
   grounded_in: ["HAL sector Industrials", "ICICIBANK sector Financial Services"],
   generated_at: "2026-09-01",
 };
+
+const BOOK = ["HAL", "BEL", "ICICIBANK", "HDFCBANK"];
 
 const fenced = (o: unknown) => "Here you go.\n\n```json\n" + JSON.stringify(o) + "\n```";
 
@@ -91,34 +94,69 @@ describe("parsePatternRead", () => {
 });
 
 describe("normalizePatternRead", () => {
-  it("drops a ticker the trader does not hold", () => {
+  it("drops a ticker outside the eligible set", () => {
     const read = normalizePatternRead(
-      { ...READ, signals: [{ ...READ.signals[0], tickers: ["HAL", "BEL"] }] },
-      ["HAL", "ICICIBANK"],
+      { ...READ, signals: [{ ...READ.signals[0], tickers: ["HAL", "BEL", "BDL"] }] },
+      BOOK,
     );
-    expect(read.signals[0].tickers).toEqual(["HAL"]);
+    expect(read.signals[0].tickers).toEqual(["HAL", "BEL"]);
   });
 
   it("drops a signal left with no holdings at all", () => {
     // A theme with nothing under it is a claim about a portfolio that does not
     // exist — worse than saying nothing, because it reads as grounded.
     const read = normalizePatternRead(
-      { ...READ, signals: [{ ...READ.signals[0], tickers: ["BEL", "BDL"] }] },
-      ["HAL"],
+      { ...READ, signals: [{ ...READ.signals[0], tickers: ["BDL", "MAZDOCK"] }] },
+      BOOK,
     );
     expect(read.signals).toHaveLength(0);
   });
 
+  it("drops a signal down to a single holding", () => {
+    // The prompt defines a signal as a cluster of two or more. Unenforced, a
+    // model can dress every individual holding up as its own "pattern" — which
+    // presents one position as a portfolio-level finding AND quietly marks it
+    // explained.
+    const read = normalizePatternRead(
+      { ...READ, signals: [{ ...READ.signals[0], tickers: ["HAL"] }] },
+      BOOK,
+    );
+    expect(read.signals).toHaveLength(0);
+  });
+
+  it("drops a signal that becomes a singleton once ungrounded tickers go", () => {
+    const read = normalizePatternRead(
+      { ...READ, signals: [{ ...READ.signals[0], tickers: ["HAL", "BDL"] }] },
+      BOOK,
+    );
+    expect(read.signals).toHaveLength(0);
+  });
+
+  it("refuses a held holding the data source could not classify", () => {
+    // The load-bearing one. LIQUIDCASE is held, so a held-only check would let
+    // it through; it is not eligible because Yahoo has no sector for it. The
+    // prompt tells the model to leave it out — this is what makes that true
+    // when the model does not.
+    const read = normalizePatternRead(
+      {
+        ...READ,
+        signals: [{ ...READ.signals[0], tickers: ["HAL", "BEL", "LIQUIDCASE"] }],
+      },
+      BOOK,
+    );
+    expect(read.signals[0].tickers).toEqual(["HAL", "BEL"]);
+  });
+
   it("matches on trimmed, upper-cased tickers and de-duplicates", () => {
     const read = normalizePatternRead(
-      { ...READ, signals: [{ ...READ.signals[0], tickers: [" hal ", "HAL"] }] },
-      ["hal"],
+      { ...READ, signals: [{ ...READ.signals[0], tickers: [" hal ", "HAL", "bel"] }] },
+      BOOK,
     );
-    expect(read.signals[0].tickers).toEqual(["HAL"]);
+    expect(read.signals[0].tickers).toEqual(["HAL", "BEL"]);
   });
 
   it("leaves the rest of the read alone", () => {
-    const read = normalizePatternRead(READ, ["HAL", "ICICIBANK"]);
+    const read = normalizePatternRead(READ, BOOK);
     expect(read.headline).toBe(READ.headline);
     expect(read.grounded_in).toEqual(READ.grounded_in);
   });
@@ -128,17 +166,36 @@ describe("unplacedTickers", () => {
   it("names a holding no signal claimed", () => {
     // The honesty guarantee, computed rather than asked for: a model that has
     // just told a tidy story is the last thing to ask which holdings spoil it.
-    expect(unplacedTickers(READ, ["HAL", "ICICIBANK", "LIQUIDCASE"])).toEqual(["LIQUIDCASE"]);
+    expect(unplacedTickers(READ, [...BOOK, "LIQUIDCASE"])).toEqual(["LIQUIDCASE"]);
   });
 
   it("returns nothing when every holding was placed", () => {
-    expect(unplacedTickers(READ, ["HAL", "ICICIBANK"])).toEqual([]);
+    expect(unplacedTickers(READ, BOOK)).toEqual([]);
   });
 
-  it("counts a holding as unplaced when its only signal was dropped as ungrounded", () => {
+  it("reports an unclassified holding that normalization refused to place", () => {
+    // End to end, and the reason the two functions take different sets: the
+    // signal may only name eligible tickers, the unplaced list is computed
+    // against everything actually held.
     const normalized = normalizePatternRead(
-      { ...READ, signals: [{ ...READ.signals[0], theme: "Defence", tickers: ["BEL"] }] },
-      ["HAL"],
+      {
+        ...READ,
+        signals: [{ ...READ.signals[0], tickers: ["HAL", "BEL", "LIQUIDCASE"] }],
+      },
+      BOOK,
+    );
+    // Order follows the book as given, not an alphabetical sort.
+    expect(unplacedTickers(normalized, [...BOOK, "LIQUIDCASE"])).toEqual([
+      "ICICIBANK",
+      "HDFCBANK",
+      "LIQUIDCASE",
+    ]);
+  });
+
+  it("counts a holding as unplaced when its only signal was dropped", () => {
+    const normalized = normalizePatternRead(
+      { ...READ, signals: [{ ...READ.signals[0], theme: "Defence", tickers: ["HAL"] }] },
+      BOOK,
     );
     expect(unplacedTickers(normalized, ["HAL"])).toEqual(["HAL"]);
   });

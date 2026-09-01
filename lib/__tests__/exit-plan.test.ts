@@ -183,14 +183,30 @@ describe("parseExitPlanProposal", () => {
 });
 
 describe("hasExitLevels", () => {
+  const plan = (over: Partial<ExitPlanLevels> = {}) => ({
+    stop_loss: null,
+    target_1: null,
+    target_2: null,
+    time_exit_date: null,
+    ...over,
+  });
+
   it("is false for the all-null plan an import writes", () => {
-    expect(hasExitLevels({ stop_loss: null, target_1: null, target_2: null })).toBe(false);
+    expect(hasExitLevels(plan())).toBe(false);
     expect(hasExitLevels(null)).toBe(false);
   });
 
   it("is true once any single level is set", () => {
-    expect(hasExitLevels({ stop_loss: 90, target_1: null, target_2: null })).toBe(true);
-    expect(hasExitLevels({ stop_loss: null, target_1: null, target_2: 150 })).toBe(true);
+    expect(hasExitLevels(plan({ stop_loss: 90 }))).toBe(true);
+    expect(hasExitLevels(plan({ target_2: 150 }))).toBe(true);
+  });
+
+  it("is true for a plan that holds only a time exit", () => {
+    // Reachable two ways: the trader clears the price fields and keeps a date,
+    // and `sanitizeExitPlanGeometry` rejecting every proposed level while the
+    // date survives. Judging price levels alone meant such a plan read as
+    // empty — rebuilt with no confirmation, and never rendered once saved.
+    expect(hasExitLevels(plan({ time_exit_date: "2026-12-31" }))).toBe(true);
   });
 });
 

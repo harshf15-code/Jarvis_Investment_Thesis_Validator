@@ -31,6 +31,13 @@ const CreateSchema = z.object({
  * One request rather than two. The archive view and the ticker filter are both
  * views onto the same small list, so making either of them cost a round trip
  * would be paying for nothing.
+ *
+ * That trade only holds while the list is small, so the cap is reported rather
+ * than applied in silence: one extra row is fetched purely to find out whether
+ * more exist, and `truncated` tells the UI to say so. A scratchpad that has
+ * outgrown one page needs a cursor and a server-side filter, and the honest
+ * thing until then is to admit the older notes are not on screen instead of
+ * letting them quietly disappear.
  */
 export async function GET() {
   const supabase = await createClient();
@@ -38,11 +45,15 @@ export async function GET() {
     .from("scratchpad_notes")
     .select("*")
     .order("created_at", { ascending: false })
-    .limit(NOTE_LIMIT);
+    .limit(NOTE_LIMIT + 1);
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  return NextResponse.json({ notes: data ?? [] });
+  const rows = data ?? [];
+  return NextResponse.json({
+    notes: rows.slice(0, NOTE_LIMIT),
+    truncated: rows.length > NOTE_LIMIT,
+  });
 }
 
 export async function POST(request: Request) {

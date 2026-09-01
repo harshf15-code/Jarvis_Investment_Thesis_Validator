@@ -97,29 +97,49 @@ export function parsePatternRead(raw: string): PatternParse<PatternRead> {
 
 const upper = (t: string) => t.trim().toUpperCase();
 
+/** The prompt defines a signal as a cluster. One holding is not a cluster. */
+const MIN_SIGNAL_TICKERS = 2;
+
 /**
  * Drop every claim the book does not support.
  *
- * A signal naming a ticker the trader does not hold is not a thin answer, it is
- * a wrong one — the entire value of this read is that it describes THIS book
- * rather than a plausible book. Tickers are filtered against what is actually
- * held, and a signal left with nothing in it is dropped: a theme with no
- * holdings under it is a claim about a portfolio that does not exist.
+ * `eligibleTickers` is NOT simply "everything held" — it is the narrower set a
+ * signal is ALLOWED to name. A holding the data source could not classify is
+ * held but not eligible: the prompt tells the model to leave it out, and this
+ * is what makes that true whether or not the model complied. Without it the
+ * deterministic handling of ETFs and other unclassified assets would rest
+ * entirely on the model obeying an instruction, which is the one thing this
+ * module exists not to rely on.
+ *
+ * Pass every held ticker to `unplacedTickers` afterwards, not this set. The two
+ * answer different questions: what a signal may claim, and what the trader
+ * actually owns.
+ *
+ * A signal naming a ticker outside that set is not a thin answer, it is a wrong
+ * one — the entire value of this read is that it describes THIS book rather
+ * than a plausible book.
+ *
+ * A signal left with fewer than two holdings is dropped. The prompt defines a
+ * signal as a cluster of two or more, and enforcing it matters: without this a
+ * model can dress every individual holding up as its own "pattern", which both
+ * presents a single position as a portfolio-level finding and quietly marks it
+ * explained. A holding whose only signal is dropped here lands in the unplaced
+ * set, which is the honest answer.
  *
  * Tickers are also normalised here so the UI can match a signal to a position
  * without re-trimming and re-casing at every render.
  */
 export function normalizePatternRead(
   read: PatternRead,
-  heldTickers: readonly string[],
+  eligibleTickers: readonly string[],
 ): PatternRead {
-  const held = new Set(heldTickers.map(upper));
+  const eligible = new Set(eligibleTickers.map(upper));
   const signals = read.signals
     .map((s) => ({
       ...s,
-      tickers: Array.from(new Set(s.tickers.map(upper))).filter((t) => held.has(t)),
+      tickers: Array.from(new Set(s.tickers.map(upper))).filter((t) => eligible.has(t)),
     }))
-    .filter((s) => s.tickers.length > 0);
+    .filter((s) => s.tickers.length >= MIN_SIGNAL_TICKERS);
   return { ...read, signals };
 }
 
