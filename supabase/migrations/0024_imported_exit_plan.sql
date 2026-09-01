@@ -1,0 +1,20 @@
+-- 0024_imported_exit_plan.sql
+--
+-- Part 1 of docs/prd-exit-ladder-and-scratchpad.md: let Jarvis propose a stop
+-- and targets for an imported holding, from the reason the trader recorded for
+-- owning it.
+--
+-- NO NEW TABLES, deliberately. An imported holding already has a `trade_plans`
+-- row -- 0020 writes one per imported position with every level null (see
+-- `app/api/portfolio/imports/route.ts`), which is exactly why `ExitLadder`
+-- shows PENDING on every rung forever and `poll-prices` has nothing to watch.
+-- The builder fills that existing row in. `ai_suggested` and `edited_fields`
+-- (0006) already exist for precisely this purpose and are still empty on every
+-- imported plan.
+--
+-- So this migration has one job: give the spend ledger a name for the call.
+--
+-- `llm_usage.feature` is an enum, so a call the ledger cannot label is a call
+-- it cannot record. Its own statement: Postgres will not let a new enum value
+-- be USED in the transaction that adds it, and nothing here uses it.
+alter type llm_feature add value if not exists 'imported_exit_plan';

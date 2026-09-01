@@ -326,7 +326,20 @@ determine. Shape:
 "grounded_in" is 1-4 short strings, each naming one concrete fact you used (a date, a metric and
 its move). Valid JSON: no trailing commas.`;
 
-export function buildHoldingReviewContext(input: {
+/**
+ * The facts about one holding that every Jarvis call about it shares: what is
+ * owned, at what cost, why the trader says they own it, and what the portfolio
+ * is for.
+ *
+ * Extracted so the exit-plan builder (`lib/exit-plan.ts`) grounds its proposed
+ * stop in exactly the same statement of the position that the recurring read
+ * is judged against. Two copies of this would drift, and then the read and the
+ * stop on the same screen would be arguing about different holdings.
+ *
+ * Returns LINES rather than a string: the callers interleave their own
+ * sections between these and a joined string would have to be re-split.
+ */
+export function buildHoldingFactsBlock(input: {
   ticker: string;
   companyName: string | null;
   currency: string;
@@ -338,21 +351,9 @@ export function buildHoldingReviewContext(input: {
   /** The whole-portfolio objective, if set. */
   objective: string | null;
   heldSince: string | null;
-  fundamentals: Record<string, string | number>;
-  changes: FundamentalChange[];
-  upcomingEarnings: string | null;
-  passedEarnings: string | null;
-  earningsDateIsEstimate: boolean;
-  isInitial: boolean;
-}): string {
+}): string[] {
   const lines: string[] = [];
 
-  lines.push(
-    input.isInitial
-      ? "This is the FIRST read on a holding the trader imported. There is no previous check to compare against, so there is no change to report — describe where this position stands today."
-      : "This is a scheduled re-check of a holding you have read before.",
-  );
-  lines.push("");
   lines.push("THE HOLDING");
   lines.push(`Ticker: ${input.ticker}${input.companyName ? ` (${input.companyName})` : ""}`);
   lines.push(`Quantity: ${input.quantity}`);
@@ -382,6 +383,53 @@ export function buildHoldingReviewContext(input: {
     lines.push(input.objective.trim());
   }
 
+  return lines;
+}
+
+/** The current fundamentals, labelled. Shared for the same reason as
+ *  `buildHoldingFactsBlock`. */
+export function buildFundamentalsBlock(fundamentals: Record<string, string | number>): string[] {
+  const lines: string[] = ["FUNDAMENTALS NOW"];
+  const entries = Object.entries(fundamentals);
+  if (entries.length === 0) {
+    lines.push("None available for this listing.");
+  } else {
+    for (const [key, value] of entries) {
+      lines.push(`  ${WATCHED_FUNDAMENTALS[key] ?? key}: ${value}`);
+    }
+  }
+  return lines;
+}
+
+export function buildHoldingReviewContext(input: {
+  ticker: string;
+  companyName: string | null;
+  currency: string;
+  quantity: number;
+  averagePrice: number;
+  currentPrice: number | null;
+  /** The trader's own "why I bought this", if they gave one. */
+  rationale: string | null;
+  /** The whole-portfolio objective, if set. */
+  objective: string | null;
+  heldSince: string | null;
+  fundamentals: Record<string, string | number>;
+  changes: FundamentalChange[];
+  upcomingEarnings: string | null;
+  passedEarnings: string | null;
+  earningsDateIsEstimate: boolean;
+  isInitial: boolean;
+}): string {
+  const lines: string[] = [];
+
+  lines.push(
+    input.isInitial
+      ? "This is the FIRST read on a holding the trader imported. There is no previous check to compare against, so there is no change to report — describe where this position stands today."
+      : "This is a scheduled re-check of a holding you have read before.",
+  );
+  lines.push("");
+  lines.push(...buildHoldingFactsBlock(input));
+
   lines.push("");
   lines.push("EARNINGS CALENDAR");
   if (input.passedEarnings) {
@@ -397,15 +445,7 @@ export function buildHoldingReviewContext(input: {
   }
 
   lines.push("");
-  lines.push("FUNDAMENTALS NOW");
-  const entries = Object.entries(input.fundamentals);
-  if (entries.length === 0) {
-    lines.push("None available for this listing.");
-  } else {
-    for (const [key, value] of entries) {
-      lines.push(`  ${WATCHED_FUNDAMENTALS[key] ?? key}: ${value}`);
-    }
-  }
+  lines.push(...buildFundamentalsBlock(input.fundamentals));
 
   if (input.changes.length > 0) {
     lines.push("");

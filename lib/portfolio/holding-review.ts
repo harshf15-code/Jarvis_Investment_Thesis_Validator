@@ -14,7 +14,7 @@ import { checkBudget } from "@/lib/llm/budget";
 import { meteredGenerateText } from "@/lib/llm/meter";
 import { getHoldingSnapshot, getQuote } from "@/lib/market-data";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
-import type { Database, HoldingReviewTrigger, Json } from "@/lib/types";
+import type { Database, HoldingReviewTrigger, Json, ThesisSource } from "@/lib/types";
 
 /**
  * Runs one holding's review, end to end.
@@ -48,24 +48,69 @@ export function utcToday(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
-export async function reviewHolding(input: {
+/**
+ * Everything Jarvis needs to say something about one holding: what is owned,
+ * what it cost, why the trader says they own it, what the portfolio is for, and
+ * what the market says about it right now.
+ *
+ * Extracted from `reviewHolding` so the exit-plan builder
+ * (`app/api/positions/[id]/exit-plan`) grounds its proposed stop in the exact
+ * same facts the recurring read is judged against. Two copies of this fan-out
+ * would drift — different columns, a different price fallback — and then the
+ * read and the stop sitting on the same screen would disagree about the
+ * holding they are both describing.
+ */
+export type HoldingContext = {
+  position: { id: string; ticker: string; thesis_id: string; stock_id: string; status: string };
+  thesis: { id: string; input_text: string | null; source: ThesisSource } | null;
+  stock: { ticker: string; yahoo_symbol: string; currency: string; last_price: number | null };
+  entries: { quantity: number; price: number; date: string }[];
+  /** Already sold, so `remaining` is what is actually still at risk. */
+  exited: number;
+  objective: string | null;
+  /** The watch row, or null when this holding has never been read. */
+  state: {
+    last_checked_at: string | null;
+    fundamentals: unknown;
+    next_earnings_date: string | null;
+    last_earnings_seen: string | null;
+  } | null;
+  observed: {
+    fundamentals: Record<string, string | number>;
+    earningsDates: string[];
+    earningsDateIsEstimate: boolean;
+  };
+  /** Live where possible, the cached `stocks.last_price` otherwise, null if
+   *  neither. */
+  price: number | null;
+  weightedAverage: ReturnType<typeof computeWeightedAverageEntry>;
+  remaining: number;
+  heldSince: string | null;
+  /** The trader's own words, or null — never the import placeholder. */
+  rationale: string | null;
+};
+
+export type HoldingContextResult =
+  | { ok: true; context: HoldingContext }
+  /** `not_found` is separated so a caller can answer 404 rather than 500. RLS
+   *  is what makes it a 404: a position belonging to someone else reads as
+   *  absent, and it must keep reading as absent. */
+  | { ok: false; kind: "not_found" | "failed"; error: string };
+
+export async function loadHoldingContext(input: {
   supabase: Client;
   userId: string;
   positionId: string;
-  /** A trader asking for a read gets one whether or not anything moved. */
-  force: boolean;
-  today?: string;
-}): Promise<ReviewOutcome> {
-  const { supabase, userId, positionId, force } = input;
-  const today = input.today ?? utcToday();
+}): Promise<HoldingContextResult> {
+  const { supabase, userId, positionId } = input;
 
   const { data: position, error: positionError } = await supabase
     .from("positions")
     .select("id, ticker, thesis_id, stock_id, status")
     .eq("id", positionId)
     .maybeSingle();
-  if (positionError) return { status: "failed", error: positionError.message };
-  if (!position) return { status: "failed", error: "Position not found" };
+  if (positionError) return { ok: false, kind: "failed", error: positionError.message };
+  if (!position) return { ok: false, kind: "not_found", error: "Position not found" };
 
   const [thesisRes, stockRes, entriesRes, exitsRes, profileRes, stateRes] = await Promise.all([
     supabase.from("theses").select("id, input_text, source").eq("id", position.thesis_id).maybeSingle(),
@@ -77,7 +122,7 @@ export async function reviewHolding(input: {
   ]);
 
   // Supabase resolves with an `error` field rather than throwing, so ignoring
-  // these would turn a database failure into a plausible-looking review: a
+  // these would turn a database failure into a plausible-looking answer: a
   // failed `entries` read becomes a zero-quantity position, and a failed
   // `theses` read becomes "the trader recorded no reason". Both would then be
   // written to the ledger and shown as a real read.
@@ -89,30 +134,21 @@ export async function reviewHolding(input: {
     ["portfolio objective", profileRes],
     ["watch state", stateRes],
   ] as const) {
-    if (res.error) return { status: "failed", error: `Could not read the ${what}: ${res.error.message}` };
+    if (res.error) return { ok: false, kind: "failed", error: `Could not read the ${what}: ${res.error.message}` };
   }
 
   const thesis = thesisRes.data;
   const stock = stockRes.data;
-  const entries = entriesRes.data;
-  const profile = profileRes.data;
-  const state = stateRes.data;
+  const entries = entriesRes.data ?? [];
 
   if (!stock?.yahoo_symbol) {
-    return { status: "failed", error: `${position.ticker} has no resolved listing to read` };
+    return { ok: false, kind: "failed", error: `${position.ticker} has no resolved listing to read` };
   }
 
-  // Exits subtracted, so a position trimmed from 100 shares to 20 is reviewed
-  // as the 20 still at risk. The drain deliberately watches `partial_exit`
+  // Exits subtracted, so a position trimmed from 100 shares to 20 is read as
+  // the 20 still at risk. The drain deliberately watches `partial_exit`
   // positions, so this is the normal case for them, not an edge one.
   const exited = (exitsRes.data ?? []).reduce((sum, e) => sum + e.quantity, 0);
-
-  const previous: WatchState = {
-    fundamentals: (state?.fundamentals as Record<string, unknown> | null) ?? {},
-    nextEarningsDate: state?.next_earnings_date ?? null,
-    lastEarningsSeen: state?.last_earnings_seen ?? null,
-  };
-  const isInitial = state?.last_checked_at == null;
 
   let observed;
   let price: number | null;
@@ -126,8 +162,51 @@ export async function reviewHolding(input: {
     observed = snapshot;
     price = quote?.price ?? stock.last_price ?? null;
   } catch (err) {
-    return { status: "failed", error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, kind: "failed", error: err instanceof Error ? err.message : String(err) };
   }
+
+  const weightedAverage = computeWeightedAverageEntry(entries);
+  return {
+    ok: true,
+    context: {
+      position,
+      thesis,
+      stock: { ...stock, yahoo_symbol: stock.yahoo_symbol },
+      entries,
+      exited,
+      objective: profileRes.data?.objective ?? null,
+      state: stateRes.data,
+      observed,
+      price,
+      weightedAverage,
+      remaining: weightedAverage.totalQuantity - exited,
+      heldSince: entries.map((e) => e.date).sort()[0] ?? null,
+      rationale: statedRationale(thesis?.input_text ?? null, position.ticker),
+    },
+  };
+}
+
+export async function reviewHolding(input: {
+  supabase: Client;
+  userId: string;
+  positionId: string;
+  /** A trader asking for a read gets one whether or not anything moved. */
+  force: boolean;
+  today?: string;
+}): Promise<ReviewOutcome> {
+  const { supabase, userId, positionId, force } = input;
+  const today = input.today ?? utcToday();
+
+  const loaded = await loadHoldingContext({ supabase, userId, positionId });
+  if (!loaded.ok) return { status: "failed", error: loaded.error };
+  const { position, observed, price, state } = loaded.context;
+
+  const previous: WatchState = {
+    fundamentals: (state?.fundamentals as Record<string, unknown> | null) ?? {},
+    nextEarningsDate: state?.next_earnings_date ?? null,
+    lastEarningsSeen: state?.last_earnings_seen ?? null,
+  };
+  const isInitial = state?.last_checked_at == null;
 
   const detected = detectTriggers({ state: previous, observed, today });
 
@@ -189,20 +268,16 @@ export async function reviewHolding(input: {
       ? "manual"
       : (detected.triggers[0] ?? "scheduled");
 
-  const weightedAverage = computeWeightedAverageEntry(entries ?? []);
-  const remaining = weightedAverage.totalQuantity - exited;
-  const heldSince = (entries ?? []).map((e) => e.date).sort()[0] ?? null;
-
   const context = buildHoldingReviewContext({
     ticker: position.ticker,
     companyName: null,
-    currency: stock.currency,
-    quantity: remaining,
-    averagePrice: weightedAverage.averagePrice,
+    currency: loaded.context.stock.currency,
+    quantity: loaded.context.remaining,
+    averagePrice: loaded.context.weightedAverage.averagePrice,
     currentPrice: price,
-    rationale: rationaleFrom(thesis?.input_text ?? null, position.ticker),
-    objective: profile?.objective ?? null,
-    heldSince,
+    rationale: loaded.context.rationale,
+    objective: loaded.context.objective,
+    heldSince: loaded.context.heldSince,
     fundamentals: observed.fundamentals,
     changes: detected.changes,
     upcomingEarnings: detected.upcomingEarnings,
@@ -282,12 +357,4 @@ export async function reviewHolding(input: {
     return { status: "failed", error: `Review saved but the watch state could not be advanced: ${stateError}` };
   }
   return { status: "reviewed", trigger, reviewId: review.id, flagged };
-}
-
-/**
- * The trader's own words, or null. Delegates to `statedRationale` so the
- * placeholder string has exactly one definition (see `lib/holding-watch.ts`).
- */
-function rationaleFrom(inputText: string | null, ticker: string): string | null {
-  return statedRationale(inputText, ticker);
 }

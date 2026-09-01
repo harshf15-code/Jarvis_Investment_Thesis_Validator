@@ -45,7 +45,8 @@ export type LlmFeature =
   | "journal"
   | "holding_review"
   | "portfolio_council_opinion"
-  | "portfolio_council_synthesis";
+  | "portfolio_council_synthesis"
+  | "imported_exit_plan";
 
 /**
  * `reported` is OpenRouter's own charge for the call, read off the raw response

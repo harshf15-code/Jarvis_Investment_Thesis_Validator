@@ -8,11 +8,13 @@ import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 import { currencyForExchange } from "@/lib/markets";
 import { formatCurrency } from "@/lib/format";
 import { ExitLadder } from "@/components/positions/exit-ladder";
+import { ExitPlanPanel } from "@/components/positions/exit-plan-panel";
 import { LogTrimModal } from "@/components/positions/log-trim-modal";
 import { StopExitModal } from "@/components/positions/stop-exit-modal";
 import { ThesisMetricsPanel } from "@/components/positions/thesis-metrics-panel";
 import { DisciplineBanner } from "@/components/positions/discipline-banner";
 import { HoldingRationalePanel } from "@/components/positions/holding-rationale-panel";
+import { statedRationale } from "@/lib/holding-watch";
 import { HoldingReviewsPanel } from "@/components/positions/reviews/holding-reviews-panel";
 import { PriceBadge } from "@/components/shared/price-badge";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
@@ -235,6 +237,21 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
             thesisId={thesis.id}
             ticker={position.ticker}
             inputText={thesis.input_text}
+            onSaved={() => setReloadKey((k) => k + 1)}
+          />
+        </div>
+      )}
+
+      {/* Below the ladder rather than replacing it: the point is to see WHY
+          every rung reads PENDING, which needs both on screen at once. */}
+      {thesis?.source === "imported" && (
+        <div className="mt-6">
+          <ExitPlanPanel
+            positionId={position.id}
+            ticker={position.ticker}
+            tradePlan={tradePlan}
+            currency={currency}
+            hasRationale={statedRationale(thesis.input_text, position.ticker) !== null}
             onSaved={() => setReloadKey((k) => k + 1)}
           />
         </div>
