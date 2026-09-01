@@ -128,3 +128,38 @@ describe("meteredGenerateText", () => {
     expect(rows[0]).toMatchObject({ input_tokens: 0, output_tokens: 0, generation_id: null });
   });
 });
+
+describe("duration (0026)", () => {
+  /** Holds `generateText` open for `ms` so the recorded duration is a real one. */
+  const slow = (ms: number) =>
+    vi.mocked(generateText).mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(result() as never), ms)),
+    );
+
+  it("books how long the call took", async () => {
+    slow(30);
+    await meteredGenerateText(CALL);
+    expect(rows[0].duration_ms as number).toBeGreaterThanOrEqual(25);
+    expect(rows[0].duration_ms as number).toBeLessThan(5000);
+  });
+
+  it("books the duration of a call that threw", async () => {
+    // The most interesting row in the table for anyone asking whether a route's
+    // ceiling is set anywhere near reality: a call that ran long and then failed.
+    vi.mocked(generateText).mockImplementation(
+      () => new Promise((_, reject) => setTimeout(() => reject(new Error("upstream 503")), 30)),
+    );
+    await expect(meteredGenerateText(CALL)).rejects.toThrow("upstream 503");
+    expect(rows[0]).toMatchObject({ ok: false });
+    expect(rows[0].duration_ms as number).toBeGreaterThanOrEqual(25);
+  });
+
+  it("never books a duration of null or a negative", async () => {
+    // Null is reserved for rows that predate the column. A live call always
+    // measured something, and 0 would be a claim rather than an absence.
+    await meteredGenerateText(CALL);
+    expect(rows[0].duration_ms).not.toBeNull();
+    expect(rows[0].duration_ms as number).toBeGreaterThanOrEqual(0);
+  });
+});
+

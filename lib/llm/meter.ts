@@ -62,6 +62,11 @@ export async function meteredGenerateText({
   prompt,
   thesisId = null,
 }: MeteredCall) {
+  // Two jobs: the window `takeMostRecentUnclaimed` searches for a charge the
+  // SDK threw away, and — since 0026 — the start of the duration this books.
+  // The app spent its first year able to say what a call cost and unable to say
+  // how long it took, which is the number you actually want when a function
+  // ceiling turns out to be too low.
   const startedAt = Date.now();
   try {
     const result = await generateText({ model: jarvisModel, system, prompt });
@@ -92,6 +97,7 @@ export async function meteredGenerateText({
       cost_source: reportedCost !== null ? "reported" : "estimated",
       thesis_id: thesisId,
       ok: true,
+      duration_ms: Date.now() - startedAt,
     });
 
     return result;
@@ -109,6 +115,10 @@ export async function meteredGenerateText({
       cost_source: late?.cost != null ? "reported" : "estimated",
       thesis_id: thesisId,
       ok: false,
+      // Measured on the failure path too. A call that took 58s and then threw
+      // is the most interesting row in the table for anyone asking whether a
+      // route's ceiling is set anywhere near reality.
+      duration_ms: Date.now() - startedAt,
     });
     throw err;
   }
