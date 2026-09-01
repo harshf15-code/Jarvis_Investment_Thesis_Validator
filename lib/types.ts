@@ -867,6 +867,12 @@ export type LlmUsage = {
   thesis_id: string | null;
   /** False when the call threw. Still recorded: a failed call can still be billed. */
   ok: boolean;
+  /**
+   * Wall-clock milliseconds for the call (0026). Null for rows written before
+   * that migration — never 0, which would be a measurement rather than the
+   * absence of one, and would drag any percentile computed over it.
+   */
+  duration_ms: number | null;
 };
 
 /**
@@ -886,6 +892,7 @@ export type LlmUsageInsert = Pick<LlmUsage, "user_id" | "feature" | "model"> &
       | "cost_source"
       | "thesis_id"
       | "ok"
+      | "duration_ms"
     >
   >;
 
