@@ -4,6 +4,7 @@ import {
   FlaskConical,
   LayoutDashboard,
   ListChecks,
+  NotebookPen,
   Radio,
   Settings,
   Wallet,
@@ -32,6 +33,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/journal", label: "Journal", short: "Journal", icon: BookOpen },
   { href: "/discovery", label: "Discovery", short: "Discover", icon: Compass },
   { href: "/recommendations", label: "Recommendation Tracker", short: "Tracker", icon: ListChecks },
+  { href: "/scratchpad", label: "Scratchpad", short: "Notes", icon: NotebookPen },
   { href: "/settings", label: "Settings", short: "Settings", icon: Settings },
 ];
 

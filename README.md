@@ -255,6 +255,7 @@ thirty of them would bury the ones that are.
 | `/journal` | Trade journal and post-mortems |
 | `/discovery` | Opportunity discovery |
 | `/recommendations` | Recommendation tracker — did Jarvis's calls actually work? |
+| `/scratchpad` | Notes on ideas not yet theses, and Jarvis's read on what your book says about how you pick |
 | `/settings` | Council roster, and what your model calls have cost |
 
 ---

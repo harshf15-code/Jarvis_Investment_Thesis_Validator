@@ -4,6 +4,7 @@ import { currentUser } from "@/lib/auth/user";
 import { MAX_CONCURRENT_QUOTES, mapWithConcurrency } from "@/lib/concurrency";
 import { statedRationale } from "@/lib/holding-watch";
 import {
+  MIN_PATTERN_HOLDINGS,
   PATTERN_READ_SYSTEM_PROMPT,
   buildPatternReadUserContext,
   normalizePatternRead,
@@ -22,13 +23,6 @@ import type { Json } from "@/lib/types";
  * One call, not the Council's N, so 60 seconds is the right ceiling.
  */
 export const maxDuration = 60;
-
-/**
- * Two holdings are a line, not a pattern. Below this the honest answer is that
- * there is nothing to read yet, and it costs nothing to say so without spending
- * a model call to find out.
- */
-const MIN_HOLDINGS = 3;
 
 /** Enough for the read to react to what the trader is chewing on, bounded so a
  *  long-lived scratchpad cannot grow the prompt without limit. */
@@ -69,11 +63,11 @@ export async function POST() {
   }
   const distinct = [...byTicker.values()];
 
-  if (distinct.length < MIN_HOLDINGS) {
+  if (distinct.length < MIN_PATTERN_HOLDINGS) {
     return NextResponse.json(
       {
         error:
-          `A pattern needs at least ${MIN_HOLDINGS} different holdings to be a pattern rather than a coincidence. ` +
+          `A pattern needs at least ${MIN_PATTERN_HOLDINGS} different holdings to be a pattern rather than a coincidence. ` +
           `You have ${distinct.length}. Add more positions, or import the ones you already own.`,
       },
       { status: 400 },

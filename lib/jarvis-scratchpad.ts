@@ -21,6 +21,15 @@ import type { ThesisSource } from "@/lib/types";
  *    in the real book.
  */
 
+/**
+ * Two holdings are a line, not a pattern.
+ *
+ * One definition, because the route decides whether to run the read and the
+ * panel decides whether to offer it. Those two disagreeing would mean a button
+ * that 400s.
+ */
+export const MIN_PATTERN_HOLDINGS = 3;
+
 const str = z.string().nullable().catch(null);
 
 /** One cluster the read believes it has found, and the holdings in it. */

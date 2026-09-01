@@ -2,7 +2,7 @@
 
 **Status:** Draft for review
 **Author:** Drafted with Claude, from a conversation with Harsh
-**Last updated:** 2026-08-31
+**Last updated:** 2026-09-01
 **Related code:** `components/positions/exit-ladder.tsx`, `app/(app)/positions/[id]/page.tsx`, `components/positions/holding-rationale-panel.tsx`, `lib/holding-watch.ts`, `app/api/theses/[id]/route.ts`, `lib/jarvis-thesis-parser.ts`, `lib/jarvis-portfolio-council.ts`, `supabase/migrations/0006_thesis_cockpit_schema.sql`, `supabase/migrations/0020_portfolio_import.sql`, `supabase/migrations/0022_holding_watch.sql`, `supabase/functions/poll-prices/index.ts`
 
 ---
@@ -138,32 +138,32 @@ portfolio_pattern_reads     -- append-only, same reasoning as `portfolio_council
 ### Must-Have (P0)
 
 **Exit Plan Builder**
-- [ ] "Build Exit Plan" is offered on an imported holding's position page only when `thesis.source === 'imported'` and its trade plan's `stop_loss`/`target_1`/`target_2` are all still null.
-- [ ] If no rationale is recorded yet (`statedRationale()` returns `null`), the prompt directs the trader to `HoldingRationalePanel` instead of offering to build a plan from nothing.
-- [ ] The model call is grounded in: the stated rationale, current price, fetched fundamentals, quantity, average cost, held-since date, and the portfolio objective (`portfolio_profiles.objective`) when one is set — the same inputs `buildHoldingReviewContext` already assembles for the recurring review, reused rather than re-derived, plus the objective the portfolio Council already uses.
-- [ ] Output is validated with a Zod schema (nullable-with-`.catch` fields, same discipline as `HoldingReadSchema`/`Memorandum`) and passes through a new, position-appropriate geometry sanitizer (stop below current price; target_1 above it; target_2 above target_1) — not the existing `sanitizeTradePlanGeometry`, which assumes an entry zone that doesn't apply here.
-- [ ] Nothing is written to `trade_plans` until the trader explicitly approves — the proposal is shown first, every number is editable, and only the approved values are saved.
-- [ ] The approval screen carries an explicit disclaimer that the plan is proposed from a single stated rationale and today's price/fundamentals, not a full comparative analysis — separate from, and in addition to, the editable-before-save review itself.
-- [ ] Saving writes `stop_loss`/`target_1`/`target_2` (and `time_exit_date`/`time_exit_condition` if proposed) into the existing `trade_plans` row, stores the raw proposal in `ai_suggested`, and records any trader-changed field in `edited_fields`.
-- [ ] The model call is logged to `llm_usage` under a new `imported_exit_plan` feature value and respects the existing daily/monthly budget check.
-- [ ] Once saved, `ExitLadder` renders using the real values with no component changes, and the next `poll-prices` run can evaluate the position with no Edge Function changes.
+- [x] "Build Exit Plan" is offered on an imported holding's position page only when `thesis.source === 'imported'` and its trade plan's `stop_loss`/`target_1`/`target_2` are all still null.
+- [x] If no rationale is recorded yet (`statedRationale()` returns `null`), the prompt directs the trader to `HoldingRationalePanel` instead of offering to build a plan from nothing.
+- [x] The model call is grounded in: the stated rationale, current price, fetched fundamentals, quantity, average cost, held-since date, and the portfolio objective (`portfolio_profiles.objective`) when one is set — the same inputs `buildHoldingReviewContext` already assembles for the recurring review, reused rather than re-derived, plus the objective the portfolio Council already uses.
+- [x] Output is validated with a Zod schema (nullable-with-`.catch` fields, same discipline as `HoldingReadSchema`/`Memorandum`) and passes through a new, position-appropriate geometry sanitizer (stop below current price; target_1 above it; target_2 above target_1) — not the existing `sanitizeTradePlanGeometry`, which assumes an entry zone that doesn't apply here.
+- [x] Nothing is written to `trade_plans` until the trader explicitly approves — the proposal is shown first, every number is editable, and only the approved values are saved.
+- [x] The approval screen carries an explicit disclaimer that the plan is proposed from a single stated rationale and today's price/fundamentals, not a full comparative analysis — separate from, and in addition to, the editable-before-save review itself.
+- [x] Saving writes `stop_loss`/`target_1`/`target_2` (and `time_exit_date`/`time_exit_condition` if proposed) into the existing `trade_plans` row, stores the raw proposal in `ai_suggested`, and records any trader-changed field in `edited_fields`.
+- [x] The model call is logged to `llm_usage` under a new `imported_exit_plan` feature value and respects the existing daily/monthly budget check.
+- [x] Once saved, `ExitLadder` renders using the real values with no component changes, and the next `poll-prices` run can evaluate the position with no Edge Function changes.
 
 **Scratchpad**
-- [ ] `/scratchpad` route, linked from nav, added to the Screens table in `README.md`.
-- [ ] Freeform notes: create, edit, and archive (soft delete) a text note, optionally tagged with a free-text ticker. Plain CRUD, RLS-scoped, no model call involved.
-- [ ] Sector/industry is fetched per held ticker via a new `assetProfile`-module lookup in `lib/market-data.ts` (same `quoteSummary` mechanism `getFundamentals`/`getHoldingSnapshot` already use) and passed to the model as structured fact.
-- [ ] An on-demand "Read My Pattern" action runs one model call grounded as described in Architecture, writes an append-only row to `portfolio_pattern_reads`, and renders with the latest read expanded and prior reads collapsed below it — same list idiom as `HoldingReviewsPanel`.
-- [ ] The read explicitly separates structural fact (a ticker is held, its fetched sector/industry, a thesis said X) from the model's own read on what *pattern* those facts form — worded the way `HOLDING_REVIEW_SYSTEM_PROMPT` already separates fact from read.
-- [ ] The read states plainly when a holding doesn't fit any identified pattern (`not_explained`), rather than forcing every holding into a cluster.
-- [ ] The model call is logged to `llm_usage` under a new `portfolio_pattern_read` feature value and respects the existing budget check.
+- [x] `/scratchpad` route, linked from nav, added to the Screens table in `README.md`.
+- [x] Freeform notes: create, edit, and archive (soft delete) a text note, optionally tagged with a free-text ticker. Plain CRUD, RLS-scoped, no model call involved.
+- [x] Sector/industry is fetched per held ticker via a new `assetProfile`-module lookup in `lib/market-data.ts` (same `quoteSummary` mechanism `getFundamentals`/`getHoldingSnapshot` already use) and passed to the model as structured fact.
+- [x] An on-demand "Read My Pattern" action runs one model call grounded as described in Architecture, writes an append-only row to `portfolio_pattern_reads`, and renders with the latest read expanded and prior reads collapsed below it — same list idiom as `HoldingReviewsPanel`.
+- [x] The read explicitly separates structural fact (a ticker is held, its fetched sector/industry, a thesis said X) from the model's own read on what *pattern* those facts form — worded the way `HOLDING_REVIEW_SYSTEM_PROMPT` already separates fact from read.
+- [x] The read states plainly when a holding doesn't fit any identified pattern (`not_explained`), rather than forcing every holding into a cluster.
+- [x] The model call is logged to `llm_usage` under a new `portfolio_pattern_read` feature value and respects the existing budget check.
 
 ### Nice-to-Have (P1)
 
-- [ ] Rebuilding an exit plan that already has real values — always allowed, gated by an explicit "this will overwrite your current levels" confirmation. Entries and exits already logged are historical records and are never touched by a rebuild; only `trade_plans`' levels change.
-- [ ] The exit-plan proposal shows a `grounded_in`-style trail (which facts it actually used), matching `HoldingRead`'s existing pattern, so the trader can sanity-check the numbers at a glance.
-- [ ] The pattern read surfaces short "you might also look at…" prompts alongside each signal, which the trader can accept with one click to create a pre-filled Scratchpad note — never created automatically.
-- [ ] A "Start a thesis from this" link on a Scratchpad note, reusing the existing `/thesis/new?ticker=…` param already used by `OpportunityCard`.
-- [ ] Filter/search the Scratchpad note list by tagged ticker.
+- [x] Rebuilding an exit plan that already has real values — always allowed, gated by an explicit "this will overwrite your current levels" confirmation. Entries and exits already logged are historical records and are never touched by a rebuild; only `trade_plans`' levels change.
+- [x] The exit-plan proposal shows a `grounded_in`-style trail (which facts it actually used), matching `HoldingRead`'s existing pattern, so the trader can sanity-check the numbers at a glance.
+- [x] The pattern read surfaces short "you might also look at…" prompts alongside each signal, which the trader can accept with one click to create a pre-filled Scratchpad note — never created automatically.
+- [x] A "Start a thesis from this" link on a Scratchpad note, reusing the existing `/thesis/new?ticker=…` param already used by `OpportunityCard`.
+- [x] Filter/search the Scratchpad note list by tagged ticker.
 
 ### Future Considerations (P2)
 
@@ -182,11 +182,16 @@ portfolio_pattern_reads     -- append-only, same reasoning as `portfolio_council
 - Trend in the share of imported positions still carrying an all-null trade plan — should decline over time as this ships.
 - Whether a pattern-read signal shows up again later — a new note or a new thesis touching a ticker/sector the read named — as a soft indicator the read is generating real ideas rather than being read once and ignored.
 
-## Open Questions
+## Open Questions — all resolved
 
-- **[engineering]** When Yahoo's `assetProfile` module has no `sector`/`industry` for a symbol (small-caps, some ADRs, non-equity instruments), does the pattern read fall back to the model's own classification for just that one holding, or does that ticker simply land in `not_explained` as unclassified?
-- **[design]** Now that the ladder and the build prompt render together rather than one replacing the other, what's the exact layout — prompt above the ladder, beside it, or as an inline banner over the still-`PENDING` rows?
-- **[design]** Exact wording of the exit-plan disclaimer, and whether it needs a one-time acknowledgment (like a checkbox) or is sufficient as static text next to the proposal.
+- **[engineering]** *When Yahoo's `assetProfile` has no `sector`/`industry` for a symbol, does the read fall back to the model's classification or does the ticker land in `not_explained`?*
+  **Resolved: `not_explained`, and enforced rather than requested.** The prompt tells the model the sector is unclassified and forbids it supplying one, because a guessed sector is indistinguishable from a fetched one once it is on the screen. The UI does not rely on the model complying: `unplacedTickers` computes the holdings no signal named as a set difference, so an unclassifiable holding falls out on its own. The model's `not_explained` prose renders below that computed list as its account of *why*, never instead of it.
+- **[design]** *Exact layout for the ladder and the build prompt.*
+  **Resolved: own full-width panel below the two-column grid**, between `HoldingRationalePanel` and `HoldingReviewsPanel`. `ExitLadder` keeps rendering unchanged — seeing every rung read `PENDING` next to the reason it does is the point.
+- **[design]** *Exit-plan disclaimer wording, and whether it needs a checkbox.*
+  **Resolved: static prose, no gate**, same posture as `CouncilDisclaimer` — plus a computed risk line ("that stop risks ₹X across the Y shares you still hold"), which does more to make the number real than an acknowledgment tick would.
+- **[design, new]** *Scratchpad layout.*
+  **Resolved: two columns** — pattern read left, notes right, stacked on mobile. A signal and the note it prompts have to be on screen together, which is the whole reason the PRD put them on one panel.
 
 ## Timeline Considerations
 
