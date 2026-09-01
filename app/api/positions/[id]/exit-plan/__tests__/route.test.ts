@@ -260,6 +260,21 @@ describe("POST /api/positions/[id]/exit-plan", () => {
     const res = await POST(req(), { params });
     expect((await res.json()).proposal.stop_loss).toBeNull();
   });
+
+  it("never looks at the existing plan, which is what lets a rebuild through", async () => {
+    const mock = buildMock();
+    vi.mocked(createClient).mockResolvedValue(mock as never);
+    const res = await POST(req(), { params });
+
+    expect(res.status).toBe(200);
+    expect(generateText).toHaveBeenCalledTimes(1);
+    // The PRD allows rebuilding an exit plan: the panel confirms the overwrite
+    // first, and the route stays open. `hasExitLevels` is the panel's predicate
+    // for build-vs-rebuild copy, never a refusal here. If someone later adds a
+    // "levels are already set" guard, this is the test they have to argue with.
+    expect(mock.from).not.toHaveBeenCalledWith("trade_plans");
+    expect(captured.planUpdates).toHaveLength(0);
+  });
 });
 
 describe("PATCH /api/positions/[id]/exit-plan", () => {
@@ -344,5 +359,31 @@ describe("PATCH /api/positions/[id]/exit-plan", () => {
     await PATCH(patchReq({ approved: LEVELS, proposed: LEVELS }), { params });
     expect(generateText).not.toHaveBeenCalled();
     expect(ledger).toHaveLength(0);
+  });
+
+  it("a rebuild re-diffs against the new proposal, not the old one", async () => {
+    // Second time round Jarvis proposes a tighter stop. The trader takes the
+    // stop but overrides target_1. `edited_fields` must describe THIS proposal
+    // — a rebuild that kept diffing against the first build's numbers would
+    // mark levels as edited that the trader never touched.
+    const rebuilt = {
+      stop_loss: 4100,
+      target_1: 5400,
+      target_2: 6200,
+      time_exit_date: null,
+      time_exit_condition: null,
+    };
+    const approved = { ...rebuilt, target_1: 5000 };
+    const res = await PATCH(patchReq({ approved, proposed: rebuilt }), { params });
+
+    expect(res.status).toBe(200);
+    expect(captured.planUpdates).toHaveLength(1);
+    expect(captured.planUpdates[0]).toMatchObject({
+      stop_loss: 4100,
+      target_1: 5000,
+      target_2: 6200,
+      ai_suggested: rebuilt,
+      edited_fields: ["target_1"],
+    });
   });
 });

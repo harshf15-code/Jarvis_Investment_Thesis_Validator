@@ -237,17 +237,35 @@ export const LEVEL_LABEL: Record<"stop_loss" | "target_1" | "target_2", string> 
 };
 
 /**
- * Whether this plan still has nothing to watch.
+ * Whether this plan already holds anything a rebuild would destroy.
  *
- * One definition, because the panel decides whether to offer the build and the
- * route decides whether to allow it, and those two disagreeing would mean a
- * button that 400s.
+ * The panel's predicate for choosing between "build" and "rebuild" copy. The
+ * route deliberately does NOT gate on it: a rebuild is always allowed (the
+ * trader confirms the overwrite first), so a POST against a plan that already
+ * carries levels is a legitimate request rather than one to refuse.
+ *
+ * `time_exit_date` counts, and leaving it out was a real hole. A plan can hold
+ * a time exit and no price levels at all — `validateApprovedLevels` permits
+ * exactly that, and `sanitizeExitPlanGeometry` produces it whenever a proposed
+ * stop and targets are all rejected but the date survives. Judging only the
+ * price levels meant such a plan read as empty: no confirmation before a
+ * rebuild overwrote it, and the saved time exit never rendered at all.
  */
 export function hasExitLevels(
-  plan: { stop_loss: number | null; target_1: number | null; target_2: number | null } | null,
+  plan: {
+    stop_loss: number | null;
+    target_1: number | null;
+    target_2: number | null;
+    time_exit_date: string | null;
+  } | null,
 ): boolean {
   if (!plan) return false;
-  return plan.stop_loss != null || plan.target_1 != null || plan.target_2 != null;
+  return (
+    plan.stop_loss != null ||
+    plan.target_1 != null ||
+    plan.target_2 != null ||
+    plan.time_exit_date != null
+  );
 }
 
 /** Which approved fields differ from what Jarvis proposed — `edited_fields`. */
