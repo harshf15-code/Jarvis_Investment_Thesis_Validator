@@ -42,14 +42,21 @@ function sleep(ms: number): Promise<void> {
  * once exhausted, and gives up immediately on a permanent failure. If Task 4
  * changes its retry/backoff shape, mirror the change here.
  *
+ * Permanent means 404 and only 404 — an allow-list, not "4xx except the
+ * retryable ones". See `lib/market-data.ts` for why 401/403 must keep their
+ * retries; on this path in particular, a poll that gives up on a stale-session
+ * 401 leaves every holding un-priced until the next scheduled run.
+ *
  * The short-circuit is a no-op for THIS file's only caller: `quote()` resolves
  * `undefined` for a symbol Yahoo does not know rather than throwing, so no 404
  * reaches it. It is transcribed anyway because the two copies drifting is the
  * failure mode this comment exists to prevent.
  */
+const PERMANENT_STATUSES = new Set([404]);
+
 function isPermanentFailure(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === "number" && code >= 400 && code < 500 && code !== 408 && code !== 429;
+  return typeof code === "number" && PERMANENT_STATUSES.has(code);
 }
 
 /**

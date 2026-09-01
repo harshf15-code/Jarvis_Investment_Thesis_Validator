@@ -99,12 +99,26 @@ describe("withRetry", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps retrying a 408 and a 500", async () => {
-    for (const code of [408, 500]) {
+  it("keeps retrying every status that is not on the permanent list", async () => {
+    // 401 and 403 are the ones worth naming. Yahoo answers them under load and
+    // when its crumb/cookie state goes stale — they describe the session, not
+    // the symbol — and `withRetry` backs the thesis run, the CSV import and the
+    // scheduled price poll alike. An allow-list of one keeps them retryable.
+    for (const code of [400, 401, 403, 408, 500, 502, 503]) {
       const fn = vi.fn<() => Promise<never>>().mockRejectedValue(httpError(code));
       await expect(withRetry(fn, { retries: 2, baseDelayMs: 1 })).rejects.toThrow(`HTTP ${code}`);
       expect(fn).toHaveBeenCalledTimes(3);
     }
+  });
+
+  it("recovers when a 401 clears on the second attempt", async () => {
+    const fn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(httpError(401))
+      .mockResolvedValueOnce("ok");
+
+    await expect(withRetry(fn, { retries: 2, baseDelayMs: 1 })).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it("keeps retrying a transport error, whose code is a string", async () => {

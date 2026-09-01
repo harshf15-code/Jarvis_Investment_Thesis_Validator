@@ -56,14 +56,28 @@ export function resolveYahooSymbol(
  * probe that runs after the model call. It is most of what put
  * `POST /api/theses` over its function timeout in production on 2026-09-01.
  *
- * 408 and 429 stay retryable on purpose: those say "not now", not "never", and
- * Yahoo rate-limits often enough that giving up on the first 429 would trade
- * this bug for a worse one. A Node transport error carries a STRING `code`
- * (`ECONNRESET`, `ENOTFOUND`), which the `typeof` guard leaves retryable.
+ * An ALLOW-LIST of one, not "4xx except the retryable ones". That was the first
+ * shape of this and it was wrong: `withRetry` backs `quote`, `chart` and every
+ * `quoteSummary` caller, so widening it spends the thesis run, the CSV import
+ * and the scheduled price poll on a guess. Yahoo answers 401 and 403 under load
+ * and when its crumb/cookie state goes stale, and this library caches the crumb
+ * at module scope for the life of the process — so those statuses say something
+ * about the session, not about the symbol, and are exactly the kind of thing a
+ * second attempt is for. 404 is the one status measured here and the one the
+ * tests below pin; anything else keeps the retries it always had.
+ *
+ * The asymmetry is the argument. Retrying a permanent failure costs two
+ * requests and 1.5s on a path that was already slow. NOT retrying a recoverable
+ * one costs the trader their thesis.
+ *
+ * A Node transport error carries a STRING `code` (`ECONNRESET`, `ENOTFOUND`),
+ * which the `typeof` guard leaves retryable.
  */
+const PERMANENT_STATUSES = new Set([404]);
+
 function isPermanentFailure(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === "number" && code >= 400 && code < 500 && code !== 408 && code !== 429;
+  return typeof code === "number" && PERMANENT_STATUSES.has(code);
 }
 
 function sleep(ms: number): Promise<void> {
