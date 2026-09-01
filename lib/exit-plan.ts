@@ -171,11 +171,27 @@ export type ExitPlanValidation = { ok: true } | { ok: false; error: string };
  * gets sanitized because there is a human about to review it; the human's own
  * edit gets an error message.
  *
- * Ordering only, no current price. The price-relative check ran seconds earlier
- * when the proposal was built, and a second Yahoo round trip on the save path
- * buys a freshness nobody asked for.
+ * WHY THE STOP IS CHECKED AGAINST THE PRICE AND THE TARGETS ARE NOT. The two
+ * levels do not mean the same thing, so they do not deserve the same rule.
+ *
+ * A stop at or above the current price is never intentional. `poll-prices`
+ * fires on `price <= stop_loss`, so saving one produces a stop-breach alert on
+ * the very next run — a "your thesis is broken, get out" on a position that is
+ * perfectly fine. There is no reading of a long position under which someone
+ * meant that, so it is refused.
+ *
+ * A target at or below the current price IS legitimate: "I should have trimmed
+ * at 4400 and I am past it — tell me to trim now." The ladder showing HIT and
+ * the watch raising a trim alert are both true and both useful. Refusing it
+ * would be the tool overruling the trader about their own book.
+ *
+ * `currentPrice` is optional so the pure ordering rules stay testable and so a
+ * holding with no known price can still be given levels.
  */
-export function validateApprovedLevels(levels: ExitPlanLevels): ExitPlanValidation {
+export function validateApprovedLevels(
+  levels: ExitPlanLevels,
+  currentPrice?: number | null,
+): ExitPlanValidation {
   for (const field of ["stop_loss", "target_1", "target_2"] as const) {
     const v = levels[field];
     if (v == null) continue;
@@ -192,6 +208,18 @@ export function validateApprovedLevels(levels: ExitPlanLevels): ExitPlanValidati
   }
   if (target_1 == null && target_2 != null) {
     return { ok: false, error: "Set a first target before a second one." };
+  }
+  if (
+    currentPrice != null &&
+    Number.isFinite(currentPrice) &&
+    currentPrice > 0 &&
+    stop_loss != null &&
+    stop_loss >= currentPrice
+  ) {
+    return {
+      ok: false,
+      error: `A stop at ${stop_loss} sits at or above the current price of ${currentPrice}, so it would read as breached the moment you saved it. Put it below where the holding trades now.`,
+    };
   }
   if (levels.time_exit_date != null) {
     const d = levels.time_exit_date.trim();

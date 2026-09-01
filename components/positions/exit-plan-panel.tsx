@@ -106,8 +106,9 @@ export function ExitPlanPanel({
         : null,
     };
     // Checked here as well as on the route so a typo is answered instantly
-    // rather than after a round trip. The route stays the authority.
-    const valid = validateApprovedLevels(approved);
+    // rather than after a round trip. The route stays the authority, and it
+    // re-checks against the cached price the alerting actually uses.
+    const valid = validateApprovedLevels(approved, proposed.currentPrice);
     if (!valid.ok) {
       setError(valid.error);
       return;

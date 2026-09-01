@@ -56,7 +56,7 @@ These came out of clarifying questions before drafting, and shape everything bel
 **No new tables.** The two columns this needs already exist on `trade_plans` and are currently always empty for an imported holding:
 
 - `ai_suggested jsonb` — will hold the raw model proposal (numeric levels + short per-level rationale) before any trader edits, the same role it plays for a Jarvis-originated plan.
-- `edited_fields text[]` — will record which of `stop_loss` / `target_1` / `target_2` / `time_exit_date` the trader changed from what was proposed.
+- `edited_fields text[]` — will record which of `stop_loss` / `target_1` / `target_2` / `time_exit_date` / `time_exit_condition` the trader changed from what was proposed.
 
 The build action is a `PATCH` (update, not insert) against the imported holding's **already-existing** `trade_plans` row — every imported position gets one at import time (0020), all-null. Once real numbers land in it:
 

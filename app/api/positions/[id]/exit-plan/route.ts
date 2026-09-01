@@ -192,21 +192,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const approved: ExitPlanLevels = parsed.data.approved;
   const proposed: ExitPlanLevels = parsed.data.proposed;
 
-  // The trader's own numbers are REFUSED when they do not hold together, never
-  // silently dropped. Nulling a level somebody deliberately typed would save
-  // successfully, lose the number, and say nothing about why.
-  const valid = validateApprovedLevels(approved);
-  if (!valid.ok) return NextResponse.json({ error: valid.error }, { status: 400 });
-
   const supabase = await createClient();
 
-  // Deliberately NOT `loadHoldingContext`: this path needs the owner and the
-  // source, and that loader also fetches a quote and a fundamentals snapshot
-  // from Yahoo. Saving numbers the trader is already looking at should not wait
-  // on the network to re-learn a price nobody is going to use.
+  // Deliberately NOT `loadHoldingContext`: this path needs the owner, the
+  // source and a price, and that loader also pulls a fresh fundamentals
+  // snapshot from Yahoo. Saving numbers the trader is already looking at should
+  // not wait on the network for data nobody here reads.
   const { data: position, error: positionError } = await supabase
     .from("positions")
-    .select("trade_plan_id, thesis_id")
+    .select("trade_plan_id, thesis_id, stock_id")
     .eq("id", id)
     .maybeSingle();
   if (positionError) return NextResponse.json({ error: positionError.message }, { status: 500 });
@@ -214,16 +208,32 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   // reading as absent rather than becoming a 403 that confirms it exists.
   if (!position) return NextResponse.json({ error: "Position not found" }, { status: 404 });
 
-  const { data: thesis, error: thesisError } = await supabase
-    .from("theses")
-    .select("source")
-    .eq("id", position.thesis_id)
-    .maybeSingle();
-  if (thesisError) return NextResponse.json({ error: thesisError.message }, { status: 500 });
-  if (!thesis) return NextResponse.json({ error: "Position not found" }, { status: 404 });
-  if (thesis.source !== "imported") {
+  const [thesisRes, stockRes] = await Promise.all([
+    supabase.from("theses").select("source").eq("id", position.thesis_id).maybeSingle(),
+    supabase.from("stocks").select("last_price").eq("id", position.stock_id).maybeSingle(),
+  ]);
+  if (thesisRes.error) return NextResponse.json({ error: thesisRes.error.message }, { status: 500 });
+  if (stockRes.error) return NextResponse.json({ error: stockRes.error.message }, { status: 500 });
+  if (!thesisRes.data) return NextResponse.json({ error: "Position not found" }, { status: 404 });
+  if (thesisRes.data.source !== "imported") {
     return NextResponse.json({ error: JARVIS_SOURCE_REFUSAL }, { status: 400 });
   }
+
+  /**
+   * The trader's own numbers are REFUSED when they do not hold together, never
+   * silently dropped. Nulling a level somebody deliberately typed would save
+   * successfully, lose the number, and say nothing about why.
+   *
+   * Checked against the CACHED `stocks.last_price` rather than a fresh quote,
+   * and that is the point rather than a shortcut: `poll-prices` evaluates a
+   * breach against exactly this number, so validating against it means the two
+   * can never disagree. A stop this accepts is one the watch will not
+   * immediately fire on, and a stop it refuses is one the watch WOULD have
+   * fired on. A fresher price from a second Yahoo round trip would be a
+   * different number from the one that actually raises the alert.
+   */
+  const valid = validateApprovedLevels(approved, stockRes.data?.last_price ?? null);
+  if (!valid.ok) return NextResponse.json({ error: valid.error }, { status: 400 });
 
   const { data: tradePlan, error: updateError } = await supabase
     .from("trade_plans")

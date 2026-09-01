@@ -122,6 +122,29 @@ describe("validateApprovedLevels", () => {
   it("refuses a malformed time exit", () => {
     expect(validateApprovedLevels(levels({ time_exit_date: "soon" })).ok).toBe(false);
   });
+
+  it("refuses a stop at or above the current price", () => {
+    // `poll-prices` fires on `price <= stop_loss`, so saving one of these would
+    // raise a stop-breach alert on the very next run — a "get out" on a
+    // position that is fine.
+    const at = validateApprovedLevels(levels({ stop_loss: 100 }), 100);
+    expect(at.ok).toBe(false);
+    if (!at.ok) expect(at.error).toMatch(/at or above the current price/i);
+    expect(validateApprovedLevels(levels({ stop_loss: 110 }), 100).ok).toBe(false);
+    expect(validateApprovedLevels(levels({ stop_loss: 99 }), 100).ok).toBe(true);
+  });
+
+  it("allows a target the holding has already passed", () => {
+    // Not an oversight: "I should have trimmed at 90 and I am past it" is a
+    // real instruction, and the ladder showing HIT is the true answer. A stop
+    // above the price has no such reading, which is why only that one refuses.
+    expect(validateApprovedLevels(levels({ stop_loss: 80, target_1: 90, target_2: 95 }), 100).ok).toBe(true);
+  });
+
+  it("skips the price rule when there is no usable price", () => {
+    expect(validateApprovedLevels(levels({ stop_loss: 110 }), null).ok).toBe(true);
+    expect(validateApprovedLevels(levels({ stop_loss: 110 }), 0).ok).toBe(true);
+  });
 });
 
 describe("parseExitPlanProposal", () => {

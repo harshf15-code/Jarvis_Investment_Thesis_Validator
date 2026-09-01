@@ -285,6 +285,30 @@ describe("PATCH /api/positions/[id]/exit-plan", () => {
     expect(captured.planUpdates[0].ai_suggested).toMatchObject({ stop_loss: 3800, target_2: 6000 });
   });
 
+  it("refuses a stop the price watch would fire on immediately", async () => {
+    // The cached price is 4400. `poll-prices` breaches on `price <= stop_loss`,
+    // so a stop of 4500 would raise "your stop is broken, get out" on the very
+    // next run — against a position that is fine.
+    const res = await PATCH(
+      patchReq({ approved: { ...LEVELS, stop_loss: 4500 }, proposed: LEVELS }),
+      { params },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/at or above the current price/i);
+    expect(captured.planUpdates).toHaveLength(0);
+  });
+
+  it("saves a target the holding has already passed", async () => {
+    // Deliberately allowed where the stop is not: "I am past 4200, tell me to
+    // trim" is a real instruction, and the ladder showing HIT is the truth.
+    const res = await PATCH(
+      patchReq({ approved: { ...LEVELS, target_1: 4200, target_2: 4300 }, proposed: LEVELS }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    expect(captured.planUpdates[0]).toMatchObject({ target_1: 4200 });
+  });
+
   it("refuses the trader's own inconsistent numbers instead of dropping them", async () => {
     const res = await PATCH(
       patchReq({ approved: { ...LEVELS, stop_loss: 5500 }, proposed: LEVELS }),
