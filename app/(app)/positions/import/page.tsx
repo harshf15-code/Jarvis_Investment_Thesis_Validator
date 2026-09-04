@@ -18,19 +18,26 @@ export default async function ImportHoldingsPage({ searchParams }: PageProps) {
   // should not be asked what it is for again — but a second portfolio is a
   // second question, because the whole point of asking is that the answer
   // differs between books.
+  //
+  // Every book's answer, not just the one in the URL. The wizard's first step
+  // lets the trader import into a DIFFERENT book than the one they arrived on,
+  // and reading only the active book's profile got it wrong in both directions:
+  // it hid the question for a book that had never answered it, and asked a book
+  // that had — then submitted the reply, overwriting a real objective with an
+  // answer to a question that should not have been on screen. At most five
+  // short rows, so this costs one query either way.
   const supabase = await createClient();
-  const { data: profile } = active
-    ? await supabase
-        .from("portfolio_profiles")
-        .select("objective")
-        .eq("portfolio_id", active.id)
-        .maybeSingle()
-    : { data: null };
+  const { data: profiles } = await supabase
+    .from("portfolio_profiles")
+    .select("portfolio_id, objective");
+  const booksWithObjective = (profiles ?? [])
+    .filter((p) => p.objective != null)
+    .map((p) => p.portfolio_id);
 
   return (
     <div className="mx-auto max-w-4xl">
       <Link
-        href="/positions"
+        href={active ? `/positions?portfolio=${active.id}` : "/positions"}
         className="mb-4 inline-flex items-center gap-1.5 text-xs text-on-surface-variant hover:text-on-surface"
       >
         <ArrowLeft className="size-3.5" />
@@ -44,7 +51,7 @@ export default async function ImportHoldingsPage({ searchParams }: PageProps) {
         Cockpit, this table, the Journal — but they arrive without a trade plan, because no analysis
         produced one.
       </p>
-      <ImportWizard hasObjective={profile?.objective != null} />
+      <ImportWizard booksWithObjective={booksWithObjective} />
     </div>
   );
 }

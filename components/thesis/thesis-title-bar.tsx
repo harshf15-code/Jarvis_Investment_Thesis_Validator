@@ -53,6 +53,11 @@ export function ThesisTitleBar({ thesisId }: { thesisId: string }) {
   const current = thesisTitle(thesis);
 
   async function save() {
+    // The tick button is disabled while a save is in flight; the Enter key is
+    // not, and holding it sends a PATCH per repeat. They all succeed, but a
+    // slow one landing after a fast one can paint an error over a title that
+    // saved — so the guard is here rather than on the one control that had it.
+    if (busy) return;
     const next = draft.trim();
     if (next === "" || next === current) {
       setEditing(false);

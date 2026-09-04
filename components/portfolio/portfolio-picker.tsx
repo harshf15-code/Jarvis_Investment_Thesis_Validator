@@ -51,7 +51,10 @@ export function PortfolioPicker({
             }`}
           >
             <span className="max-w-[18ch] truncate">{p.name}</span>
-            {value !== p.id && <OwnershipBadge portfolio={p} />}
+            {/* Shown on the SELECTED book too. Hiding it once chosen removed
+                the "someone else's money" label at the one moment it decides
+                anything — the second before a trade is filed. */}
+            <OwnershipBadge portfolio={p} />
           </button>
         ))}
       </div>

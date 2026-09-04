@@ -35,7 +35,13 @@ type Step = "upload" | "preview";
  * means the mapping UI is instant, with no round trip between choosing a file
  * and seeing whether the columns were understood.
  */
-export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
+export function ImportWizard({
+  /** The books that have already said what they are for. Every book, not just
+   *  the one in the URL — step 1 below can send this file somewhere else. */
+  booksWithObjective,
+}: {
+  booksWithObjective: string[];
+}) {
   const router = useRouter();
   // Which book the file lands in. Asked as its own step rather than inherited
   // from the header switcher: up to 200 positions commit at once here, which
@@ -62,6 +68,10 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
   // The trader's own calendar, not UTC — see `localToday`.
   const [asOfDate, setAsOfDate] = useState(localToday());
   const [objective, setObjective] = useState("");
+  // Answered against the book this file is actually going into, resolved after
+  // step 1 rather than on the server before it. Null until one is chosen, which
+  // is also before this field can be reached.
+  const hasObjective = portfolioId !== null && booksWithObjective.includes(portfolioId);
 
   const [resolved, setResolved] = useState<ResolvedImportRow[]>([]);
   const [notes, setNotes] = useState<Record<number, string>>({});
@@ -202,7 +212,10 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Couldn't save these holdings.");
-      router.push("/positions");
+      // Into the book the file went into, not the default. Landing on your own
+      // holdings after importing into someone else's book reads as a failed
+      // import — the rows are there, just not on the screen you were sent to.
+      router.push(`/positions?portfolio=${portfolioId}`);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -229,7 +242,18 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
               </p>
             </div>
 
-            <PortfolioPicker value={portfolioId} onChange={setPortfolioId} label="" />
+            <PortfolioPicker
+              value={portfolioId}
+              onChange={(id) => {
+                setPortfolioId(id);
+                // Duplicate detection is per-book since 0027 — "you already
+                // hold INFY" is a claim about ONE book — so a preview resolved
+                // against the previous choice is answering the wrong question.
+                // Same reason the market buttons clear it.
+                clearPreview();
+              }}
+              label=""
+            />
           </section>
 
           <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">

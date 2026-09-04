@@ -17,7 +17,7 @@ import type { Portfolio, PortfolioOwnership } from "@/lib/types";
  * anyone wondering about their books is already looking.
  */
 export function ManagePortfoliosDialog({ onClose }: { onClose: () => void }) {
-  const { portfolios, refresh } = usePortfolios();
+  const { portfolios, active, refresh, select } = usePortfolios();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [ownership, setOwnership] = useState<PortfolioOwnership>("owned");
@@ -83,11 +83,19 @@ export function ManagePortfoliosDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function remove(portfolio: Portfolio) {
-    await send(
+    const ok = await send(
       `/api/portfolios/${portfolio.id}`,
       { method: "DELETE" },
       "Could not delete that portfolio.",
     );
+    // Deleting the book you are LOOKING AT leaves its id in `?portfolio=`, and
+    // the URL is the state — so the next read is scoped to a book that no
+    // longer exists, and the switcher shows nothing active. Move to the default
+    // first; the refresh then lands on a URL that names a real book.
+    if (ok && active?.id === portfolio.id) {
+      const fallback = portfolios.find((p) => p.is_default && p.id !== portfolio.id);
+      if (fallback) select(fallback.id);
+    }
   }
 
   return (
