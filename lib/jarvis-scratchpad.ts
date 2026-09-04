@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ownershipFraming, type BookOwnership } from "@/lib/jarvis-portfolio-council";
 import { extractTrailingJsonBlock } from "@/lib/jarvis-thesis-parser";
 import type { ThesisSource } from "@/lib/types";
 
@@ -234,10 +235,16 @@ export function buildPatternReadUserContext(input: {
   objective: string | null;
   notes: string[];
   today: string;
+  /** The book being read. Null only where ownership is genuinely unknown. */
+  book?: BookOwnership | null;
 }): string {
   const lines: string[] = [];
 
   lines.push(`TODAY IS ${input.today}`);
+  lines.push("");
+  // Shared with the portfolio Council rather than restated, so the two can
+  // never end up describing the same book to two different standards.
+  lines.push(ownershipFraming(input.book ?? null));
   lines.push("");
   lines.push("WHAT THE INVESTOR SAYS THIS PORTFOLIO IS FOR");
   lines.push(

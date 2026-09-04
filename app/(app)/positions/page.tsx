@@ -4,6 +4,7 @@ import { Upload, Users } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PositionsPageClient } from "@/components/positions/positions-page-client";
 import type { PositionRow } from "@/components/positions/positions-table";
+import { pageScope } from "@/lib/portfolio/active";
 import { listOpenPositions } from "@/lib/queries";
 
 /**
@@ -16,8 +17,13 @@ import { listOpenPositions } from "@/lib/queries";
  */
 export const dynamic = "force-dynamic";
 
-export default async function PositionsPage() {
-  const rows: PositionRow[] = await listOpenPositions();
+type PageProps = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+
+export default async function PositionsPage({ searchParams }: PageProps) {
+  // A bare /positions redirects to the default book, so the URL always names
+  // what is on screen. See `pageScope`.
+  const { scope, active } = await pageScope("/positions", searchParams);
+  const rows: PositionRow[] = await listOpenPositions(scope);
 
   return (
     <div>
@@ -31,9 +37,9 @@ export default async function PositionsPage() {
           {/* Only offered once there is a book to judge. The Council reviews
               construction, and one position has none — the route refuses it,
               and a button that always 400s is worse than no button. */}
-          {rows.length >= 2 && (
+          {rows.length >= 2 && active && (
             <Link
-              href="/positions/council"
+              href={`/positions/council?portfolio=${active.id}`}
               className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-1.5 text-xs text-on-surface-variant transition-colors hover:border-white/25 hover:text-on-surface"
             >
               <Users className="size-3.5" />
@@ -41,7 +47,7 @@ export default async function PositionsPage() {
             </Link>
           )}
           <Link
-            href="/positions/import"
+            href={active ? `/positions/import?portfolio=${active.id}` : "/positions/import"}
             className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-1.5 text-xs text-on-surface-variant transition-colors hover:border-white/25 hover:text-on-surface"
           >
             <Upload className="size-3.5" />
@@ -55,7 +61,7 @@ export default async function PositionsPage() {
           description="Start with a thesis, or import the holdings you already own from a broker CSV."
           action={
             <Link
-              href="/positions/import"
+              href={active ? `/positions/import?portfolio=${active.id}` : "/positions/import"}
               className="rounded-full bg-primary px-4 py-2 text-xs font-medium text-on-primary transition-colors hover:bg-primary-dim"
             >
               Import Holdings

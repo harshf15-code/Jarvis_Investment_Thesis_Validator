@@ -9,7 +9,8 @@ import {
   unplacedTickers,
   type PatternRead,
 } from "@/lib/jarvis-scratchpad";
-import type { PortfolioPatternReadRow } from "@/lib/types";
+import { FiduciaryNote } from "@/components/portfolio/fiduciary-note";
+import type { Portfolio, PortfolioPatternReadRow } from "@/lib/types";
 
 /**
  * "What Jarvis sees" — the pattern read, latest expanded and priors collapsed.
@@ -23,6 +24,7 @@ export function PatternReadPanel({
   reads,
   nextBefore,
   heldTickers,
+  portfolio,
   onRead,
   onLoadedOlder,
   onAcceptSuggestion,
@@ -30,6 +32,10 @@ export function PatternReadPanel({
   reads: PortfolioPatternReadRow[];
   nextBefore: string | null;
   heldTickers: string[];
+  /** The book being read. Null in the roll-up, where a pattern read is not
+   *  offered: a claim about the trader's taste that blends in a book run for
+   *  someone else describes a person who does not exist. */
+  portfolio: Portfolio | null;
   onRead: (read: PortfolioPatternReadRow) => void;
   onLoadedOlder: (older: PortfolioPatternReadRow[], before: string | null) => void;
   onAcceptSuggestion: (body: string, ticker: string | null) => Promise<void>;
@@ -39,13 +45,17 @@ export function PatternReadPanel({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const enoughHoldings = heldTickers.length >= MIN_PATTERN_HOLDINGS;
+  const portfolioId = portfolio?.id ?? null;
+  const enoughHoldings = heldTickers.length >= MIN_PATTERN_HOLDINGS && portfolioId !== null;
 
   async function run() {
+    if (!portfolioId) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/scratchpad/pattern", { method: "POST" });
+      const res = await fetch(`/api/scratchpad/pattern?portfolio=${portfolioId}`, {
+        method: "POST",
+      });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Couldn't read your pattern.");
       onRead(body.read);
@@ -61,7 +71,9 @@ export function PatternReadPanel({
     setLoadingMore(true);
     setError(null);
     try {
-      const res = await fetch(`/api/scratchpad/pattern?before=${encodeURIComponent(nextBefore!)}`);
+      const res = await fetch(
+        `/api/scratchpad/pattern?portfolio=${portfolioId ?? "all"}&before=${encodeURIComponent(nextBefore!)}`,
+      );
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Couldn't load older reads.");
       onLoadedOlder(body.reads ?? [], body.nextBefore ?? null);
@@ -74,6 +86,7 @@ export function PatternReadPanel({
 
   return (
     <div className="glass-panel flex flex-col gap-4 rounded-xl p-5">
+      <FiduciaryNote portfolio={portfolio} />
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">

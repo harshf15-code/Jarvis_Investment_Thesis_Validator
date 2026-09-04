@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 import { PortfolioCouncilClient } from "@/components/portfolio/council/portfolio-council-client";
+import { pageScope } from "@/lib/portfolio/active";
 import { listOpenPositions } from "@/lib/queries";
 
 /**
@@ -10,8 +11,11 @@ import { listOpenPositions } from "@/lib/queries";
  */
 export const dynamic = "force-dynamic";
 
-export default async function PortfolioCouncilPage() {
-  const rows = await listOpenPositions();
+type PageProps = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+
+export default async function PortfolioCouncilPage({ searchParams }: PageProps) {
+  const { scope, active } = await pageScope("/positions/council", searchParams);
+  const rows = await listOpenPositions(scope);
   // Quantity per ticker, aggregated across separate theses in the same name —
   // the same collapse the consult itself does. Quantities and not just tickers,
   // because trimming a position changes every weight in its sub-book and a
@@ -32,13 +36,19 @@ export default async function PortfolioCouncilPage() {
         <ArrowLeft className="size-3.5" />
         Active Positions
       </Link>
-      <h1 className="font-display text-2xl text-on-surface">The Council on your portfolio</h1>
+      <h1 className="font-display text-2xl text-on-surface">
+        The Council on {active ? active.name : "your portfolio"}
+      </h1>
       <p className="mt-1.5 max-w-2xl text-sm text-on-surface-variant">
         The same roster you use on a thesis, asked a different question: not whether to own one
         stock, but whether this collection of things makes sense together.
       </p>
       <div className="mt-6">
-        <PortfolioCouncilClient currentQuantities={currentQuantities} positionCount={rows.length} />
+        <PortfolioCouncilClient
+          currentQuantities={currentQuantities}
+          positionCount={rows.length}
+          portfolio={active}
+        />
       </div>
     </div>
   );

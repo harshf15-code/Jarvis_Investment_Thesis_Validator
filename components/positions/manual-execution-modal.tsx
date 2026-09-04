@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { PortfolioPicker } from "@/components/portfolio/portfolio-picker";
+
 type TradePlanSummary = {
   id: string;
   thesis_id: string;
@@ -38,6 +40,8 @@ export function ManualExecutionModal({
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [tranche, setTranche] = useState<"T1" | "T2" | "add">("T1");
+  // Starts null, and stays null until the trader picks. See `PortfolioPicker`.
+  const [portfolioId, setPortfolioId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,6 +53,7 @@ export function ManualExecutionModal({
     (priceNum < tradePlan.entry_zone_low || priceNum > tradePlan.entry_zone_high);
 
   async function handleSubmit() {
+    if (!portfolioId) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -56,6 +61,7 @@ export function ManualExecutionModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          portfolio_id: portfolioId,
           trade_plan_id: tradePlan.id,
           thesis_id: tradePlan.thesis_id,
           stock_id: tradePlan.stock_id,
@@ -100,6 +106,10 @@ export function ManualExecutionModal({
           ))}
         </div>
 
+        <div className="mb-4">
+          <PortfolioPicker value={portfolioId} onChange={setPortfolioId} />
+        </div>
+
         <div className="mb-4 grid grid-cols-2 gap-3">
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm" />
           <select value={tranche} onChange={(e) => setTranche(e.target.value as typeof tranche)} className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm">
@@ -127,7 +137,7 @@ export function ManualExecutionModal({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={submitting || !quantity || !price}
+            disabled={submitting || !quantity || !price || !portfolioId}
             className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-40"
           >
             Log My Buy

@@ -8,12 +8,19 @@ import { Logo } from "./logo";
 import { LogoutButton } from "./logout-button";
 import { activeNavItem } from "./nav-items";
 import { useNewThesisDrawer } from "./new-thesis-context";
+import { PortfolioSwitcher } from "./portfolio-switcher";
 
 /**
  * Fixed top chrome — the Stitch mock's `<header class="h-16">`. Carries the
  * wordmark, the current section's name (so the icon rail never leaves you
- * guessing where you are), the one global action, and who you are signed in
- * as — which matters now that the same URL serves more than one account.
+ * guessing where you are), WHICH BOOK is on screen, the one global action, and
+ * who you are signed in as — which matters now that the same URL serves more
+ * than one account.
+ *
+ * The portfolio switcher sits here rather than on any one screen because it
+ * governs four of them. On mobile the section label gives way to it: "which
+ * book" is worth more than "which screen" when the icon rail already answers
+ * the second.
  */
 export function AppHeader({ email }: { email: string | null }) {
   const pathname = usePathname();
@@ -30,10 +37,11 @@ export function AppHeader({ email }: { email: string | null }) {
           </span>
         </Link>
         {active && (
-          <span className="font-display text-xs font-bold uppercase tracking-widest text-on-surface-variant">
+          <span className="hidden font-display text-xs font-bold uppercase tracking-widest text-on-surface-variant sm:inline">
             {active.label}
           </span>
         )}
+        <PortfolioSwitcher />
       </div>
 
       <div className="flex items-center gap-2 sm:gap-3">

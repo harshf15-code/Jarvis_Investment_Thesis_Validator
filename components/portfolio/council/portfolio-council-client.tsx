@@ -9,7 +9,7 @@ import {
   PortfolioCouncilReportSchema,
   type PortfolioCouncilReport,
 } from "@/lib/jarvis-portfolio-council";
-import type { PortfolioCouncilReportRow } from "@/lib/types";
+import type { Portfolio, PortfolioCouncilReportRow } from "@/lib/types";
 
 /**
  * Consult, then read. History below.
@@ -21,10 +21,15 @@ import type { PortfolioCouncilReportRow } from "@/lib/types";
 export function PortfolioCouncilClient({
   currentQuantities,
   positionCount,
+  portfolio,
 }: {
   /** Ticker → quantity still held, so staleness sees a trim, not just a sale. */
   currentQuantities: Map<string, number>;
   positionCount: number;
+  /** The book being consulted on. Null only in the roll-up, where consulting is
+   *  not offered — the Council judges one book's construction against one
+   *  objective, and there is no objective for several books at once. */
+  portfolio: Portfolio | null;
 }) {
   const [reports, setReports] = useState<PortfolioCouncilReportRow[] | null>(null);
   /** Cursor for the next page of history; null once there is no more. */
@@ -35,11 +40,14 @@ export function PortfolioCouncilClient({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const portfolioId = portfolio?.id ?? null;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/portfolio/council");
+        if (!portfolioId) return;
+        const res = await fetch(`/api/portfolio/council?portfolio=${portfolioId}`);
         const body = await res.json().catch(() => ({}));
         if (cancelled) return;
         if (!res.ok) throw new Error(body.error ?? "Could not load past consults.");
@@ -53,13 +61,15 @@ export function PortfolioCouncilClient({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [portfolioId]);
 
   async function loadOlder() {
-    if (!nextBefore) return;
+    if (!nextBefore || !portfolioId) return;
     setLoadingMore(true);
     try {
-      const res = await fetch(`/api/portfolio/council?before=${encodeURIComponent(nextBefore)}`);
+      const res = await fetch(
+        `/api/portfolio/council?portfolio=${portfolioId}&before=${encodeURIComponent(nextBefore)}`,
+      );
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not load older consults.");
       setReports((prev) => [...(prev ?? []), ...(body.reports ?? [])]);
@@ -72,11 +82,12 @@ export function PortfolioCouncilClient({
   }
 
   async function consult(memberIds: string[]) {
+    if (!portfolioId) return;
     setPicking(false);
     setRunning(true);
     setError(null);
     try {
-      const res = await fetch("/api/portfolio/council", {
+      const res = await fetch(`/api/portfolio/council?portfolio=${portfolioId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ member_ids: memberIds }),
@@ -180,6 +191,7 @@ export function PortfolioCouncilClient({
           heldTickers={reviewedTickers}
           asOf={snapshot?.as_of ?? selected?.created_at ?? null}
           stale={stale}
+          portfolio={portfolio}
         />
       )}
 

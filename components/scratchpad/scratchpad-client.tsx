@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { NotesPanel } from "@/components/scratchpad/notes-panel";
 import { PatternReadPanel } from "@/components/scratchpad/pattern-read-panel";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
-import type { PortfolioPatternReadRow, ScratchpadNote } from "@/lib/types";
+import type { Portfolio, PortfolioPatternReadRow, ScratchpadNote } from "@/lib/types";
 
 /**
  * The Scratchpad's two halves, and the one piece of state they share.
@@ -16,7 +16,17 @@ import type { PortfolioPatternReadRow, ScratchpadNote } from "@/lib/types";
  * screen: a note can react to the pattern, and the pattern is written knowing
  * what the notes say.
  */
-export function ScratchpadClient({ heldTickers }: { heldTickers: string[] }) {
+export function ScratchpadClient({
+  heldTickers,
+  portfolio,
+}: {
+  heldTickers: string[];
+  /** The book on screen. Null in the roll-up, where notes are readable across
+   *  every book but a new one has no single book to belong to. */
+  portfolio: Portfolio | null;
+}) {
+  const portfolioId = portfolio?.id ?? null;
+  const scopeParam = portfolioId ?? "all";
   const [notes, setNotes] = useState<ScratchpadNote[]>([]);
   const [notesTruncated, setNotesTruncated] = useState(false);
   const [reads, setReads] = useState<PortfolioPatternReadRow[]>([]);
@@ -32,8 +42,8 @@ export function ScratchpadClient({ heldTickers }: { heldTickers: string[] }) {
       setError(null);
       try {
         const [notesRes, readsRes] = await Promise.all([
-          fetch("/api/scratchpad/notes"),
-          fetch("/api/scratchpad/pattern"),
+          fetch(`/api/scratchpad/notes?portfolio=${scopeParam}`),
+          fetch(`/api/scratchpad/pattern?portfolio=${scopeParam}`),
         ]);
         const notesBody = await notesRes.json().catch(() => ({}));
         const readsBody = await readsRes.json().catch(() => ({}));
@@ -56,19 +66,26 @@ export function ScratchpadClient({ heldTickers }: { heldTickers: string[] }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [scopeParam]);
 
   /** Shared by the composer and by accepting a suggestion from the read. */
-  const addNote = useCallback(async (body: string, ticker: string | null) => {
-    const res = await fetch("/api/scratchpad/notes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body, ticker }),
-    });
-    const parsed = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(parsed.error ?? "Couldn't save that note.");
-    setNotes((prev) => [parsed.note, ...prev]);
-  }, []);
+  const addNote = useCallback(
+    async (body: string, ticker: string | null) => {
+      // A note is written about a book. In the roll-up there is no single book
+      // it could belong to, so the composer is not offered — this refusal is
+      // the backstop, not the message the trader reads.
+      if (!portfolioId) throw new Error("Choose a portfolio before writing a note.");
+      const res = await fetch("/api/scratchpad/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ portfolio_id: portfolioId, body, ticker }),
+      });
+      const parsed = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(parsed.error ?? "Couldn't save that note.");
+      setNotes((prev) => [parsed.note, ...prev]);
+    },
+    [portfolioId],
+  );
 
   const patchNote = useCallback(async (id: string, patch: Record<string, unknown>) => {
     const res = await fetch(`/api/scratchpad/notes/${id}`, {
@@ -100,6 +117,7 @@ export function ScratchpadClient({ heldTickers }: { heldTickers: string[] }) {
         reads={reads}
         nextBefore={nextBefore}
         heldTickers={heldTickers}
+        portfolio={portfolio}
         onRead={(read) => setReads((prev) => [read, ...prev])}
         onLoadedOlder={(older, before) => {
           setReads((prev) => [...prev, ...older]);
@@ -110,6 +128,7 @@ export function ScratchpadClient({ heldTickers }: { heldTickers: string[] }) {
       <NotesPanel
         notes={notes}
         truncated={notesTruncated}
+        canCreate={portfolioId !== null}
         onCreate={addNote}
         onPatch={patchNote}
       />
