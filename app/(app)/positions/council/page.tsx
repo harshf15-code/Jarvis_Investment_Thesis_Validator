@@ -15,6 +15,10 @@ type PageProps = { searchParams: Promise<Record<string, string | string[] | unde
 
 export default async function PortfolioCouncilPage({ searchParams }: PageProps) {
   const { scope, active } = await pageScope("/positions/council", searchParams);
+  // The URL is the state, so a bare back link would land on the DEFAULT book —
+  // silently changing whose money you are looking at on the way out of a screen
+  // about one book in particular.
+  const back = `/positions?portfolio=${scope.mode === "all" ? "all" : scope.id}`;
   const rows = await listOpenPositions(scope);
   // Quantity per ticker, aggregated across separate theses in the same name —
   // the same collapse the consult itself does. Quantities and not just tickers,
@@ -30,7 +34,7 @@ export default async function PortfolioCouncilPage({ searchParams }: PageProps) 
   return (
     <div>
       <Link
-        href="/positions"
+        href={back}
         className="mb-4 inline-flex items-center gap-2 text-xs text-on-surface-variant transition-colors hover:text-on-surface"
       >
         <ArrowLeft className="size-3.5" />
@@ -45,6 +49,9 @@ export default async function PortfolioCouncilPage({ searchParams }: PageProps) 
       </p>
       <div className="mt-6">
         <PortfolioCouncilClient
+          // Remounts on a book switch, so no state survives into a book it was
+          // not fetched for. See the note on the history effect.
+          key={scope.mode === "all" ? "all" : scope.id}
           currentQuantities={currentQuantities}
           positionCount={rows.length}
           portfolio={active}

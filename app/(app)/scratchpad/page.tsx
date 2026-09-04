@@ -25,7 +25,14 @@ export default async function ScratchpadPage({ searchParams }: PageProps) {
         things you already own say about how you pick.
       </p>
       <div className="mt-6">
-        <ScratchpadClient heldTickers={heldTickers} portfolio={active} />
+        {/* Remounts on a book switch, so the previous book's notes and reads
+            are gone the moment the heading changes rather than lingering until
+            the fetch lands. Same reason the Council client is keyed. */}
+        <ScratchpadClient
+          key={scope.mode === "all" ? "all" : scope.id}
+          heldTickers={heldTickers}
+          portfolio={active}
+        />
       </div>
     </div>
   );

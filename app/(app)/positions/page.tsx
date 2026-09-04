@@ -22,8 +22,16 @@ type PageProps = { searchParams: Promise<Record<string, string | string[] | unde
 export default async function PositionsPage({ searchParams }: PageProps) {
   // A bare /positions redirects to the default book, so the URL always names
   // what is on screen. See `pageScope`.
-  const { scope, active } = await pageScope("/positions", searchParams);
+  const { scope, portfolios, active } = await pageScope("/positions", searchParams);
   const rows: PositionRow[] = await listOpenPositions(scope);
+
+  // Only in the roll-up. With one book on screen the book is the heading, and a
+  // badge on every row would repeat it; across books it is the difference
+  // between two otherwise identical rows on the same ticker.
+  const books =
+    scope.mode === "all"
+      ? new Map(portfolios.map((p) => [p.id, { name: p.name, ownership: p.ownership }]))
+      : undefined;
 
   return (
     <div>
@@ -69,7 +77,7 @@ export default async function PositionsPage({ searchParams }: PageProps) {
           }
         />
       ) : (
-        <PositionsPageClient rows={rows} />
+        <PositionsPageClient rows={rows} books={books} />
       )}
     </div>
   );
