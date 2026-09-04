@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   LIVE_MARKETS,
   MARKETS,
+  THESIS_MARKETS,
+  THESIS_MARKET_CHOICES,
   exchangesFor,
   currencyForExchange,
   currencyForMarket,
@@ -15,8 +17,12 @@ import {
 } from "@/lib/markets";
 
 describe("markets", () => {
-  it("exposes exactly the two markets that can actually be priced", () => {
-    expect(LIVE_MARKETS).toEqual(["US", "IN"]);
+  it("exposes exactly the markets that can actually be priced", () => {
+    // Three since 0030. Crypto is priced by CoinGecko rather than Yahoo, but
+    // priced is priced — a coin can be held, valued and alerted on. What it
+    // cannot be is the subject of a thesis, and that is `THESIS_MARKETS`, not
+    // this list. The two questions were the same until crypto arrived.
+    expect(LIVE_MARKETS).toEqual(["US", "IN", "CRYPTO"]);
   });
 
   /**
@@ -106,5 +112,40 @@ describe("currency", () => {
     expect(symbolForCurrency("USD")).toBe("$");
     // The one thing it must never do is fall through to ₹ or $.
     expect(symbolForCurrency("SGD")).toBe("SGD ");
+  });
+});
+
+describe("CRYPTO market", () => {
+  it("is live, so a holding can be imported into it", () => {
+    expect(MARKETS.CRYPTO.live).toBe(true);
+  });
+
+  it("is not offered for a thesis", () => {
+    // Crypto is holdings-only in v1: there is no Discovery shortlist for it and
+    // no memorandum to write. A market picker that offers it would produce a
+    // thesis the rest of the app cannot service.
+    expect(MARKETS.CRYPTO.tradable).toBe(false);
+    expect(THESIS_MARKETS).not.toContain("CRYPTO");
+    expect(THESIS_MARKETS).toContain("IN");
+    expect(THESIS_MARKETS).toContain("US");
+  });
+
+  it("has no exchanges, because a coin is not listed anywhere", () => {
+    expect(MARKETS.CRYPTO.exchanges).toEqual([]);
+  });
+
+  it("is absent from the thesis picker rather than greyed out in it", () => {
+    // CN/EU/EM render disabled as "coming soon" because they genuinely are.
+    // Crypto is not coming soon, so showing it that way would promise a
+    // feature nobody plans to build.
+    expect(THESIS_MARKET_CHOICES).not.toContain("CRYPTO");
+    expect(THESIS_MARKET_CHOICES).toContain("CN");
+  });
+
+  it("keeps every equity market tradable", () => {
+    // Guards against `tradable` being added and then silently defaulting the
+    // existing markets to false.
+    expect(MARKETS.IN.tradable).toBe(true);
+    expect(MARKETS.US.tradable).toBe(true);
   });
 });

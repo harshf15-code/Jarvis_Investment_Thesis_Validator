@@ -9,14 +9,14 @@
 // deliberately: the column defaults to `auth.uid()` and row-level security
 // rejects any other value, so application code neither sets nor filters on it.
 
-export type ExchangeCode = "NSE" | "BSE" | "US";
+export type ExchangeCode = "NSE" | "BSE" | "US" | "CRYPTO";
 /**
  * The universe a thesis is analysed against (migration 0016). Deliberately
  * distinct from `ExchangeCode`: a market is what the trader picks, an exchange
  * is where a listing lives, and India is one market across two exchanges.
  * `CN`/`EU`/`EM` exist in the enum but are not selectable — see `lib/markets.ts`.
  */
-export type MarketCode = "US" | "IN" | "CN" | "EU" | "EM";
+export type MarketCode = "US" | "IN" | "CN" | "EU" | "EM" | "CRYPTO";
 export type ConvictionTier = "I" | "II" | "III" | "IV";
 export type ThesisMode = "stock_only" | "thesis_only" | "stock_plus_thesis";
 export type ThesisStatus = "draft" | "active" | "closed" | "macro";
@@ -75,6 +75,25 @@ export type Json =
   | Json[];
 
 /** `stocks` (trimmed ticker/exchange/price registry — see plan Decisions #2) */
+/**
+ * What KIND of instrument a `stocks` row is (0030).
+ *
+ * The discriminator that decides which price source answers for a row:
+ * `equity` goes to Yahoo via `yahoo_symbol`, `crypto` goes to CoinGecko via
+ * `coingecko_id`. Deliberately not inferred from `exchange` — asset class is a
+ * property of the instrument, and the venue is a separate fact about it.
+ */
+export type AssetClass = "equity" | "crypto";
+
+/** A row of the top-ten-by-market-cap reference table (0030). */
+export type CryptoUniverseRow = {
+  coingecko_id: string;
+  symbol: string;
+  name: string;
+  market_cap_rank: number;
+  refreshed_at: string;
+};
+
 export type Stock = {
   id: string;
   ticker: string;
@@ -88,6 +107,13 @@ export type Stock = {
    * not a malformed one.
    */
   currency: string;
+  asset_class: AssetClass;
+  /**
+   * CoinGecko's stable id ('bitcoin'), null for equities. Not the ticker:
+   * 'BTC' is ambiguous and resolves on Yahoo to a US-listed trust, which is
+   * the wrong asset with no error.
+   */
+  coingecko_id: string | null;
   last_price: number | null;
   last_price_at: string | null;
   created_at: string;
