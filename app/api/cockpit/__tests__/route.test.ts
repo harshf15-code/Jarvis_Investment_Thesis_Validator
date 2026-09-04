@@ -356,24 +356,29 @@ describe("GET /api/cockpit", () => {
     // question — "how is the money I run for my mother doing" is the whole
     // reason that book exists — and excluding it there too left her positions
     // on screen above a blank P&L, which is not caution, just a missing number.
-    vi.mocked(createClient).mockResolvedValue(
-      buildSupabaseMock({
-        portfolios: [OWNED, MANAGED],
-        positions: [{ ...POSITION, id: "p2", stock_id: "s2", portfolio_id: PF2 }],
-        entries: [{ position_id: "p2", quantity: 10, price: 100 }],
-        exits: [],
-        stocks: [{ id: "s2", last_price: 150, exchange: "US", currency: "USD" }],
-        trade_plans: [],
-        theses: [],
-        jarvis_recommendations: [],
-      }) as never,
-    );
+    // Only the in-scope row is registered, because the shared mock records
+    // filters rather than applying them — so the arithmetic below is checked on
+    // the rows the route would actually have received. That the route ASKED for
+    // only this book is a separate claim, asserted on the filter beneath.
+    const m = buildSupabaseMock({
+      portfolios: [OWNED, MANAGED],
+      positions: [{ ...POSITION, id: "p2", stock_id: "s2", portfolio_id: PF2 }],
+      entries: [{ position_id: "p2", quantity: 10, price: 100 }],
+      exits: [],
+      stocks: [{ id: "s2", last_price: 150, exchange: "US", currency: "USD" }],
+      trade_plans: [],
+      theses: [],
+      jarvis_recommendations: [],
+    });
+    vi.mocked(createClient).mockResolvedValue(m as never);
 
     const body = await (await GET(req(PF2))).json();
 
     expect(body.totalsByCurrency).toHaveLength(1);
     expect(body.totalsByCurrency[0].absolute).toBe(500); // (150-100)*10
     expect(body.totalsByCurrency[0].positions).toBe(1);
+    // The owned book alongside it was never asked for.
+    expect(m.filters("positions").portfolio_id).toBe(PF2);
   });
 
   it("gives a single book its own byPortfolio entry so the header can name it", async () => {

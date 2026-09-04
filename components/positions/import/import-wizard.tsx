@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Upload } from "lucide-react";
 
 import { ColumnMapper } from "@/components/positions/import/column-mapper";
@@ -72,6 +72,12 @@ export function ImportWizard({
   // step 1 rather than on the server before it. Null until one is chosen, which
   // is also before this field can be reached.
   const hasObjective = portfolioId !== null && booksWithObjective.includes(portfolioId);
+  // Read by the in-flight resolve loop, which closed over the book it started
+  // with and cannot see later state any other way.
+  const portfolioIdRef = useRef(portfolioId);
+  useEffect(() => {
+    portfolioIdRef.current = portfolioId;
+  }, [portfolioId]);
 
   const [resolved, setResolved] = useState<ResolvedImportRow[]>([]);
   const [notes, setNotes] = useState<Record<number, string>>({});
@@ -136,6 +142,10 @@ export function ImportWizard({
     setBusy(true);
     setError(null);
     setProgress({ done: 0, total: drafts.length });
+    // The book this run is FOR. Duplicate detection is per-book, so a preview
+    // is only true of the book it was resolved against; if that changes under
+    // us the result is discarded rather than shown against the new one.
+    const resolvingFor = portfolioId;
     const out: ResolvedImportRow[] = [];
     try {
       // Chunked because each row costs up to one Yahoo quote per exchange in
@@ -155,7 +165,7 @@ export function ImportWizard({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            portfolio_id: portfolioId,
+            portfolio_id: resolvingFor,
             market,
             rows: chunk,
             repeatedIndices,
@@ -166,6 +176,9 @@ export function ImportWizard({
         out.push(...(body.rows as ResolvedImportRow[]));
         setProgress({ done: Math.min(i + RESOLVE_CHUNK, drafts.length), total: drafts.length });
       }
+      // `clearPreview()` already ran on the change; returning here stops this
+      // run from putting the old book's rows back.
+      if (resolvingFor !== portfolioIdRef.current) return;
       setResolved(out);
       setStep("preview");
     } catch (err) {
@@ -244,6 +257,13 @@ export function ImportWizard({
 
             <PortfolioPicker
               value={portfolioId}
+              // Locked while a resolve is running. The chunk loop below prices
+              // against the book it started with, so changing books mid-flight
+              // would land a preview describing one book on a form that commits
+              // into another — duplicate flags and all. The loop also refuses a
+              // stale result, but that is the backstop; not offering the change
+              // is the honest control.
+              disabled={busy}
               onChange={(id) => {
                 setPortfolioId(id);
                 // Duplicate detection is per-book since 0027 — "you already

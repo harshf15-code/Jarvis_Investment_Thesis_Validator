@@ -5,6 +5,7 @@ import {
   parsePortfolioParam,
   resolveScope,
   resolveWriteTarget,
+  scopeParam,
 } from "@/lib/portfolio/scope";
 import { fakePortfolio } from "@/lib/testing/supabase-mock";
 import type { Portfolio } from "@/lib/types";
@@ -68,6 +69,21 @@ describe("parsePortfolioParam", () => {
     expect(parsePortfolioParam("ALL")).toBeNull(); // exact literal only
     expect(parsePortfolioParam("1234")).toBeNull();
     expect(parsePortfolioParam(`${PF1}extra`)).toBeNull();
+  });
+});
+
+describe("scopeParam", () => {
+  it("round-trips a scope back into the parameter that produced it", () => {
+    // Links between portfolio-aware screens are built from this, so anything it
+    // drops is a screen that silently changes book.
+    for (const raw of [PF1, "all"]) {
+      const scope = parsePortfolioParam(raw);
+      expect(scope && scopeParam(scope)).toBe(raw);
+    }
+  });
+
+  it("keeps the roll-up rather than collapsing it to a book", () => {
+    expect(scopeParam({ mode: "all" })).toBe("all");
   });
 });
 

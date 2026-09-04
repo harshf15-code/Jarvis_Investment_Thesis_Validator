@@ -1,5 +1,5 @@
 import { ScratchpadClient } from "@/components/scratchpad/scratchpad-client";
-import { pageScope } from "@/lib/portfolio/active";
+import { pageScope, scopeParam } from "@/lib/portfolio/active";
 import { listOpenPositions } from "@/lib/queries";
 
 /**
@@ -29,7 +29,7 @@ export default async function ScratchpadPage({ searchParams }: PageProps) {
             are gone the moment the heading changes rather than lingering until
             the fetch lands. Same reason the Council client is keyed. */}
         <ScratchpadClient
-          key={scope.mode === "all" ? "all" : scope.id}
+          key={scopeParam(scope)}
           heldTickers={heldTickers}
           portfolio={active}
         />

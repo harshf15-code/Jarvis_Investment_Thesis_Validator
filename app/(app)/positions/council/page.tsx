@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 import { PortfolioCouncilClient } from "@/components/portfolio/council/portfolio-council-client";
-import { pageScope } from "@/lib/portfolio/active";
+import { pageScope, scopeParam } from "@/lib/portfolio/active";
 import { listOpenPositions } from "@/lib/queries";
 
 /**
@@ -18,7 +18,7 @@ export default async function PortfolioCouncilPage({ searchParams }: PageProps) 
   // The URL is the state, so a bare back link would land on the DEFAULT book —
   // silently changing whose money you are looking at on the way out of a screen
   // about one book in particular.
-  const back = `/positions?portfolio=${scope.mode === "all" ? "all" : scope.id}`;
+  const back = `/positions?portfolio=${scopeParam(scope)}`;
   const rows = await listOpenPositions(scope);
   // Quantity per ticker, aggregated across separate theses in the same name —
   // the same collapse the consult itself does. Quantities and not just tickers,
@@ -51,7 +51,7 @@ export default async function PortfolioCouncilPage({ searchParams }: PageProps) 
         <PortfolioCouncilClient
           // Remounts on a book switch, so no state survives into a book it was
           // not fetched for. See the note on the history effect.
-          key={scope.mode === "all" ? "all" : scope.id}
+          key={scopeParam(scope)}
           currentQuantities={currentQuantities}
           positionCount={rows.length}
           portfolio={active}

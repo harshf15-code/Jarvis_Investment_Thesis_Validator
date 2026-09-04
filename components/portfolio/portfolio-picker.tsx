@@ -20,10 +20,15 @@ export function PortfolioPicker({
   value,
   onChange,
   label = "Which portfolio is this in?",
+  disabled = false,
 }: {
   value: string | null;
   onChange: (id: string) => void;
   label?: string;
+  /** Set while work is already running against the chosen book — see the
+   *  import wizard, where a mid-flight change would preview one book and
+   *  commit into another. */
+  disabled?: boolean;
 }) {
   const { portfolios, loading, error } = usePortfolios();
 
@@ -44,7 +49,8 @@ export function PortfolioPicker({
             type="button"
             onClick={() => onChange(p.id)}
             aria-pressed={value === p.id}
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition-colors ${
+            disabled={disabled}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
               value === p.id
                 ? "bg-primary text-on-primary"
                 : "bg-white/5 text-on-surface-variant hover:bg-white/10 hover:text-on-surface"

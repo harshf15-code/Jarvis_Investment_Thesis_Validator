@@ -4,7 +4,7 @@ import { Upload, Users } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PositionsPageClient } from "@/components/positions/positions-page-client";
 import type { PositionRow } from "@/components/positions/positions-table";
-import { pageScope } from "@/lib/portfolio/active";
+import { pageScope, scopeParam } from "@/lib/portfolio/active";
 import { listOpenPositions } from "@/lib/queries";
 
 /**
@@ -55,7 +55,7 @@ export default async function PositionsPage({ searchParams }: PageProps) {
             </Link>
           )}
           <Link
-            href={active ? `/positions/import?portfolio=${active.id}` : "/positions/import"}
+            href={`/positions/import?portfolio=${scopeParam(scope)}`}
             className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-1.5 text-xs text-on-surface-variant transition-colors hover:border-white/25 hover:text-on-surface"
           >
             <Upload className="size-3.5" />
@@ -69,7 +69,7 @@ export default async function PositionsPage({ searchParams }: PageProps) {
           description="Start with a thesis, or import the holdings you already own from a broker CSV."
           action={
             <Link
-              href={active ? `/positions/import?portfolio=${active.id}` : "/positions/import"}
+              href={`/positions/import?portfolio=${scopeParam(scope)}`}
               className="rounded-full bg-primary px-4 py-2 text-xs font-medium text-on-primary transition-colors hover:bg-primary-dim"
             >
               Import Holdings

@@ -47,6 +47,18 @@ export function parsePortfolioParam(raw: string | null): PortfolioScope | null {
 }
 
 /**
+ * The scope written back as a `?portfolio=` value.
+ *
+ * Links between portfolio-aware screens have to carry the scope, INCLUDING the
+ * roll-up: `all` is a scope like any other, and a link that drops it sends the
+ * trader to whichever book is default, which is a different question than the
+ * one they were looking at.
+ */
+export function scopeParam(scope: PortfolioScope): string {
+  return scope.mode === "all" ? ALL_PORTFOLIOS : scope.id;
+}
+
+/**
  * The books a scope names, or `null` when it names one this trader does not own.
  *
  * `null` is a 404 rather than a 403 — the same answer RLS gives for someone
