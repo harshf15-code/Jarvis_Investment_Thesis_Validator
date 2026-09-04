@@ -24,16 +24,28 @@ const row = (over: Partial<Draft> = {}): Draft => ({
   ...over,
 });
 
-/** `held` are the tickers the caller already has an open position in. */
+/** The book being imported into. Uuid-shaped: the route validates it. */
+const PF1 = "11111111-1111-4111-8111-111111111111";
+
+/** `held` are the tickers the caller already holds IN THIS BOOK (0027). */
 function buildSupabaseMock(held: string[] = []) {
+  const seen: Record<string, unknown> = {};
   return {
+    seen,
     from: vi.fn().mockImplementation((table: string) => {
       if (table === "positions") {
-        return {
-          select: vi.fn().mockReturnValue({
-            in: vi.fn().mockResolvedValue({ data: held.map((ticker) => ({ ticker })), error: null }),
+        // Chainable: duplicate detection now filters by book as well as status.
+        const chain: Record<string, unknown> = {
+          eq: (column: string, value: unknown) => {
+            seen[column] = value;
+            return chain;
+          },
+          in: vi.fn().mockResolvedValue({
+            data: held.map((ticker) => ({ ticker })),
+            error: null,
           }),
         };
+        return { select: vi.fn().mockReturnValue(chain) };
       }
       throw new Error(`unexpected table ${table}`);
     }),
@@ -43,7 +55,7 @@ function buildSupabaseMock(held: string[] = []) {
 function post(body: Record<string, unknown>) {
   return new Request("http://test/api/portfolio/resolve", {
     method: "POST",
-    body: JSON.stringify({ market: "IN", ...body }),
+    body: JSON.stringify({ portfolio_id: PF1, market: "IN", ...body }),
   }) as never;
 }
 

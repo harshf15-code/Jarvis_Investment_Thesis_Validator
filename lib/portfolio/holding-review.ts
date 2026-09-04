@@ -99,14 +99,15 @@ export type HoldingContextResult =
 
 export async function loadHoldingContext(input: {
   supabase: Client;
-  userId: string;
   positionId: string;
 }): Promise<HoldingContextResult> {
-  const { supabase, userId, positionId } = input;
+  // No `userId`: since 0027 the objective is reached through the position's
+  // own `portfolio_id`, and RLS already scopes every read below to the caller.
+  const { supabase, positionId } = input;
 
   const { data: position, error: positionError } = await supabase
     .from("positions")
-    .select("id, ticker, thesis_id, stock_id, status")
+    .select("id, ticker, thesis_id, stock_id, status, portfolio_id")
     .eq("id", positionId)
     .maybeSingle();
   if (positionError) return { ok: false, kind: "failed", error: positionError.message };
@@ -117,7 +118,16 @@ export async function loadHoldingContext(input: {
     supabase.from("stocks").select("ticker, yahoo_symbol, currency, last_price").eq("id", position.stock_id).maybeSingle(),
     supabase.from("entries").select("quantity, price, date").eq("position_id", positionId),
     supabase.from("exits").select("quantity").eq("position_id", positionId),
-    supabase.from("portfolio_profiles").select("objective").eq("user_id", userId).maybeSingle(),
+    // Through the POSITION'S book, not the trader's. This read was keyed on
+    // `user_id` before 0027, which with more than one portfolio would judge
+    // every holding against whichever book happened to answer first -- a
+    // retirement holding measured against a high-conviction objective, weekly,
+    // in a scheduled job nobody is watching.
+    supabase
+      .from("portfolio_profiles")
+      .select("objective")
+      .eq("portfolio_id", position.portfolio_id)
+      .maybeSingle(),
     supabase.from("holding_watch_state").select("*").eq("position_id", positionId).maybeSingle(),
   ]);
 
@@ -197,7 +207,7 @@ export async function reviewHolding(input: {
   const { supabase, userId, positionId, force } = input;
   const today = input.today ?? utcToday();
 
-  const loaded = await loadHoldingContext({ supabase, userId, positionId });
+  const loaded = await loadHoldingContext({ supabase, positionId });
   if (!loaded.ok) return { status: "failed", error: loaded.error };
   const { position, observed, price, state } = loaded.context;
 

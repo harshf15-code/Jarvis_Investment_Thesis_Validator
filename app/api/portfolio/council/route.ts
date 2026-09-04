@@ -23,6 +23,7 @@ import {
 import { checkBudget } from "@/lib/llm/budget";
 import { meteredGenerateText } from "@/lib/llm/meter";
 import { getFundamentals, getQuote } from "@/lib/market-data";
+import { parsePortfolioParam, portfolioParamResponse, requirePortfolioScope } from "@/lib/portfolio/active";
 import { createClient } from "@/lib/supabase/server";
 import type { Json } from "@/lib/types";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
@@ -36,6 +37,12 @@ import { computeWeightedAverageEntry } from "@/lib/weighted-average";
  * price happened to be cached would be answering a different question. That
  * makes this consult meaningfully slower and costlier than a thesis one, which
  * is why the confirm step says so before the trader commits to it.
+ *
+ * Runs on ONE book since 0027, never the roll-up. That is the whole point of
+ * the change: a retirement book held for someone else and a personal
+ * high-conviction book have different objectives, different tolerance for
+ * concentration and different correct answers to "should I trim this", so a
+ * verdict averaged over both is wrong for both.
  */
 export const maxDuration = 300;
 
@@ -62,6 +69,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: budget.message }, { status });
   }
 
+  // After the budget check, for the same reason the body parse is: an account
+  // over budget should hear that first, whatever else is wrong with the
+  // request. This costs nothing either way — it reads a query string.
+  const scope = parsePortfolioParam(new URL(request.url).searchParams.get("portfolio"));
+  if (scope?.mode !== "one") return portfolioParamResponse();
+  const portfolioId = scope.id;
+
   const json = await request.json().catch(() => null);
   const parsedInput = ConsultInputSchema.safeParse(json);
   if (!parsedInput.success) {
@@ -74,9 +88,22 @@ export async function POST(request: Request) {
   const supabase = await createClient();
 
   // --- 1. the book -------------------------------------------------------
+  const { data: portfolio, error: portfolioError } = await supabase
+    .from("portfolios")
+    .select("*")
+    .eq("id", portfolioId)
+    .maybeSingle();
+  if (portfolioError) {
+    return NextResponse.json({ error: portfolioError.message }, { status: 500 });
+  }
+  if (!portfolio) {
+    return NextResponse.json({ error: "Portfolio not found" }, { status: 404 });
+  }
+
   const { data: positions, error: positionsError } = await supabase
     .from("positions")
     .select("id, ticker, thesis_id, trade_plan_id, stock_id")
+    .eq("portfolio_id", portfolioId)
     .in("status", ["active", "partial_exit"]);
   if (positionsError) {
     return NextResponse.json({ error: positionsError.message }, { status: 500 });
@@ -84,7 +111,7 @@ export async function POST(request: Request) {
   if (!positions || positions.length < MIN_HOLDINGS) {
     return NextResponse.json(
       {
-        error: `The Council reviews how a portfolio is built, so it needs at least ${MIN_HOLDINGS} open positions. You have ${positions?.length ?? 0}.`,
+        error: `The Council reviews how a portfolio is built, so it needs at least ${MIN_HOLDINGS} open positions. "${portfolio.name}" has ${positions?.length ?? 0}.`,
       },
       { status: 400 },
     );
@@ -103,7 +130,10 @@ export async function POST(request: Request) {
       .in("id", positions.map((p) => p.trade_plan_id)),
     supabase.from("entries").select("position_id, quantity, price").in("position_id", positionIds),
     supabase.from("exits").select("position_id, quantity").in("position_id", positionIds),
-    supabase.from("portfolio_profiles").select("objective").eq("user_id", user.id).maybeSingle(),
+    // Keyed on the book since 0027. Reading it by user again would hand every
+    // book the objective written about whichever one was imported first, which
+    // is the exact failure this whole change exists to remove.
+    supabase.from("portfolio_profiles").select("objective").eq("portfolio_id", portfolioId).maybeSingle(),
   ]);
 
   // Supabase resolves with an `error` field rather than throwing, so ignoring
@@ -227,6 +257,7 @@ export async function POST(request: Request) {
 
   const books = splitByCurrency(book);
   const sharedContext = buildPortfolioOpinionUserContext({
+    book: portfolio,
     books,
     objective: profile?.objective ?? null,
     totalPositions: book.length,
@@ -317,6 +348,7 @@ export async function POST(request: Request) {
     .from("portfolio_council_reports")
     .insert({
       user_id: user.id,
+      portfolio_id: portfolioId,
       document: report as unknown as Json,
       holdings_snapshot: {
         as_of: new Date().toISOString(),
@@ -362,6 +394,9 @@ const HISTORY_PAGE = 20;
  * `?before=<ISO timestamp>` walks backwards from there.
  */
 export async function GET(request: Request) {
+  const scope = requirePortfolioScope(request);
+  if (scope instanceof Response) return scope;
+
   const supabase = await createClient();
   const before = new URL(request.url).searchParams.get("before");
 
@@ -370,6 +405,10 @@ export async function GET(request: Request) {
     .select("*")
     .order("created_at", { ascending: false })
     .limit(HISTORY_PAGE);
+  // The roll-up shows every book's history: a consult is stamped with the book
+  // it judged, so mixing them loses nothing and answers "when did I last have
+  // anything looked at" in one read.
+  if (scope.mode === "one") query = query.eq("portfolio_id", scope.id);
   if (before) query = query.lt("created_at", before);
 
   const { data, error } = await query;

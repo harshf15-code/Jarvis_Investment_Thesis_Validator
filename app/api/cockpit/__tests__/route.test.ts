@@ -2,40 +2,34 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 import { createClient } from "@/lib/supabase/server";
+import { buildSupabaseMock, fakePortfolio, type TableRows } from "@/lib/testing/supabase-mock";
 import { GET } from "../route";
+
+// Real uuid shapes: the route parses `?portfolio=` strictly, so a fixture id
+// like "pf-1" would be rejected before any of these assertions were reached.
+const PF1 = "11111111-1111-4111-8111-111111111111";
+const PF2 = "22222222-2222-4222-8222-222222222222";
 
 const OVERDUE = "2020-01-01";
 const FUTURE = "2099-12-31";
 
-type TableRows = Record<string, unknown[]>;
+const OWNED = fakePortfolio({ id: PF1, name: "My Portfolio" });
+const MANAGED = fakePortfolio({
+  id: PF2,
+  name: "Mom",
+  ownership: "managed",
+  beneficiary_name: "Mom",
+  is_default: false,
+});
 
-/**
- * Every read in the cockpit route is `.select(...)` followed by either
- * `.in(...)` (the id-scoped joins) or `.order(...)` (the recommendations
- * feed), so one shared builder covers all of them.
- */
-function buildMock(rows: TableRows) {
-  const resolved = (table: string) =>
-    Promise.resolve({ data: rows[table] ?? [], error: null });
-  const order = vi.fn();
-  return {
-    _order: order,
-    from: vi.fn().mockImplementation((table: string) => {
-      if (table === "positions" && rows._positionsError) {
-        return {
-          select: vi.fn().mockReturnValue({
-            in: vi.fn().mockResolvedValue({ data: null, error: { message: "boom" } }),
-          }),
-        };
-      }
-      return {
-        select: vi.fn().mockReturnValue({
-          in: vi.fn().mockImplementation(() => resolved(table)),
-          order: order.mockImplementation(() => resolved(table)),
-        }),
-      };
-    }),
-  };
+/** Every book test needs the `portfolios` read the route now makes first. */
+function mock(rows: TableRows, errors?: Record<string, { message: string }>) {
+  return buildSupabaseMock({ portfolios: [OWNED], ...rows }, { errors });
+}
+
+/** The route refuses an unscoped request, so every call names a book. */
+function req(scope: string = PF1) {
+  return new Request(`http://t/api/cockpit?portfolio=${scope}`);
 }
 
 const POSITION = {
@@ -45,6 +39,7 @@ const POSITION = {
   trade_plan_id: "tp1",
   thesis_id: "t1",
   status: "active",
+  portfolio_id: PF1,
 };
 
 describe("GET /api/cockpit", () => {
@@ -52,7 +47,7 @@ describe("GET /api/cockpit", () => {
 
   it("aggregates positions, total open P&L, and overdue theses", async () => {
     vi.mocked(createClient).mockResolvedValue(
-      buildMock({
+      mock({
         positions: [POSITION],
         entries: [{ position_id: "p1", quantity: 10, price: 100 }],
         exits: [],
@@ -63,7 +58,7 @@ describe("GET /api/cockpit", () => {
       }) as never,
     );
 
-    const res = await GET();
+    const res = await GET(req());
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -81,7 +76,7 @@ describe("GET /api/cockpit", () => {
 
   it("prices only the quantity still held after a partial exit", async () => {
     vi.mocked(createClient).mockResolvedValue(
-      buildMock({
+      mock({
         positions: [{ ...POSITION, status: "partial_exit" }],
         entries: [{ position_id: "p1", quantity: 10, price: 100 }],
         exits: [{ position_id: "p1", quantity: 4, price: 130 }],
@@ -92,17 +87,16 @@ describe("GET /api/cockpit", () => {
       }) as never,
     );
 
-    const res = await GET();
-    const body = await res.json();
+    const body = await (await GET(req())).json();
 
     expect(body.totalsByCurrency[0].absolute).toBe(120); // (120-100) * 6 remaining
-    expect(body.totalsByCurrency[0].percent).toBeCloseTo(20); // 120 / (100*6) — cost basis of the remainder
+    expect(body.totalsByCurrency[0].percent).toBeCloseTo(20); // cost basis of the remainder
     expect(body.overdueTickers).toEqual([]);
   });
 
   it("excludes a position with no quoted price from the P&L totals", async () => {
     vi.mocked(createClient).mockResolvedValue(
-      buildMock({
+      mock({
         positions: [POSITION, { ...POSITION, id: "p2", ticker: "MSFT", stock_id: "s2" }],
         entries: [
           { position_id: "p1", quantity: 10, price: 100 },
@@ -119,8 +113,7 @@ describe("GET /api/cockpit", () => {
       }) as never,
     );
 
-    const res = await GET();
-    const body = await res.json();
+    const body = await (await GET(req())).json();
 
     // The unpriced position contributes neither P&L nor cost basis, so the
     // percent stays that of the one position that can actually be valued.
@@ -137,7 +130,7 @@ describe("GET /api/cockpit", () => {
     // 11,000 of nothing. Both numbers below are individually true; no
     // arithmetic relates them, because no exchange rate exists here.
     vi.mocked(createClient).mockResolvedValue(
-      buildMock({
+      mock({
         positions: [POSITION, { ...POSITION, id: "p2", ticker: "INFY", stock_id: "s2" }],
         entries: [
           { position_id: "p1", quantity: 10, price: 100 },
@@ -154,8 +147,7 @@ describe("GET /api/cockpit", () => {
       }) as never,
     );
 
-    const res = await GET();
-    const body = await res.json();
+    const body = await (await GET(req())).json();
 
     expect(body.totalsByCurrency).toHaveLength(2);
     // One position each, so the tie breaks on the code — a stable order that
@@ -173,11 +165,8 @@ describe("GET /api/cockpit", () => {
 
   it("orders sub-books by position count, never by comparing the raw money", async () => {
     // The trap: ₹10,000 is a bigger NUMBER than $2,000 and worth far less.
-    // Sorting on cost basis would rank by the unit size of the currency and
-    // always put rupees first, which is the cross-currency arithmetic this
-    // whole change removes.
     vi.mocked(createClient).mockResolvedValue(
-      buildMock({
+      mock({
         positions: [
           POSITION,
           { ...POSITION, id: "p2", ticker: "MSFT", stock_id: "s1" },
@@ -199,7 +188,7 @@ describe("GET /api/cockpit", () => {
       }) as never,
     );
 
-    const body = await (await GET()).json();
+    const body = await (await GET(req())).json();
 
     // USD leads on two positions against one, despite ₹10,000 > $2,000.
     expect(body.totalsByCurrency.map((t: { currency: string }) => t.currency)).toEqual(["USD", "INR"]);
@@ -207,11 +196,8 @@ describe("GET /api/cockpit", () => {
   });
 
   it("keeps NSE and BSE in one rupee total rather than splitting by exchange", async () => {
-    // The old display-side mitigation keyed on ExchangeCode, so a book holding
-    // one NSE name and one BSE name was labelled "mixed currencies" while
-    // being entirely rupees. Currency is the right key; exchange never was.
     vi.mocked(createClient).mockResolvedValue(
-      buildMock({
+      mock({
         positions: [POSITION, { ...POSITION, id: "p2", ticker: "TCS", stock_id: "s2" }],
         entries: [
           { position_id: "p1", quantity: 10, price: 100 },
@@ -228,7 +214,7 @@ describe("GET /api/cockpit", () => {
       }) as never,
     );
 
-    const body = await (await GET()).json();
+    const body = await (await GET(req())).json();
 
     expect(body.totalsByCurrency).toHaveLength(1);
     expect(body.totalsByCurrency[0]).toMatchObject({ currency: "INR", absolute: 400, positions: 2 });
@@ -236,7 +222,7 @@ describe("GET /api/cockpit", () => {
 
   it("lists an overdue ticker once even when two positions share it", async () => {
     vi.mocked(createClient).mockResolvedValue(
-      buildMock({
+      mock({
         positions: [POSITION, { ...POSITION, id: "p2" }],
         entries: [],
         exits: [],
@@ -247,24 +233,22 @@ describe("GET /api/cockpit", () => {
       }) as never,
     );
 
-    const res = await GET();
-    const body = await res.json();
+    const body = await (await GET(req())).json();
 
     expect(body.overdueTickers).toEqual(["AAPL"]);
   });
 
   it("joins each recommendation to its stock and asks for them newest-first", async () => {
-    const mock = buildMock({
+    const m = mock({
       positions: [],
       stocks: [{ id: "s9", last_price: 250, exchange: "NSE", currency: "INR" }],
       jarvis_recommendations: [
         { id: "r1", stock_id: "s9", ticker: "INFY", converted_to_position: false },
       ],
     });
-    vi.mocked(createClient).mockResolvedValue(mock as never);
+    vi.mocked(createClient).mockResolvedValue(m as never);
 
-    const res = await GET();
-    const body = await res.json();
+    const body = await (await GET(req())).json();
 
     expect(body.positions).toEqual([]);
     expect(body.totalsByCurrency).toEqual([]);
@@ -272,16 +256,109 @@ describe("GET /api/cockpit", () => {
     expect(body.recommendations).toHaveLength(1);
     expect(body.recommendations[0].recommendation.ticker).toBe("INFY");
     expect(body.recommendations[0].stock.last_price).toBe(250);
-    expect(mock._order).toHaveBeenCalledWith("recommended_at", { ascending: false });
+    expect(
+      m.calls.some(
+        (c) =>
+          c.table === "jarvis_recommendations" &&
+          c.method === "order" &&
+          c.args[0] === "recommended_at",
+      ),
+    ).toBe(true);
   });
 
   it("returns 500 when the positions read fails", async () => {
-    vi.mocked(createClient).mockResolvedValue(buildMock({ _positionsError: [1] }) as never);
+    vi.mocked(createClient).mockResolvedValue(
+      mock({ positions: [] }, { positions: { message: "boom" } }) as never,
+    );
 
-    const res = await GET();
+    const res = await GET(req());
     const body = await res.json();
 
     expect(res.status).toBe(500);
     expect(body.error).toBe("boom");
+  });
+
+  /* --- portfolio scoping (0027) ------------------------------------------ */
+
+  it("refuses a request that does not say which portfolio", async () => {
+    vi.mocked(createClient).mockResolvedValue(mock({ positions: [] }) as never);
+
+    const res = await GET(new Request("http://t/api/cockpit"));
+
+    // A 400, not a guess. A default here would show one person's money under
+    // another's name on exactly the screen nobody re-reads.
+    expect(res.status).toBe(400);
+  });
+
+  it("scopes the positions read to the book that was asked for", async () => {
+    const m = mock({ positions: [], jarvis_recommendations: [] });
+    vi.mocked(createClient).mockResolvedValue(m as never);
+
+    await GET(req(PF1));
+
+    expect(m.filters("positions").portfolio_id).toBe(PF1);
+  });
+
+  it("404s on a portfolio this trader does not own", async () => {
+    vi.mocked(createClient).mockResolvedValue(mock({ positions: [] }) as never);
+
+    const res = await GET(req("99999999-9999-4999-8999-999999999999"));
+
+    // The same answer RLS gives for someone else's row. Refusing differently
+    // would confirm the id exists.
+    expect(res.status).toBe(404);
+  });
+
+  it("sums OWNED books only in the roll-up, and lists the managed one separately", async () => {
+    // The whole point of `ownership`: someone else's retirement must not be
+    // added to the number the trader reads as their own net worth.
+    vi.mocked(createClient).mockResolvedValue(
+      buildSupabaseMock({
+        portfolios: [OWNED, MANAGED],
+        positions: [
+          POSITION,
+          { ...POSITION, id: "p2", ticker: "INFY", stock_id: "s2", portfolio_id: PF2 },
+        ],
+        entries: [
+          { position_id: "p1", quantity: 10, price: 100 },
+          { position_id: "p2", quantity: 10, price: 100 },
+        ],
+        exits: [],
+        stocks: [
+          { id: "s1", last_price: 120, exchange: "US", currency: "USD" },
+          { id: "s2", last_price: 150, exchange: "US", currency: "USD" },
+        ],
+        trade_plans: [{ id: "tp1", stop_loss: 90, target_1: null, target_2: null, time_exit_date: FUTURE }],
+        theses: [{ id: "t1", conviction_tier: "I" }],
+        jarvis_recommendations: [],
+      }) as never,
+    );
+
+    const body = await (await GET(req("all"))).json();
+
+    // Only the owned book's $200 — not the managed book's $500.
+    expect(body.totalsByCurrency).toHaveLength(1);
+    expect(body.totalsByCurrency[0].absolute).toBe(200);
+
+    // But the managed book is still shown, with its own number.
+    const managed = body.byPortfolio.find(
+      (b: { portfolio: { id: string } }) => b.portfolio.id === PF2,
+    );
+    expect(managed.totalsByCurrency[0].absolute).toBe(500);
+    expect(managed.positionCount).toBe(1);
+    // And its positions are still on screen — excluded from the total, not hidden.
+    expect(body.positions).toHaveLength(2);
+  });
+
+  it("gives a single book its own byPortfolio entry so the header can name it", async () => {
+    vi.mocked(createClient).mockResolvedValue(
+      mock({ positions: [], jarvis_recommendations: [] }) as never,
+    );
+
+    const body = await (await GET(req(PF1))).json();
+
+    expect(body.scope.mode).toBe("one");
+    expect(body.scope.portfolios[0].name).toBe("My Portfolio");
+    expect(body.byPortfolio).toHaveLength(1);
   });
 });

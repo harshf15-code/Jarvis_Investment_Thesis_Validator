@@ -14,13 +14,18 @@ import {
 import { checkBudget } from "@/lib/llm/budget";
 import { meteredGenerateText } from "@/lib/llm/meter";
 import { getSectorProfile } from "@/lib/market-data";
+import { parsePortfolioParam, portfolioParamResponse, requirePortfolioScope } from "@/lib/portfolio/active";
 import { createClient } from "@/lib/supabase/server";
 import type { Json } from "@/lib/types";
 
 /**
- * "Read my pattern" — one model call on the whole book.
+ * "Read my pattern" — one model call on one book.
  *
  * One call, not the Council's N, so 60 seconds is the right ceiling.
+ *
+ * On ONE book since 0027, never the roll-up. A pattern read is a claim about
+ * the trader's taste, and blending a book run for someone else into it would
+ * describe a person who does not exist.
  */
 export const maxDuration = 60;
 
@@ -30,7 +35,7 @@ const NOTES_IN_CONTEXT = 20;
 
 const HISTORY_PAGE = 20;
 
-export async function POST() {
+export async function POST(request: Request) {
   const user = await currentUser();
   if (!user) {
     return NextResponse.json({ error: "Not signed in" }, { status: 401 });
@@ -46,11 +51,30 @@ export async function POST() {
     );
   }
 
+  // After the budget check, like the body parse in the Council route: an
+  // account over budget hears that first. Reading a query string costs nothing.
+  const scope = parsePortfolioParam(new URL(request.url).searchParams.get("portfolio"));
+  if (scope?.mode !== "one") return portfolioParamResponse();
+  const portfolioId = scope.id;
+
   const supabase = await createClient();
+
+  const { data: portfolio, error: portfolioError } = await supabase
+    .from("portfolios")
+    .select("*")
+    .eq("id", portfolioId)
+    .maybeSingle();
+  if (portfolioError) {
+    return NextResponse.json({ error: portfolioError.message }, { status: 500 });
+  }
+  if (!portfolio) {
+    return NextResponse.json({ error: "Portfolio not found" }, { status: 404 });
+  }
 
   const { data: positions, error: positionsError } = await supabase
     .from("positions")
     .select("id, ticker, thesis_id, stock_id")
+    .eq("portfolio_id", portfolioId)
     .in("status", ["active", "partial_exit"]);
   if (positionsError) {
     return NextResponse.json({ error: positionsError.message }, { status: 500 });
@@ -84,10 +108,11 @@ export async function POST() {
     supabase
       .from("scratchpad_notes")
       .select("body")
+      .eq("portfolio_id", portfolioId)
       .is("archived_at", null)
       .order("created_at", { ascending: false })
       .limit(NOTES_IN_CONTEXT),
-    supabase.from("portfolio_profiles").select("objective").eq("user_id", user.id).maybeSingle(),
+    supabase.from("portfolio_profiles").select("objective").eq("portfolio_id", portfolioId).maybeSingle(),
   ]);
 
   for (const [what, res] of [
@@ -156,6 +181,7 @@ export async function POST() {
       // same as the portfolio Council.
       system: PATTERN_READ_SYSTEM_PROMPT,
       prompt: buildPatternReadUserContext({
+        book: portfolio,
         holdings,
         objective: profileRes.data?.objective ?? null,
         notes: (notesRes.data ?? []).map((n) => n.body),
@@ -194,6 +220,7 @@ export async function POST() {
   const { data: saved, error: saveError } = await supabase
     .from("portfolio_pattern_reads")
     .insert({
+      portfolio_id: portfolioId,
       document: read as unknown as Json,
       holdings_snapshot: {
         as_of: new Date().toISOString(),
@@ -215,8 +242,12 @@ export async function POST() {
   return NextResponse.json({ read: saved }, { status: 201 });
 }
 
-/** History, newest first, cursor-paged. RLS scopes it. */
+/** History, newest first, cursor-paged. RLS scopes it to the trader; the
+ *  parameter scopes it to a book. */
 export async function GET(request: Request) {
+  const scope = requirePortfolioScope(request);
+  if (scope instanceof Response) return scope;
+
   const before = new URL(request.url).searchParams.get("before");
   const supabase = await createClient();
 
@@ -225,6 +256,7 @@ export async function GET(request: Request) {
     .select("*")
     .order("created_at", { ascending: false })
     .limit(HISTORY_PAGE);
+  if (scope.mode === "one") query = query.eq("portfolio_id", scope.id);
   if (before) query = query.lt("created_at", before);
 
   const { data, error } = await query;

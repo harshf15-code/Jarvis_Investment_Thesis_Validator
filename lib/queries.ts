@@ -1,4 +1,5 @@
 import { limitsFor } from "@/lib/llm/budget";
+import type { PortfolioScope } from "@/lib/portfolio/scope";
 import { createClient } from "@/lib/supabase/server";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 
@@ -139,13 +140,20 @@ export async function listRecommendations() {
   }));
 }
 
-export async function listOpenPositions() {
+/**
+ * Open positions in one book, or across every book for the roll-up.
+ *
+ * `scope` is required rather than defaulted, and that is the point: making it
+ * optional would mean every caller that forgot it silently read the whole
+ * account, which is precisely the bug this argument exists to prevent. The
+ * compiler finds the call sites instead of a trader finding them.
+ */
+export async function listOpenPositions(scope: PortfolioScope) {
   const supabase = await createClient();
 
-  const { data: positions, error: positionsError } = await supabase
-    .from("positions")
-    .select("*")
-    .in("status", ["active", "partial_exit"]);
+  let positionsQuery = supabase.from("positions").select("*").in("status", ["active", "partial_exit"]);
+  if (scope.mode === "one") positionsQuery = positionsQuery.eq("portfolio_id", scope.id);
+  const { data: positions, error: positionsError } = await positionsQuery;
   if (positionsError) fail(positionsError.message);
   if (!positions || positions.length === 0) return [];
 

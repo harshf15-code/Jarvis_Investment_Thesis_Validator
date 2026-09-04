@@ -58,6 +58,8 @@ function buildMock(
     exits?: { position_id: string; quantity: number }[];
     tickers?: string[];
     currencies?: string[];
+    /** `null` stands for "not this trader's book", which must 404. */
+    portfolio?: Record<string, unknown> | null;
   } = {},
 ) {
   const count = opts.positions ?? 2;
@@ -72,8 +74,25 @@ function buildMock(
 
   return {
     from: vi.fn().mockImplementation((table: string) => {
+      if (table === "portfolios") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({
+                data: opts.portfolio === undefined ? BOOK : opts.portfolio,
+                error: null,
+              }),
+            }),
+          }),
+        };
+      }
       if (table === "positions") {
-        return { select: () => ({ in: async () => ({ data: positions, error: null }) }) };
+        // Chainable: the read now filters by book as well as status.
+        const chain: Record<string, unknown> = {
+          eq: () => chain,
+          in: async () => ({ data: positions, error: null }),
+        };
+        return { select: () => chain };
       }
       if (table === "stocks") {
         return {
@@ -183,8 +202,20 @@ function buildMock(
   };
 }
 
-const post = (body: Record<string, unknown> = {}) =>
-  new Request("http://test/api/portfolio/council", {
+/** The book under consult. Uuid-shaped: the route parses `?portfolio=`. */
+const PF1 = "11111111-1111-4111-8111-111111111111";
+
+const BOOK = {
+  id: PF1,
+  name: "My Portfolio",
+  ownership: "owned",
+  beneficiary_name: null,
+  base_currency: "INR",
+  is_default: true,
+};
+
+const post = (body: Record<string, unknown> = {}, scope: string = PF1) =>
+  new Request(`http://test/api/portfolio/council?portfolio=${scope}`, {
     method: "POST",
     body: JSON.stringify({ member_ids: MEMBER_IDS, ...body }),
   });

@@ -32,6 +32,15 @@ export async function resolveImportRows(
   rows: DraftImportRow[],
   market: MarketCode,
   /**
+   * The book being imported into. Duplicate detection is per-book since 0027.
+   *
+   * "You already hold an open position in INFY" has to be true of THIS book to
+   * be an answer. Holding INFY in a portfolio run for someone else is not a
+   * reason to warn a trader about buying it themselves, and warning anyway
+   * would train them to click past the flag that catches a real re-upload.
+   */
+  portfolioId: string,
+  /**
    * Row indices the CALLER already knows are repeats, from the whole file.
    *
    * The preview is chunked, so a ticker appearing at row 3 and row 40 lands in
@@ -49,7 +58,7 @@ export async function resolveImportRows(
   // `knownRepeats` is by row index in the trader's file.
   const repeats = repeatedTickerIndices(rows.map((r) => r.ticker));
   const knownRepeatSet = new Set(knownRepeats);
-  const held = await tickersAlreadyHeld(supabase);
+  const held = await tickersAlreadyHeld(supabase, portfolioId);
 
   const resolved: ResolvedImportRow[] = rows.map((row) => ({
     ...row,
@@ -125,11 +134,16 @@ export async function resolveImportRows(
   return resolved;
 }
 
-/** Tickers the trader already has an open position in. RLS scopes the query. */
-async function tickersAlreadyHeld(supabase: UserClient): Promise<Set<string>> {
+/** Tickers this BOOK already has an open position in. RLS scopes it to the
+ *  trader; the portfolio narrows it to the one being imported into. */
+async function tickersAlreadyHeld(
+  supabase: UserClient,
+  portfolioId: string,
+): Promise<Set<string>> {
   const { data, error } = await supabase
     .from("positions")
     .select("ticker")
+    .eq("portfolio_id", portfolioId)
     .in("status", ["active", "partial_exit"]);
   // A failed lookup must not silently disarm duplicate detection — the whole
   // point of the flag is that a second position in the same name is usually a

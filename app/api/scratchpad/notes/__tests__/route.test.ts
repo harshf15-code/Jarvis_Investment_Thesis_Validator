@@ -19,9 +19,16 @@ function buildMock() {
     from: vi.fn().mockImplementation((table: string) => {
       if (table !== "scratchpad_notes") throw new Error(`unexpected table ${table}`);
       return {
-        select: () => ({
-          order: () => ({ limit: async () => ({ data: NOTES, error: null }) }),
-        }),
+        // `.eq("portfolio_id", …)` is applied only in single-book mode, so the
+        // builder has to be chainable rather than a fixed two-call shape.
+        select: () => {
+          const chain: Record<string, unknown> = {
+            eq: () => chain,
+            order: () => chain,
+            limit: async () => ({ data: NOTES, error: null }),
+          };
+          return chain;
+        },
         insert: (row: Record<string, unknown>) => {
           inserted = row;
           return {
@@ -33,8 +40,18 @@ function buildMock() {
   };
 }
 
-const post = (body: unknown) =>
-  new Request("http://test/api/scratchpad/notes", { method: "POST", body: JSON.stringify(body) });
+/** The book every fixture note belongs to. Uuid-shaped: the route parses it. */
+const PF1 = "11111111-1111-4111-8111-111111111111";
+
+const post = (body: Record<string, unknown>) =>
+  new Request("http://test/api/scratchpad/notes", {
+    method: "POST",
+    body: JSON.stringify({ portfolio_id: PF1, ...body }),
+  });
+
+/** Reads are scoped to one book, or to `all` for the roll-up. */
+const get = (scope: string = PF1) =>
+  new Request(`http://test/api/scratchpad/notes?portfolio=${scope}`);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -47,12 +64,17 @@ describe("GET /api/scratchpad/notes", () => {
   it("returns archived notes alongside live ones, in one request", async () => {
     // The archive view and the ticker filter are views onto the same small
     // list; making either cost a round trip would be paying for nothing.
-    const res = await GET();
+    const res = await GET(get());
     const body = await res.json();
 
     expect(res.status).toBe(200);
     expect(body.notes).toHaveLength(2);
     expect(body.notes[1].archived_at).not.toBeNull();
+  });
+
+  it("refuses a read that does not say which portfolio", async () => {
+    const res = await GET(new Request("http://test/api/scratchpad/notes"));
+    expect(res.status).toBe(400);
   });
 });
 
@@ -63,7 +85,13 @@ describe("POST /api/scratchpad/notes", () => {
 
     expect(res.status).toBe(201);
     expect(body.note.body).toBe("Watch the order book.");
-    expect(inserted).toEqual({ body: "Watch the order book.", ticker: "HAL" });
+    // The note is filed against the book it was written in, not inferred.
+    expect(inserted?.portfolio_id).toBe(PF1);
+    expect(inserted).toEqual({
+      portfolio_id: PF1,
+      body: "Watch the order book.",
+      ticker: "HAL",
+    });
   });
 
   it("saves a note with no ticker at all", async () => {

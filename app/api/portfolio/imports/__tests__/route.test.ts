@@ -24,7 +24,7 @@ type Table = Record<string, unknown>;
  * `failOn` makes one insert fail, which is how the compensating-delete path
  * gets exercised.
  */
-function buildSupabaseMock(opts: { held?: string[]; failOn?: string } = {}) {
+function buildSupabaseMock(opts: { held?: string[]; failOn?: string; bookExists?: boolean } = {}) {
   const calls = {
     theses: [] as unknown[][],
     trade_plans: [] as unknown[][],
@@ -44,14 +44,30 @@ function buildSupabaseMock(opts: { held?: string[]; failOn?: string } = {}) {
 
   const client = {
     from: vi.fn().mockImplementation((table: string) => {
-      if (table === "positions") {
+      if (table === "portfolios") {
+        // The route names the book before pricing 200 rows against it, so a
+        // bad id is a 404 rather than a foreign-key violation at insert time.
         return {
           select: vi.fn().mockReturnValue({
-            in: vi.fn().mockResolvedValue({
-              data: (opts.held ?? []).map((ticker) => ({ ticker })),
-              error: null,
+            eq: vi.fn().mockReturnValue({
+              maybeSingle: vi
+                .fn()
+                .mockResolvedValue({ data: opts.bookExists === false ? null : { id: PF1 }, error: null }),
             }),
           }),
+        };
+      }
+      if (table === "positions") {
+        // Chainable: duplicate detection filters by book as well as status.
+        const chain: Record<string, unknown> = {
+          eq: () => chain,
+          in: vi.fn().mockResolvedValue({
+            data: (opts.held ?? []).map((ticker) => ({ ticker })),
+            error: null,
+          }),
+        };
+        return {
+          select: vi.fn().mockReturnValue(chain),
           insert: insertFor("positions"),
         };
       }
@@ -124,10 +140,14 @@ function buildAdminMock() {
   };
 }
 
+/** The book being imported into. Uuid-shaped: the route validates it. */
+const PF1 = "11111111-1111-4111-8111-111111111111";
+
 function post(body: Record<string, unknown>) {
   return new Request("http://test/api/portfolio/imports", {
     method: "POST",
     body: JSON.stringify({
+      portfolio_id: PF1,
       source_filename: "holdings.csv",
       market: "IN",
       as_of_date: "2026-08-01",

@@ -1,15 +1,21 @@
 import { NextResponse } from "next/server";
 
+import { listPortfolios, ownedOnly, requirePortfolioScope, resolveScope } from "@/lib/portfolio/active";
 import { createClient } from "@/lib/supabase/server";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 import { computePositionPnl } from "@/lib/position-metrics";
+import type { Portfolio } from "@/lib/types";
 
 /**
- * Screen HUB-1's single aggregated read — everything the Velocity Cockpit
- * needs in one round trip: open positions (with their stock/trade-plan/thesis
- * joins already resolved the same way `GET /api/positions` does), the Jarvis
- * recommendation feed, the portfolio-wide open P&L, and the tickers whose
- * thesis-test date has passed.
+ * Screen HUB-1's single aggregated read — everything the Cockpit needs in one
+ * round trip: open positions (with their stock/trade-plan/thesis joins already
+ * resolved the same way `GET /api/positions` does), the Jarvis recommendation
+ * feed, the open P&L, and the tickers whose thesis-test date has passed.
+ *
+ * Scoped to one book since 0027, or to `?portfolio=all` for the roll-up. There
+ * is no unscoped form: a request that does not say which book is a 400 rather
+ * than a guess, because the wrong guess here shows one person's money as
+ * another's.
  *
  * On "Total Open P&L" vs the spec's "today / week / MTD": the v2 schema keeps
  * no time series of portfolio value (`price_cache` was dropped in the full
@@ -20,13 +26,73 @@ import { computePositionPnl } from "@/lib/position-metrics";
  * `portfolio_snapshots` table written on a schedule; that is a named gap, not
  * a silent omission.
  */
-export async function GET() {
+
+type Bucket = { absolute: number; costBasis: number; positions: number };
+export type CurrencyTotal = {
+  currency: string;
+  absolute: number;
+  costBasis: number;
+  percent: number;
+  positions: number;
+};
+
+/**
+ * Ordered by POSITION COUNT, then currency code.
+ *
+ * Not by cost basis: comparing ₹155,000 against $2,000 to decide which book
+ * is "bigger" is the same cross-currency arithmetic the per-currency split
+ * exists to remove — it ranks by the unit size of the money, so rupees would
+ * always lead. Position count is currency-neutral and genuinely comparable, and
+ * the tie-break keeps the order stable between requests rather than depending
+ * on which position happened to be priced first.
+ */
+function toTotals(buckets: Map<string, Bucket>): CurrencyTotal[] {
+  return [...buckets.entries()]
+    .map(([currency, t]) => ({
+      currency,
+      absolute: t.absolute,
+      costBasis: t.costBasis,
+      percent: t.costBasis > 0 ? (t.absolute / t.costBasis) * 100 : 0,
+      positions: t.positions,
+    }))
+    .sort((a, b) => b.positions - a.positions || a.currency.localeCompare(b.currency));
+}
+
+function addTo(buckets: Map<string, Bucket>, currency: string, absolute: number, costBasis: number) {
+  const bucket = buckets.get(currency) ?? { absolute: 0, costBasis: 0, positions: 0 };
+  bucket.absolute += absolute;
+  bucket.costBasis += costBasis;
+  bucket.positions += 1;
+  buckets.set(currency, bucket);
+}
+
+export async function GET(request: Request) {
+  const scope = requirePortfolioScope(request);
+  if (scope instanceof Response) return scope;
+
   const supabase = await createClient();
 
-  const { data: positions, error: positionsError } = await supabase
-    .from("positions")
-    .select("*")
-    .in("status", ["active", "partial_exit"]);
+  let allPortfolios: Portfolio[];
+  try {
+    allPortfolios = await listPortfolios(supabase);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Could not read your portfolios." },
+      { status: 500 },
+    );
+  }
+
+  const inScope = resolveScope(allPortfolios, scope);
+  if (!inScope) {
+    // The same answer RLS gives for someone else's row, and for the same
+    // reason: refusing differently would confirm the id exists.
+    return NextResponse.json({ error: "Portfolio not found" }, { status: 404 });
+  }
+  const scopeIds = inScope.map((p) => p.id);
+
+  let positionsQuery = supabase.from("positions").select("*").in("status", ["active", "partial_exit"]);
+  if (scope.mode === "one") positionsQuery = positionsQuery.eq("portfolio_id", scopeIds[0]);
+  const { data: positions, error: positionsError } = await positionsQuery;
   if (positionsError) {
     return NextResponse.json({ error: positionsError.message }, { status: 500 });
   }
@@ -44,7 +110,10 @@ export async function GET() {
       positionIds.length ? supabase.from("exits").select("*").in("position_id", positionIds) : empty,
       stockIds.length ? supabase.from("stocks").select("*").in("id", stockIds) : empty,
       tradePlanIds.length ? supabase.from("trade_plans").select("*").in("id", tradePlanIds) : empty,
-      thesisIds.length ? supabase.from("theses").select("id, conviction_tier").in("id", thesisIds) : empty,
+      thesisIds.length ? supabase.from("theses").select("id, conviction_tier, title, ticker").in("id", thesisIds) : empty,
+      // Account-wide on purpose. A recommendation is pre-position — nothing has
+      // been bought yet, so there is no book it belongs to. It acquires one at
+      // the moment it is converted, which is where the picker is.
       supabase.from("jarvis_recommendations").select("*").order("recommended_at", { ascending: false }),
     ]);
 
@@ -62,36 +131,32 @@ export async function GET() {
   const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
   const thesisById = new Map((theses ?? []).map((t) => [t.id, t]));
 
-  // Totalled PER CURRENCY, never blended.
+  // Totalled PER CURRENCY, never blended, and now per BOOK as well.
   //
-  // This used to be two scalars summed across the whole book, which added
-  // rupees to dollars and then divided one mixed sum by another to get a
-  // percentage. It was invisible while a book held one currency and became
-  // easy to hit the moment holdings could be imported. There is no honest
-  // single number here without an exchange rate, this app holds none, and a
-  // stale rate misstates a portfolio silently — so the answer is several
-  // correct numbers rather than one convenient wrong one.
+  // The per-currency split was already the answer to "there is no honest single
+  // number without an exchange rate, and this app holds none". The per-book
+  // split is the same argument one level up: a managed book is somebody else's
+  // capital, and adding it to the trader's own is not a rounding error, it is a
+  // different question being answered.
   //
   // Both sides of each percent are restricted to the same set of positions —
   // the shares still held (entries minus exits) of a position that actually
   // has a quoted price. Dividing a remainder-only P&L by the full original
   // cost basis would understate the return of every partially-exited position.
-  const totals = new Map<string, { absolute: number; costBasis: number; positions: number }>();
+  const perBook = new Map<string, Map<string, Bucket>>(scopeIds.map((id) => [id, new Map()]));
   const positionResult = positionRows.map((p) => {
     const stock = stockById.get(p.stock_id);
     const tradePlan = tradePlanById.get(p.trade_plan_id);
     const weightedAverage = computeWeightedAverageEntry(entriesByPosition.get(p.id) ?? []);
     const remaining = weightedAverage.totalQuantity - (exitedByPosition.get(p.id) ?? 0);
     if (stock?.last_price != null && remaining > 0) {
-      const bucket = totals.get(stock.currency) ?? { absolute: 0, costBasis: 0, positions: 0 };
-      bucket.absolute += computePositionPnl({
+      const { absolute } = computePositionPnl({
         currentPrice: stock.last_price,
         avgEntry: weightedAverage.averagePrice,
         quantity: remaining,
-      }).absolute;
-      bucket.costBasis += weightedAverage.averagePrice * remaining;
-      bucket.positions += 1;
-      totals.set(stock.currency, bucket);
+      });
+      const book = perBook.get(p.portfolio_id);
+      if (book) addTo(book, stock.currency, absolute, weightedAverage.averagePrice * remaining);
     }
     return {
       position: p,
@@ -102,23 +167,27 @@ export async function GET() {
     };
   });
 
-  // Ordered by POSITION COUNT, then currency code.
-  //
-  // Not by cost basis: comparing ₹155,000 against $2,000 to decide which book
-  // is "bigger" is the same cross-currency arithmetic this whole change exists
-  // to remove — it ranks by the unit size of the money, so rupees would always
-  // lead. Position count is currency-neutral and genuinely comparable, and the
-  // code breaks ties so the order is stable between requests rather than
-  // depending on which position happened to be priced first.
-  const totalsByCurrency = [...totals.entries()]
-    .map(([currency, t]) => ({
-      currency,
-      absolute: t.absolute,
-      costBasis: t.costBasis,
-      percent: t.costBasis > 0 ? (t.absolute / t.costBasis) * 100 : 0,
-      positions: t.positions,
-    }))
-    .sort((a, b) => b.positions - a.positions || a.currency.localeCompare(b.currency));
+  // The headline sums OWNED books only. A managed book is rendered beneath as
+  // its own labelled card with its own totals, never folded into the number the
+  // trader reads as their own net worth.
+  const headlineIds = new Set(ownedOnly(inScope).map((p) => p.id));
+  const headline = new Map<string, Bucket>();
+  for (const [portfolioId, buckets] of perBook) {
+    if (!headlineIds.has(portfolioId)) continue;
+    for (const [currency, t] of buckets) {
+      const bucket = headline.get(currency) ?? { absolute: 0, costBasis: 0, positions: 0 };
+      bucket.absolute += t.absolute;
+      bucket.costBasis += t.costBasis;
+      bucket.positions += t.positions;
+      headline.set(currency, bucket);
+    }
+  }
+
+  const byPortfolio = inScope.map((portfolio) => ({
+    portfolio,
+    totalsByCurrency: toTotals(perBook.get(portfolio.id) ?? new Map()),
+    positionCount: positionRows.filter((p) => p.portfolio_id === portfolio.id).length,
+  }));
 
   // De-duplicated: two open positions can sit on the same ticker (separate
   // theses), and the rail should show one chip per ticker, not one per row.
@@ -144,5 +213,14 @@ export async function GET() {
     stock: recStockById.get(r.stock_id),
   }));
 
-  return NextResponse.json({ positions: positionResult, recommendations, totalsByCurrency, overdueTickers });
+  return NextResponse.json({
+    positions: positionResult,
+    recommendations,
+    totalsByCurrency: toTotals(headline),
+    overdueTickers,
+    /** Which books this read covered, so the header can name what is on screen. */
+    scope: { mode: scope.mode, portfolios: inScope },
+    /** Per-book totals. One entry in single-book mode; every book in the roll-up. */
+    byPortfolio,
+  });
 }

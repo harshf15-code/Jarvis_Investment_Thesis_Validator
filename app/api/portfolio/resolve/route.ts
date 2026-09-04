@@ -30,6 +30,8 @@ const DraftRowSchema = z.object({
 });
 
 const ResolveInputSchema = z.object({
+  /** The book being imported into — duplicate detection is per-book (0027). */
+  portfolio_id: z.uuid("Choose which portfolio these holdings belong to."),
   market: z.string(),
   rows: z.array(DraftRowSchema).min(1).max(RESOLVE_CHUNK),
   /** Row indices the client knows are repeats from elsewhere in the same file —
@@ -57,7 +59,7 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { market, rows, repeatedIndices } = parsed.data;
+  const { portfolio_id, market, rows, repeatedIndices } = parsed.data;
 
   if (!isLiveMarket(market)) {
     return NextResponse.json(
@@ -72,6 +74,7 @@ export async function POST(request: Request) {
       supabase,
       rows,
       market as MarketCode,
+      portfolio_id,
       repeatedIndices ?? [],
     );
     return NextResponse.json({ rows: resolved });
