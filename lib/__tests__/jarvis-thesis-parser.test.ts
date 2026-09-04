@@ -156,3 +156,76 @@ ${json}
     expect(parsed.extraction.data.stock_suggestions).toHaveLength(1);
   });
 });
+
+/* ------------------------------------------------------------------------- *
+ * Titles (0028)
+ * ------------------------------------------------------------------------- */
+
+/** A response body with only the JSON block swapped, so each case is one field. */
+function withJson(fields: Record<string, unknown>): string {
+  return `## Market View
+x
+
+\`\`\`json
+${JSON.stringify({
+  mode: "stock_plus_thesis",
+  ticker: "HAL",
+  market_view: "x",
+  mispricing: "x",
+  catalyst: "x",
+  time_horizon: "x",
+  invalidation_condition: "x",
+  conviction_tier: "II",
+  conviction_score: 70,
+  stock_suggestions: [],
+  ...fields,
+})}
+\`\`\``;
+}
+
+describe("parseThesisResponse — title", () => {
+  it("reads a title the model supplied", () => {
+    const out = parseThesisResponse(withJson({ title: "Defence capex cycle" }));
+    expect(out.extraction.ok).toBe(true);
+    if (out.extraction.ok) expect(out.extraction.data.title).toBe("Defence capex cycle");
+  });
+
+  it("trims it", () => {
+    const out = parseThesisResponse(withJson({ title: "  Defence capex cycle  " }));
+    if (out.extraction.ok) expect(out.extraction.data.title).toBe("Defence capex cycle");
+  });
+
+  it("STILL PARSES when the model omits the title entirely", () => {
+    // The regression this guards is the one the I7 comment records: a strict
+    // field turned one missing value into a discarded thesis. A title is the
+    // least load-bearing thing in this schema and must never be the reason an
+    // analysis is lost — `lib/thesis-title.ts` handles its absence completely.
+    const out = parseThesisResponse(withJson({}));
+    expect(out.extraction.ok).toBe(true);
+    if (out.extraction.ok) {
+      expect(out.extraction.data.title).toBeNull();
+      expect(out.extraction.data.market_view).toBe("x");
+    }
+  });
+
+  it("degrades a wrong-typed or empty title to null rather than failing the object", () => {
+    for (const title of [42, "", "   ", { name: "x" }, ["a"]]) {
+      const out = parseThesisResponse(withJson({ title }));
+      expect(out.extraction.ok).toBe(true);
+      if (out.extraction.ok) expect(out.extraction.data.title).toBeNull();
+    }
+  });
+
+  it("degrades an over-long title to null rather than failing the object", () => {
+    // 80 is the check constraint in 0028; a longer one would be refused by the
+    // database, so it is dropped here where the loss costs a label, not a run.
+    const out = parseThesisResponse(withJson({ title: "x".repeat(81) }));
+    expect(out.extraction.ok).toBe(true);
+    if (out.extraction.ok) expect(out.extraction.data.title).toBeNull();
+  });
+
+  it("accepts a title of exactly the maximum length", () => {
+    const out = parseThesisResponse(withJson({ title: "x".repeat(80) }));
+    if (out.extraction.ok) expect(out.extraction.data.title).toHaveLength(80);
+  });
+});

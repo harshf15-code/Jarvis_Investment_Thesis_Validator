@@ -4,8 +4,14 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import { thesisTitle } from "@/lib/thesis-title";
 
-type ThesisPreview = { ticker: string | null; market_view: string | null; invalidation_condition: string | null };
+type ThesisPreview = {
+  title: string | null;
+  ticker: string | null;
+  market_view: string | null;
+  invalidation_condition: string | null;
+};
 
 /** Spec US-08's "Link to Thesis" slide-out — shows the linked thesis with the signal highlighted as supporting/contrary evidence. */
 export function ThesisPreviewDrawer({ thesisId, headline, onClose }: { thesisId: string; headline: string; onClose: () => void }) {
@@ -26,7 +32,7 @@ export function ThesisPreviewDrawer({ thesisId, headline, onClose }: { thesisId:
           <SkeletonLoader lines={4} />
         ) : (
           <>
-            <h2 className="font-display text-lg text-on-surface">{thesis.ticker ?? "Macro Thesis"}</h2>
+            <h2 className="font-display text-lg text-on-surface">{thesisTitle(thesis)}</h2>
             <div className="rounded-xl bg-primary-container p-4">
               <p className="text-xs uppercase text-primary">This signal</p>
               <p className="mt-1 text-sm text-primary">{headline}</p>

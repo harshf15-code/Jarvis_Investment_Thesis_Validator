@@ -11,6 +11,18 @@ import { z } from "zod";
 
 export const ThesisExtractSchema = z.object({
   mode: z.enum(["stock_only", "thesis_only", "stock_plus_thesis"]),
+  /**
+   * A short name for the idea (0028).
+   *
+   * `.catch(null)` and NOT required, which is the whole care in this field. The
+   * I7 note below records what a strict field cost last time: one value the
+   * model omitted failed the entire object and discarded an otherwise-usable
+   * thesis. A title is the least load-bearing thing in this schema — the
+   * fallback chain in `lib/thesis-title.ts` handles its absence completely —
+   * so it must never be the reason an analysis is lost. Missing, too long, or
+   * the wrong type all degrade to null.
+   */
+  title: z.string().trim().min(1).max(80).nullable().catch(null),
   ticker: z.string().nullable(),
   // I7 fix: `JARVIS_THESIS_SYSTEM_PROMPT` explicitly tells the model to use
   // null for any field it cannot responsibly determine, for every field —

@@ -60,6 +60,17 @@ const UpdateThesisSchema = z.object({
    * never end up pointing at a ticker the bake-off never actually priced.
    */
   selected_candidate_id: z.string().uuid().nullable().optional(),
+  /**
+   * The trader's own name for this idea (0028).
+   *
+   * Editable on ANY thesis, unlike `input_text` above — and for the opposite
+   * reason. `input_text` is what every downstream artefact was generated from,
+   * so rewriting it would leave the extraction, the bear cases and the
+   * memorandum describing a thesis that no longer exists. A title is a label.
+   * Nothing is derived from it, so renaming costs nothing and the trader's word
+   * for their own idea should win.
+   */
+  title: z.string().trim().min(1, "Give it a name, or leave the old one.").max(80).optional(),
 });
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -99,6 +110,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   const { selected_candidate_id, ...rest } = parsed.data;
   const patch: ThesisUpdate = { ...rest };
+
+  // Set here rather than accepted from the client: the flag means "a human
+  // chose this", and a client that could set it could also clear it — which
+  // would let a later re-run silently overwrite a name the trader picked.
+  if (rest.title !== undefined) patch.title_edited = true;
 
   if (selected_candidate_id !== undefined) {
     patch.selected_candidate_id = selected_candidate_id;

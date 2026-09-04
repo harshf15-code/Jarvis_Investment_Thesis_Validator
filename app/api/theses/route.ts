@@ -280,7 +280,14 @@ async function runThesis(
   }
 
   const mode = parsed.extraction.ok ? parsed.extraction.data.mode : "thesis_only";
-  step("parse", "done", extractedTicker ? `Anchored to ${extractedTicker}` : `Read as ${mode}`);
+  const title = parsed.extraction.ok ? parsed.extraction.data.title : null;
+  step(
+    "parse",
+    "done",
+    // The title is the first genuinely interesting thing the run knows, and it
+    // is known exactly here. Better on screen than restating the mode.
+    title ?? (extractedTicker ? `Anchored to ${extractedTicker}` : `Read as ${mode}`),
+  );
 
   step("save", "active");
 
@@ -313,6 +320,10 @@ async function runThesis(
     mode,
     stock_id: stockId,
     ticker: extractedTicker,
+    // Null is fine and handled: `thesisTitle` falls back to the ticker and then
+    // to "Untitled thesis". `title_edited` stays false — the model naming
+    // something is not the trader choosing a name for it.
+    title,
     market_view: parsed.extraction.ok ? parsed.extraction.data.market_view : parsed.sections.marketView || null,
     mispricing: parsed.extraction.ok ? parsed.extraction.data.mispricing : parsed.sections.mispricing || null,
     catalyst: parsed.extraction.ok ? parsed.extraction.data.catalyst : parsed.sections.catalyst || null,
