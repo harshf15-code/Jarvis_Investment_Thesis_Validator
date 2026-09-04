@@ -29,6 +29,10 @@ import type { Portfolio } from "@/lib/types";
 
 type PortfolioContextValue = {
   portfolios: Portfolio[];
+  /** The raw `?portfolio=` value: a uuid, `all`, or null on an unscoped page.
+   *  Navigation carries this rather than `active.id` so the roll-up survives a
+   *  nav click, and so a link built before the list loads is still scoped. */
+  param: string | null;
   /** The book on screen, or null in the roll-up and while the list is loading. */
   active: Portfolio | null;
   mode: "one" | "all";
@@ -101,6 +105,7 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
     const mode = param === ALL_PORTFOLIOS ? "all" : "one";
     return {
       portfolios,
+      param,
       active: mode === "all" ? null : (portfolios.find((p) => p.id === param) ?? null),
       mode,
       loading,

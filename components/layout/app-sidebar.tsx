@@ -4,7 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
-import { NAV_ITEMS, activeNavItem } from "./nav-items";
+import { usePortfolios } from "./portfolio-context";
+import { NAV_ITEMS, activeNavItem, withPortfolio } from "./nav-items";
 
 /**
  * Left icon rail — the Stitch mock's `<aside class="w-20">`.
@@ -16,6 +17,9 @@ import { NAV_ITEMS, activeNavItem } from "./nav-items";
 export function AppSidebar() {
   const pathname = usePathname();
   const active = activeNavItem(pathname);
+  // Carried onto every portfolio-aware link, so moving between screens keeps
+  // the book you chose. See `withPortfolio`.
+  const { param } = usePortfolios();
 
   return (
     <aside className="fixed inset-y-0 left-0 z-40 hidden w-20 flex-col items-center gap-2 bg-surface-dim pt-20 pb-6 sm:flex">
@@ -24,7 +28,7 @@ export function AppSidebar() {
         return (
           <Link
             key={href}
-            href={href}
+            href={withPortfolio(href, param)}
             aria-label={label}
             aria-current={isActive ? "page" : undefined}
             className={cn(
@@ -53,6 +57,7 @@ export function AppSidebar() {
 export function MobileNavBar() {
   const pathname = usePathname();
   const active = activeNavItem(pathname);
+  const { param } = usePortfolios();
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40 flex overflow-x-auto bg-surface-dim px-1 pt-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-1px_0_0_rgba(255,255,255,0.05)] sm:hidden">
@@ -61,7 +66,7 @@ export function MobileNavBar() {
         return (
           <Link
             key={href}
-            href={href}
+            href={withPortfolio(href, param)}
             aria-current={isActive ? "page" : undefined}
             className={cn(
               "flex min-w-[4.25rem] flex-1 flex-col items-center gap-1 rounded-lg px-1 py-2 transition-colors",
