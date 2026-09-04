@@ -16,12 +16,17 @@ import type { ScratchpadNote } from "@/lib/types";
 export function NotesPanel({
   notes,
   truncated,
+  canCreate,
   onCreate,
   onPatch,
 }: {
   notes: ScratchpadNote[];
   /** More notes exist than were fetched — said out loud rather than hidden. */
   truncated: boolean;
+  /** False in the roll-up. Notes from every book are still readable there —
+   *  they are the trader's own words either way — but a NEW note has no single
+   *  book to belong to, so the composer is withheld rather than guessing one. */
+  canCreate: boolean;
   onCreate: (body: string, ticker: string | null) => Promise<void>;
   onPatch: (id: string, patch: Record<string, unknown>) => Promise<void>;
 }) {
@@ -82,7 +87,7 @@ export function NotesPanel({
             one yet.
           </p>
         </div>
-        {!composing && (
+        {!composing && canCreate && (
           <button
             type="button"
             onClick={() => {
@@ -96,6 +101,12 @@ export function NotesPanel({
           </button>
         )}
       </div>
+
+      {!canCreate && (
+        <p className="text-xs text-on-surface-variant">
+          You are looking at every portfolio at once. Pick one to write a note in it.
+        </p>
+      )}
 
       {error && <p className="rounded-lg bg-error-container px-4 py-3 text-sm text-error">{error}</p>}
 

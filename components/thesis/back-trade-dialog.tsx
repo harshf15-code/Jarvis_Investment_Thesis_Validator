@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 
+import { PortfolioPicker } from "@/components/portfolio/portfolio-picker";
 import type { Memorandum } from "@/lib/jarvis-memorandum";
 import { currencyForExchange, symbolForCurrency } from "@/lib/markets";
 import type { ThesisCandidate } from "@/lib/types";
@@ -47,12 +48,15 @@ export function BackTradeDialog({
   // Seeded with live CMP as the most likely fill, but fully editable.
   const [price, setPrice] = useState(candidate.cmp != null ? String(candidate.cmp) : "");
   const [notes, setNotes] = useState("");
+  // Starts null, and stays null until the trader picks. See `PortfolioPicker`.
+  const [portfolioId, setPortfolioId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const qty = Number(quantity);
   const px = Number(price);
-  const valid = Number.isFinite(qty) && qty > 0 && Number.isFinite(px) && px > 0 && date !== "";
+  const valid =
+    Number.isFinite(qty) && qty > 0 && Number.isFinite(px) && px > 0 && date !== "" && portfolioId !== null;
 
   async function submit() {
     if (!valid || !candidate.stock_id) return;
@@ -104,6 +108,7 @@ export function BackTradeDialog({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          portfolio_id: portfolioId,
           trade_plan_id: tradePlanId,
           thesis_id: thesisId,
           stock_id: candidate.stock_id,
@@ -187,7 +192,11 @@ export function BackTradeDialog({
           </div>
         </div>
 
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+        <div className="mt-5">
+          <PortfolioPicker value={portfolioId} onChange={setPortfolioId} />
+        </div>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-extrabold uppercase tracking-widest text-on-surface-variant/70">
               Fill price *

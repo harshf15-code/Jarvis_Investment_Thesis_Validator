@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 import { PortfolioCouncilClient } from "@/components/portfolio/council/portfolio-council-client";
+import { pageScope, scopeParam } from "@/lib/portfolio/active";
 import { listOpenPositions } from "@/lib/queries";
 
 /**
@@ -10,8 +11,15 @@ import { listOpenPositions } from "@/lib/queries";
  */
 export const dynamic = "force-dynamic";
 
-export default async function PortfolioCouncilPage() {
-  const rows = await listOpenPositions();
+type PageProps = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+
+export default async function PortfolioCouncilPage({ searchParams }: PageProps) {
+  const { scope, active } = await pageScope("/positions/council", searchParams);
+  // The URL is the state, so a bare back link would land on the DEFAULT book —
+  // silently changing whose money you are looking at on the way out of a screen
+  // about one book in particular.
+  const back = `/positions?portfolio=${scopeParam(scope)}`;
+  const rows = await listOpenPositions(scope);
   // Quantity per ticker, aggregated across separate theses in the same name —
   // the same collapse the consult itself does. Quantities and not just tickers,
   // because trimming a position changes every weight in its sub-book and a
@@ -26,19 +34,28 @@ export default async function PortfolioCouncilPage() {
   return (
     <div>
       <Link
-        href="/positions"
+        href={back}
         className="mb-4 inline-flex items-center gap-2 text-xs text-on-surface-variant transition-colors hover:text-on-surface"
       >
         <ArrowLeft className="size-3.5" />
         Active Positions
       </Link>
-      <h1 className="font-display text-2xl text-on-surface">The Council on your portfolio</h1>
+      <h1 className="font-display text-2xl text-on-surface">
+        The Council on {active ? active.name : "your portfolio"}
+      </h1>
       <p className="mt-1.5 max-w-2xl text-sm text-on-surface-variant">
         The same roster you use on a thesis, asked a different question: not whether to own one
         stock, but whether this collection of things makes sense together.
       </p>
       <div className="mt-6">
-        <PortfolioCouncilClient currentQuantities={currentQuantities} positionCount={rows.length} />
+        <PortfolioCouncilClient
+          // Remounts on a book switch, so no state survives into a book it was
+          // not fetched for. See the note on the history effect.
+          key={scopeParam(scope)}
+          currentQuantities={currentQuantities}
+          positionCount={rows.length}
+          portfolio={active}
+        />
       </div>
     </div>
   );

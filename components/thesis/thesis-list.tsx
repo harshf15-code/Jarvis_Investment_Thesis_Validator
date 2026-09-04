@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { ConvictionBadge } from "./conviction-badge";
+import { thesisTitle } from "@/lib/thesis-title";
 import type { ConvictionTier, ThesisStatus } from "@/lib/types";
 
 type Row = {
   id: string;
+  title: string | null;
   ticker: string | null;
   status: ThesisStatus;
   conviction_tier: ConvictionTier | null;
@@ -31,7 +33,7 @@ export function ThesisList({ rows }: { rows: Row[] }) {
           className="flex items-center justify-between rounded-xl bg-surface-container-low p-4 hover:bg-surface-container-high"
         >
           <div>
-            <p className="font-display text-sm text-on-surface">{t.ticker ?? "Macro Thesis"}</p>
+            <p className="font-display text-sm text-on-surface">{thesisTitle(t)}</p>
             <p className="mt-1 line-clamp-1 text-xs text-on-surface/60">{t.market_view ?? "—"}</p>
           </div>
           <div className="flex items-center gap-3">

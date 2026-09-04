@@ -24,16 +24,35 @@ const row = (over: Partial<Draft> = {}): Draft => ({
   ...over,
 });
 
-/** `held` are the tickers the caller already has an open position in. */
-function buildSupabaseMock(held: string[] = []) {
+/** The book being imported into. Uuid-shaped: the route validates it. */
+const PF1 = "11111111-1111-4111-8111-111111111111";
+
+/** `held` are the tickers the caller already holds IN THIS BOOK (0027).
+ *  `book` is null to stand in for a portfolio this trader cannot see. */
+function buildSupabaseMock(held: string[] = [], book: { id: string } | null = { id: PF1 }) {
+  const seen: Record<string, unknown> = {};
   return {
+    seen,
     from: vi.fn().mockImplementation((table: string) => {
-      if (table === "positions") {
+      if (table === "portfolios") {
+        // The route checks the book exists before pricing anything.
         return {
-          select: vi.fn().mockReturnValue({
-            in: vi.fn().mockResolvedValue({ data: held.map((ticker) => ({ ticker })), error: null }),
+          select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: book, error: null }) }) }),
+        };
+      }
+      if (table === "positions") {
+        // Chainable: duplicate detection now filters by book as well as status.
+        const chain: Record<string, unknown> = {
+          eq: (column: string, value: unknown) => {
+            seen[column] = value;
+            return chain;
+          },
+          in: vi.fn().mockResolvedValue({
+            data: held.map((ticker) => ({ ticker })),
+            error: null,
           }),
         };
+        return { select: vi.fn().mockReturnValue(chain) };
       }
       throw new Error(`unexpected table ${table}`);
     }),
@@ -43,7 +62,7 @@ function buildSupabaseMock(held: string[] = []) {
 function post(body: Record<string, unknown>) {
   return new Request("http://test/api/portfolio/resolve", {
     method: "POST",
-    body: JSON.stringify({ market: "IN", ...body }),
+    body: JSON.stringify({ portfolio_id: PF1, market: "IN", ...body }),
   }) as never;
 }
 
@@ -203,8 +222,22 @@ describe("POST /api/portfolio/resolve", () => {
     // A failed positions lookup would otherwise mean "nothing is a duplicate",
     // which is the wrong default for a re-upload.
     vi.mocked(createClient).mockResolvedValue({
-      from: () => ({ select: () => ({ in: async () => ({ data: null, error: { message: "boom" } }) }) }),
+      from: (table: string) =>
+        table === "portfolios"
+          ? { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: PF1 }, error: null }) }) }) }
+          : { select: () => ({ eq: () => ({ in: async () => ({ data: null, error: { message: "boom" } }) }) }) },
     } as never);
     expect((await POST(post({ rows: [row()] }))).status).toBe(500);
+  });
+
+  it("404s on a book this trader cannot see, before pricing anything", async () => {
+    // RLS hides someone else's row rather than erroring, so without the check
+    // the book simply looks empty — and every row previews as clean. A preview
+    // that exists to flag a re-upload must not answer "nothing to flag" when
+    // the truth is "wrong book".
+    vi.mocked(createClient).mockResolvedValue(buildSupabaseMock([], null) as never);
+    const res = await POST(post({ rows: [row()] }));
+    expect(res.status).toBe(404);
+    expect(vi.mocked(getQuote)).not.toHaveBeenCalled();
   });
 });

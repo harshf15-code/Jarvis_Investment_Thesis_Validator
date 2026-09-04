@@ -30,7 +30,12 @@ absent, reason from the text alone; do not invent price data.
 
 STEP 1 — Determine the mode.
 
-STEP 2 — Structure a thesis with exactly six fields:
+STEP 2 — Name the thesis. A specific 3-7 word title a trader would recognise in a list six months
+from now: the idea, not the category. "Indian IT bottoming on AI spend" — not "Macro Thesis", not
+"IT Sector View", not the ticker on its own. If the text names one stock and gives no reasoning,
+the company name plus what makes it interesting is a good title.
+
+STEP 3 — Structure a thesis with exactly six fields:
 - Market View: what the market currently believes.
 - Mispricing: why that view is wrong (if it is) and what it's missing.
 - Catalyst: what will close the gap.
@@ -40,7 +45,7 @@ STEP 2 — Structure a thesis with exactly six fields:
 For MODE "stock_only" with no reasoning given, still produce your own honest best-effort
 thesis for that stock using whatever context is available — do not leave fields empty.
 
-STEP 3 — ONLY if mode is "thesis_only": after the thesis, suggest 2-3 specific stocks
+STEP 4 — ONLY if mode is "thesis_only": after the thesis, suggest 2-3 specific stocks
 (ticker + one-sentence fit rationale each) that would express this macro thesis. If mode is
 NOT "thesis_only", this step is skipped and the JSON's "stock_suggestions" array must be empty.
 
@@ -60,6 +65,7 @@ matching this exact shape (use null for any field you cannot responsibly determi
 
 {
   "mode": "stock_only" | "thesis_only" | "stock_plus_thesis",
+  "title": string,
   "ticker": string | null,
   "market_view": string,
   "mispricing": string,
@@ -123,7 +129,7 @@ export function buildJarvisThesisUserContext(input: BuildThesisContextInput): st
 /* ------------------------------------------------------------------------- *
  * Candidate shortlist
  *
- * `JARVIS_THESIS_SYSTEM_PROMPT` STEP 3 only asks for a list of tickers with a
+ * `JARVIS_THESIS_SYSTEM_PROMPT` STEP 4 only asks for a list of tickers with a
  * one-line rationale each, which left a thesis dead-ending on names the app had
  * never analysed. This widens that into a real shortlist; the head-to-head
  * itself is `lib/jarvis-memorandum.ts`, which prices every name and ranks them.

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { currentUser } from "@/lib/auth/user";
 import { isLiveMarket } from "@/lib/markets";
 import { MAX_IMPORT_ROWS, RESOLVE_CHUNK } from "@/lib/portfolio-import";
+import { requireVisibleBook } from "@/lib/portfolio/active";
 import { resolveImportRows } from "@/lib/portfolio/resolve";
 import { createClient } from "@/lib/supabase/server";
 import type { MarketCode } from "@/lib/types";
@@ -30,6 +31,8 @@ const DraftRowSchema = z.object({
 });
 
 const ResolveInputSchema = z.object({
+  /** The book being imported into — duplicate detection is per-book (0027). */
+  portfolio_id: z.uuid("Choose which portfolio these holdings belong to."),
   market: z.string(),
   rows: z.array(DraftRowSchema).min(1).max(RESOLVE_CHUNK),
   /** Row indices the client knows are repeats from elsewhere in the same file —
@@ -57,7 +60,7 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { market, rows, repeatedIndices } = parsed.data;
+  const { portfolio_id, market, rows, repeatedIndices } = parsed.data;
 
   if (!isLiveMarket(market)) {
     return NextResponse.json(
@@ -67,11 +70,20 @@ export async function POST(request: Request) {
   }
 
   const supabase = await createClient();
+
+  // Before anything is priced. `resolveImportRows` asks this book what it
+  // already holds, so a book that is not this trader's would come back empty
+  // and every row would preview as clean — the preview's whole job is to flag
+  // a re-upload, and silently finding nothing is worse than refusing.
+  const refusal = await requireVisibleBook(supabase, portfolio_id);
+  if (refusal) return refusal;
+
   try {
     const resolved = await resolveImportRows(
       supabase,
       rows,
       market as MarketCode,
+      portfolio_id,
       repeatedIndices ?? [],
     );
     return NextResponse.json({ rows: resolved });

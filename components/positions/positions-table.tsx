@@ -10,7 +10,7 @@ import { ConvictionBadge } from "@/components/thesis/conviction-badge";
 import type { ConvictionTier, ExchangeCode, ThesisSource } from "@/lib/types";
 
 export type PositionRow = {
-  position: { id: string; ticker: string; status: string };
+  position: { id: string; ticker: string; status: string; portfolio_id: string };
   // `last_price_at` is what the Cockpit's <LastUpdated/> stamps (spec Section
   // 5: every screen showing a price says when it was taken); it's optional
   // here because this table itself never reads it.
@@ -32,7 +32,16 @@ export type PositionRow = {
 
 type SortKey = "distanceToStop" | "returnPct" | "thesisDate";
 
-export function PositionsTable({ rows }: { rows: PositionRow[] }) {
+export function PositionsTable({
+  rows,
+  books,
+}: {
+  rows: PositionRow[];
+  /** Book id → book, passed only in the ROLL-UP, where rows come from several.
+   *  Two books can hold the same ticker, and without this the two rows are
+   *  identical text — so "trim the one in my own account" is a coin flip. */
+  books?: Map<string, { name: string; ownership: string }>;
+}) {
   const [sortKey, setSortKey] = useState<SortKey>("distanceToStop");
 
   const sorted = useMemo(() => {
@@ -105,6 +114,17 @@ export function PositionsTable({ rows }: { rows: PositionRow[] }) {
                   <Link href={`/positions/${row.position.id}`} className="font-medium text-on-surface hover:text-primary">
                     {row.position.ticker}
                   </Link>
+                  {books && (
+                    <span
+                      className={`ml-2 rounded-full px-1.5 py-0.5 align-middle font-mono text-[9px] tracking-wider uppercase ${
+                        books.get(row.position.portfolio_id)?.ownership === "managed"
+                          ? "bg-status-amber-container text-status-amber"
+                          : "bg-surface-container-highest text-on-surface/50"
+                      }`}
+                    >
+                      {books.get(row.position.portfolio_id)?.name ?? "Unknown book"}
+                    </span>
+                  )}
                   {row.source === "imported" && (
                     <span
                       title="Imported from a CSV — no Jarvis trade plan behind it, so it has no stop or targets yet."

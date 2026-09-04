@@ -1,11 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Upload } from "lucide-react";
 
 import { ColumnMapper } from "@/components/positions/import/column-mapper";
 import { PreviewTable } from "@/components/positions/import/preview-table";
+import { PortfolioPicker } from "@/components/portfolio/portfolio-picker";
 import { parseCsv } from "@/lib/csv";
 import { MARKETS, MARKET_ORDER } from "@/lib/markets";
 import {
@@ -34,8 +35,18 @@ type Step = "upload" | "preview";
  * means the mapping UI is instant, with no round trip between choosing a file
  * and seeing whether the columns were understood.
  */
-export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
+export function ImportWizard({
+  /** The books that have already said what they are for. Every book, not just
+   *  the one in the URL — step 1 below can send this file somewhere else. */
+  booksWithObjective,
+}: {
+  booksWithObjective: string[];
+}) {
   const router = useRouter();
+  // Which book the file lands in. Asked as its own step rather than inherited
+  // from the header switcher: up to 200 positions commit at once here, which
+  // makes this the largest single thing in the app to get wrong.
+  const [portfolioId, setPortfolioId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("upload");
 
   const [fileName, setFileName] = useState("");
@@ -57,6 +68,16 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
   // The trader's own calendar, not UTC — see `localToday`.
   const [asOfDate, setAsOfDate] = useState(localToday());
   const [objective, setObjective] = useState("");
+  // Answered against the book this file is actually going into, resolved after
+  // step 1 rather than on the server before it. Null until one is chosen, which
+  // is also before this field can be reached.
+  const hasObjective = portfolioId !== null && booksWithObjective.includes(portfolioId);
+  // Read by the in-flight resolve loop, which closed over the book it started
+  // with and cannot see later state any other way.
+  const portfolioIdRef = useRef(portfolioId);
+  useEffect(() => {
+    portfolioIdRef.current = portfolioId;
+  }, [portfolioId]);
 
   const [resolved, setResolved] = useState<ResolvedImportRow[]>([]);
   const [notes, setNotes] = useState<Record<number, string>>({});
@@ -105,9 +126,9 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
   }
 
   async function resolveRows() {
-    // The button is disabled without a market; this is the guard that makes
-    // `market` non-null for the request body rather than a `!` assertion.
-    if (market === null) return;
+    // The button is disabled without a market or a book; this is the guard that
+    // makes both non-null for the request body rather than a `!` assertion.
+    if (market === null || portfolioId === null) return;
     const drafts = buildDraftRows(rawRows, mapping);
     if (drafts.length === 0) {
       setError("No rows in that file have a ticker in the column you mapped.");
@@ -121,6 +142,10 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
     setBusy(true);
     setError(null);
     setProgress({ done: 0, total: drafts.length });
+    // The book this run is FOR. Duplicate detection is per-book, so a preview
+    // is only true of the book it was resolved against; if that changes under
+    // us the result is discarded rather than shown against the new one.
+    const resolvingFor = portfolioId;
     const out: ResolvedImportRow[] = [];
     try {
       // Chunked because each row costs up to one Yahoo quote per exchange in
@@ -139,13 +164,21 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
         const res = await fetch("/api/portfolio/resolve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ market, rows: chunk, repeatedIndices }),
+          body: JSON.stringify({
+            portfolio_id: resolvingFor,
+            market,
+            rows: chunk,
+            repeatedIndices,
+          }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.error ?? "Couldn't price these holdings.");
         out.push(...(body.rows as ResolvedImportRow[]));
         setProgress({ done: Math.min(i + RESOLVE_CHUNK, drafts.length), total: drafts.length });
       }
+      // `clearPreview()` already ran on the change; returning here stops this
+      // run from putting the old book's rows back.
+      if (resolvingFor !== portfolioIdRef.current) return;
       setResolved(out);
       setStep("preview");
     } catch (err) {
@@ -162,7 +195,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
   const skipped = resolved.filter((r) => !importable.includes(r));
 
   async function commit() {
-    if (market === null) return;
+    if (market === null || portfolioId === null) return;
     setBusy(true);
     setError(null);
     try {
@@ -170,6 +203,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          portfolio_id: portfolioId,
           source_filename: fileName,
           market,
           as_of_date: asOfDate,
@@ -191,7 +225,10 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Couldn't save these holdings.");
-      router.push("/positions");
+      // Into the book the file went into, not the default. Landing on your own
+      // holdings after importing into someone else's book reads as a failed
+      // import — the rows are there, just not on the screen you were sent to.
+      router.push(`/positions?portfolio=${portfolioId}`);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -210,7 +247,39 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
           <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">
             <div>
               <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                1 · Which market is this portfolio?
+                1 · Which portfolio is this?
+              </h2>
+              <p className="mt-1 text-xs text-on-surface-variant">
+                A file commits up to {MAX_IMPORT_ROWS} positions at once, so this is asked here
+                rather than taken from whichever book you were last looking at.
+              </p>
+            </div>
+
+            <PortfolioPicker
+              value={portfolioId}
+              // Locked while a resolve is running. The chunk loop below prices
+              // against the book it started with, so changing books mid-flight
+              // would land a preview describing one book on a form that commits
+              // into another — duplicate flags and all. The loop also refuses a
+              // stale result, but that is the backstop; not offering the change
+              // is the honest control.
+              disabled={busy}
+              onChange={(id) => {
+                setPortfolioId(id);
+                // Duplicate detection is per-book since 0027 — "you already
+                // hold INFY" is a claim about ONE book — so a preview resolved
+                // against the previous choice is answering the wrong question.
+                // Same reason the market buttons clear it.
+                clearPreview();
+              }}
+              label=""
+            />
+          </section>
+
+          <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">
+            <div>
+              <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
+                2 · Which market is this portfolio?
               </h2>
               <p className="mt-1 text-xs text-on-surface-variant">
                 One market per file. The same symbol is listed in two of them at very different
@@ -257,7 +326,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
           >
             <div>
               <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                2 · The file
+                3 · The file
               </h2>
               <p className="mt-1 text-xs text-on-surface-variant">
                 Any broker&apos;s holdings export, as long as it has a ticker, a quantity and an
@@ -281,14 +350,20 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
                   type="file"
                   accept=".csv,text/csv"
                   className="hidden"
-                  disabled={busy || market === null}
+                  disabled={busy || market === null || portfolioId === null}
                   onChange={(e) => void handleFile(e.target.files?.[0])}
                 />
               </label>
-              {market === null && (
+              {portfolioId === null ? (
                 <span className="text-[11px] text-on-surface-variant/70">
-                  Pick a market first — it decides which exchanges each ticker is looked up on.
+                  Pick a portfolio first — it decides whose holdings these become.
                 </span>
+              ) : (
+                market === null && (
+                  <span className="text-[11px] text-on-surface-variant/70">
+                    Pick a market first — it decides which exchanges each ticker is looked up on.
+                  </span>
+                )
               )}
             </div>
           </section>
@@ -297,7 +372,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
             <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">
               <div>
                 <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                  3 · The columns
+                  4 · The columns
                 </h2>
                 <p className="mt-1 text-xs text-on-surface-variant">
                   {rawRows.length} row{rawRows.length === 1 ? "" : "s"} found. Change anything Jarvis
@@ -368,7 +443,7 @@ export function ImportWizard({ hasObjective }: { hasObjective: boolean }) {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                  4 · Check before anything is saved
+                  5 · Check before anything is saved
                 </h2>
                 <p className="mt-1 text-xs text-on-surface-variant">
                   Nothing has been written yet. {importable.length} to import

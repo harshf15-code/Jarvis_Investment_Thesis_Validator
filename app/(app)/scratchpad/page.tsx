@@ -1,4 +1,5 @@
 import { ScratchpadClient } from "@/components/scratchpad/scratchpad-client";
+import { pageScope, scopeParam } from "@/lib/portfolio/active";
 import { listOpenPositions } from "@/lib/queries";
 
 /**
@@ -6,8 +7,11 @@ import { listOpenPositions } from "@/lib/queries";
  */
 export const dynamic = "force-dynamic";
 
-export default async function ScratchpadPage() {
-  const rows = await listOpenPositions();
+type PageProps = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+
+export default async function ScratchpadPage({ searchParams }: PageProps) {
+  const { scope, active } = await pageScope("/scratchpad", searchParams);
+  const rows = await listOpenPositions(scope);
   // Distinct tickers, not positions: two holdings in the same name are one
   // holding as far as a pattern goes, and this has to agree with the route's
   // own minimum or the button lies about what will happen.
@@ -21,7 +25,14 @@ export default async function ScratchpadPage() {
         things you already own say about how you pick.
       </p>
       <div className="mt-6">
-        <ScratchpadClient heldTickers={heldTickers} />
+        {/* Remounts on a book switch, so the previous book's notes and reads
+            are gone the moment the heading changes rather than lingering until
+            the fetch lands. Same reason the Council client is keyed. */}
+        <ScratchpadClient
+          key={scopeParam(scope)}
+          heldTickers={heldTickers}
+          portfolio={active}
+        />
       </div>
     </div>
   );

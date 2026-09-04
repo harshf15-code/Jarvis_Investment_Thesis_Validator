@@ -9,7 +9,9 @@ import {
   unplacedTickers,
   type PatternRead,
 } from "@/lib/jarvis-scratchpad";
-import type { PortfolioPatternReadRow } from "@/lib/types";
+import { FiduciaryNote } from "@/components/portfolio/fiduciary-note";
+import { usePortfolios } from "@/components/layout/portfolio-context";
+import type { Portfolio, PortfolioPatternReadRow } from "@/lib/types";
 
 /**
  * "What Jarvis sees" — the pattern read, latest expanded and priors collapsed.
@@ -23,6 +25,7 @@ export function PatternReadPanel({
   reads,
   nextBefore,
   heldTickers,
+  portfolio,
   onRead,
   onLoadedOlder,
   onAcceptSuggestion,
@@ -30,22 +33,38 @@ export function PatternReadPanel({
   reads: PortfolioPatternReadRow[];
   nextBefore: string | null;
   heldTickers: string[];
+  /** The book being read. Null in the roll-up, where a pattern read is not
+   *  offered: a claim about the trader's taste that blends in a book run for
+   *  someone else describes a person who does not exist. */
+  portfolio: Portfolio | null;
   onRead: (read: PortfolioPatternReadRow) => void;
   onLoadedOlder: (older: PortfolioPatternReadRow[], before: string | null) => void;
   onAcceptSuggestion: (body: string, ticker: string | null) => Promise<void>;
 }) {
+  const { portfolios } = usePortfolios();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const portfolioId = portfolio?.id ?? null;
+  // Two different questions, and folding them into one hid every stored read in
+  // the roll-up behind a "you need more holdings" line that was also false.
+  // Running a read needs ONE book: a claim about the trader's taste that blends
+  // in a book run for someone else describes a person who does not exist.
+  // READING one back needs nothing — the rows are stamped with the book they
+  // judged, and the history is the record of how a taste moved.
   const enoughHoldings = heldTickers.length >= MIN_PATTERN_HOLDINGS;
+  const canRun = enoughHoldings && portfolioId !== null;
 
   async function run() {
+    if (!portfolioId) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/scratchpad/pattern", { method: "POST" });
+      const res = await fetch(`/api/scratchpad/pattern?portfolio=${portfolioId}`, {
+        method: "POST",
+      });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Couldn't read your pattern.");
       onRead(body.read);
@@ -61,7 +80,9 @@ export function PatternReadPanel({
     setLoadingMore(true);
     setError(null);
     try {
-      const res = await fetch(`/api/scratchpad/pattern?before=${encodeURIComponent(nextBefore!)}`);
+      const res = await fetch(
+        `/api/scratchpad/pattern?portfolio=${portfolioId ?? "all"}&before=${encodeURIComponent(nextBefore!)}`,
+      );
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Couldn't load older reads.");
       onLoadedOlder(body.reads ?? [], body.nextBefore ?? null);
@@ -74,6 +95,7 @@ export function PatternReadPanel({
 
   return (
     <div className="glass-panel flex flex-col gap-4 rounded-xl p-5">
+      <FiduciaryNote portfolio={portfolio} />
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
@@ -84,7 +106,7 @@ export function PatternReadPanel({
             those facts form is Jarvis&rsquo;s opinion, and it is labelled as one.
           </p>
         </div>
-        {enoughHoldings && (
+        {canRun && (
           <button
             type="button"
             onClick={run}
@@ -99,7 +121,14 @@ export function PatternReadPanel({
 
       {error && <p className="rounded-lg bg-error-container px-4 py-3 text-sm text-error">{error}</p>}
 
-      {!enoughHoldings ? (
+      {portfolioId === null && (
+        <p className="text-sm text-on-surface-variant">
+          Every book&rsquo;s reads are below. To ask for a new one, choose a single portfolio in
+          the switcher.
+        </p>
+      )}
+
+      {!enoughHoldings && reads.length === 0 ? (
         <p className="text-sm text-on-surface-variant">
           A pattern needs at least {MIN_PATTERN_HOLDINGS} different holdings to be a pattern
           rather than a coincidence. You have {heldTickers.length}. Open more positions, or
@@ -117,7 +146,17 @@ export function PatternReadPanel({
               <ReadCard
                 key={read.id}
                 read={read}
-                heldTickers={heldTickers}
+                // Null in the roll-up, where `heldTickers` is the union across
+                // books: comparing a read on one book against every book's
+                // tickers marks it stale because a different book exists.
+                heldTickers={portfolioId === null ? null : heldTickers}
+                // Named only in the roll-up, where two reads on the same day
+                // are two different books and the date alone cannot say which.
+                bookName={
+                  portfolioId === null
+                    ? (portfolios.find((p) => p.id === read.portfolio_id)?.name ?? null)
+                    : null
+                }
                 open={i === 0 || expanded === read.id}
                 onToggle={() => setExpanded(expanded === read.id ? null : read.id)}
                 onAcceptSuggestion={onAcceptSuggestion}
@@ -143,12 +182,16 @@ export function PatternReadPanel({
 function ReadCard({
   read,
   heldTickers,
+  bookName,
   open,
   onToggle,
   onAcceptSuggestion,
 }: {
   read: PortfolioPatternReadRow;
-  heldTickers: string[];
+  /** Today's tickers in this read's book, or null when no single book is on
+   *  screen and staleness therefore has nothing honest to compare against. */
+  heldTickers: string[] | null;
+  bookName: string | null;
   open: boolean;
   onToggle: () => void;
   onAcceptSuggestion: (body: string, ticker: string | null) => Promise<void>;
@@ -173,16 +216,17 @@ function ReadCard({
 
   const document: PatternRead = parsed.data;
   const reviewed = reviewedTickers(read.holdings_snapshot);
-  const stale = reviewed !== null && !sameSet(reviewed, heldTickers);
+  const stale = reviewed !== null && heldTickers !== null && !sameSet(reviewed, heldTickers);
   // Computed against what the read actually reviewed, not against today's book:
   // an old read's honesty is about the holdings it saw.
-  const unplaced = unplacedTickers(document, reviewed ?? heldTickers);
+  const unplaced = unplacedTickers(document, reviewed ?? heldTickers ?? []);
 
   return (
     <li className="rounded-lg bg-white/5 p-3">
       <button type="button" onClick={onToggle} className="flex w-full flex-col gap-1.5 text-left">
         <span className="font-mono text-[10px] tracking-wider text-on-surface-variant/60 uppercase">
           {date}
+          {bookName ? ` · ${bookName}` : ""}
         </span>
         <span className="text-sm text-on-surface">{document.headline ?? "—"}</span>
       </button>

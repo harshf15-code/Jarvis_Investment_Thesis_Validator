@@ -46,10 +46,9 @@ type Guarded =
  */
 async function guardedContext(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
   positionId: string,
 ): Promise<Guarded> {
-  const loaded = await loadHoldingContext({ supabase, userId, positionId });
+  const loaded = await loadHoldingContext({ supabase, positionId });
   if (!loaded.ok) {
     return {
       ok: false,
@@ -85,7 +84,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
   // The user's own client: RLS is what makes `id` safe to take from the URL.
   const supabase = await createClient();
-  const guard = await guardedContext(supabase, user.id, id);
+  const guard = await guardedContext(supabase, id);
   if (!guard.ok) return guard.response;
   const ctx = guard.context;
 

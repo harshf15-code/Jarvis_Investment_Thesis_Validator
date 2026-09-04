@@ -51,19 +51,54 @@ const HOLDINGS = [
 
 let saved: Record<string, unknown> | null = null;
 
+/** The book being read. Uuid-shaped: the route parses `?portfolio=`. */
+const PF1 = "11111111-1111-4111-8111-111111111111";
+
+const BOOK = {
+  id: PF1,
+  name: "My Portfolio",
+  ownership: "owned",
+  beneficiary_name: null,
+  base_currency: "INR",
+  is_default: true,
+};
+
+/** Every POST names a book — the route refuses an unscoped one. */
+const post = (scope: string = PF1) =>
+  new Request(`http://test/api/scratchpad/pattern?portfolio=${scope}`, { method: "POST" });
+
 function buildMock(
   opts: {
     positions?: typeof HOLDINGS;
     notes?: { body: string }[];
     /** Thesis input_text by thesis_id, for the same-name collapse test. */
     thesisText?: Record<string, string | null>;
+    /** `null` stands for "not this trader's book", which must 404. */
+    portfolio?: Record<string, unknown> | null;
   } = {},
 ) {
   const positions = opts.positions ?? HOLDINGS;
   return {
     from: vi.fn().mockImplementation((table: string) => {
+      if (table === "portfolios") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({
+                data: opts.portfolio === undefined ? BOOK : opts.portfolio,
+                error: null,
+              }),
+            }),
+          }),
+        };
+      }
       if (table === "positions") {
-        return { select: () => ({ in: async () => ({ data: positions, error: null }) }) };
+        // Chainable: the read now filters by book as well as status.
+        const chain: Record<string, unknown> = {
+          eq: () => chain,
+          in: async () => ({ data: positions, error: null }),
+        };
+        return { select: () => chain };
       }
       if (table === "stocks") {
         return {
@@ -102,11 +137,15 @@ function buildMock(
       }
       if (table === "scratchpad_notes") {
         return {
-          select: () => ({
-            is: () => ({
-              order: () => ({ limit: async () => ({ data: opts.notes ?? [], error: null }) }),
-            }),
-          }),
+          select: () => {
+            const chain: Record<string, unknown> = {
+              eq: () => chain,
+              is: () => chain,
+              order: () => chain,
+              limit: async () => ({ data: opts.notes ?? [], error: null }),
+            };
+            return chain;
+          },
         };
       }
       if (table === "portfolio_profiles") {
@@ -147,7 +186,7 @@ beforeEach(() => {
 
 describe("POST /api/scratchpad/pattern", () => {
   it("reads the book once and saves what it reviewed alongside the read", async () => {
-    const res = await POST();
+    const res = await POST(post());
     const body = await res.json();
 
     expect(res.status).toBe(201);
@@ -160,7 +199,7 @@ describe("POST /api/scratchpad/pattern", () => {
   });
 
   it("labels the call in the spend ledger", async () => {
-    await POST();
+    await POST(post());
     expect(ledger).toHaveLength(1);
     expect(ledger[0]).toMatchObject({ feature: "portfolio_pattern_read" });
   });
@@ -169,7 +208,7 @@ describe("POST /api/scratchpad/pattern", () => {
     vi.mocked(createClient).mockResolvedValue(
       buildMock({ notes: [{ body: "Look at power transmission." }] }) as never,
     );
-    await POST();
+    await POST(post());
 
     const prompt = vi.mocked(generateText).mock.calls[0][0].prompt as string;
     expect(prompt).toContain("Sector: Industrials — Aerospace & Defense");
@@ -179,7 +218,7 @@ describe("POST /api/scratchpad/pattern", () => {
 
   it("refuses when not signed in", async () => {
     vi.mocked(currentUser).mockResolvedValue(null as never);
-    const res = await POST();
+    const res = await POST(post());
     expect(res.status).toBe(401);
     expect(generateText).not.toHaveBeenCalled();
   });
@@ -190,7 +229,7 @@ describe("POST /api/scratchpad/pattern", () => {
       window: "daily",
       message: "Daily cap reached.",
     } as never);
-    const res = await POST();
+    const res = await POST(post());
     expect(res.status).toBe(429);
     expect(generateText).not.toHaveBeenCalled();
   });
@@ -201,7 +240,7 @@ describe("POST /api/scratchpad/pattern", () => {
       window: "unavailable",
       message: "Can't tell.",
     } as never);
-    const res = await POST();
+    const res = await POST(post());
     expect(res.status).toBe(503);
     expect(generateText).not.toHaveBeenCalled();
   });
@@ -210,7 +249,7 @@ describe("POST /api/scratchpad/pattern", () => {
     vi.mocked(createClient).mockResolvedValue(
       buildMock({ positions: HOLDINGS.slice(0, 2) }) as never,
     );
-    const res = await POST();
+    const res = await POST(post());
     expect(res.status).toBe(400);
     expect(generateText).not.toHaveBeenCalled();
     expect(saved).toBeNull();
@@ -228,7 +267,7 @@ describe("POST /api/scratchpad/pattern", () => {
         ],
       }) as never,
     );
-    const res = await POST();
+    const res = await POST(post());
     expect(res.status).toBe(400);
     expect(generateText).not.toHaveBeenCalled();
   });
@@ -239,7 +278,7 @@ describe("POST /api/scratchpad/pattern", () => {
       .mockRejectedValueOnce(new Error("Yahoo said no"))
       .mockResolvedValueOnce({ sector: null, industry: null } as never);
 
-    const res = await POST();
+    const res = await POST(post());
     expect(res.status).toBe(201);
 
     // The holding loses its sector and is told to the model as unclassified —
@@ -258,7 +297,7 @@ describe("POST /api/scratchpad/pattern", () => {
         ],
       }) as never,
     );
-    const res = await POST();
+    const res = await POST(post());
     const body = await res.json();
 
     expect(res.status).toBe(201);
@@ -268,7 +307,7 @@ describe("POST /api/scratchpad/pattern", () => {
 
   it("saves nothing when the answer cannot be validated", async () => {
     vi.mocked(generateText).mockResolvedValue({ text: "I couldn't find a pattern." } as never);
-    const res = await POST();
+    const res = await POST(post());
 
     expect(res.status).toBe(502);
     // A row that fails its own schema on the way back in would render as
@@ -278,7 +317,7 @@ describe("POST /api/scratchpad/pattern", () => {
 
   it("saves nothing when the model call itself fails", async () => {
     vi.mocked(generateText).mockRejectedValue(new Error("timed out"));
-    const res = await POST();
+    const res = await POST(post());
     expect(res.status).toBe(502);
     expect(saved).toBeNull();
   });
@@ -298,7 +337,7 @@ describe("POST /api/scratchpad/pattern", () => {
       }) as never,
     );
 
-    const res = await POST();
+    const res = await POST(post());
     const body = await res.json();
 
     expect(res.status).toBe(201);
@@ -309,7 +348,7 @@ describe("POST /api/scratchpad/pattern", () => {
     vi.mocked(generateText).mockResolvedValue(
       fenced({ ...READ, signals: [{ ...READ.signals[0], tickers: ["HAL"] }] }) as never,
     );
-    const res = await POST();
+    const res = await POST(post());
     const body = await res.json();
 
     expect(res.status).toBe(201);
@@ -330,7 +369,7 @@ describe("POST /api/scratchpad/pattern", () => {
       }) as never,
     );
 
-    await POST();
+    await POST(post());
     const prompt = vi.mocked(generateText).mock.calls[0][0].prompt as string;
     expect(prompt).toContain("The order book is the whole thesis.");
   });

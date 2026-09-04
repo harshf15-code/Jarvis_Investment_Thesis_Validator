@@ -7,6 +7,7 @@ import { isLiveMarket } from "@/lib/markets";
 import { MAX_IMPORT_ROWS } from "@/lib/portfolio-import";
 import { resolveImportRows } from "@/lib/portfolio/resolve";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requireScopedRead } from "@/lib/portfolio/active";
 import { createClient } from "@/lib/supabase/server";
 import type {
   EntryInsert,
@@ -48,6 +49,14 @@ const CommitRowSchema = z.object({
 });
 
 const CommitInputSchema = z.object({
+  /**
+   * Which book these holdings land in. Required, no default.
+   *
+   * An import is the largest single write this app makes — up to 200 positions
+   * in one commit — so it is also the largest single thing to get wrong. The
+   * wizard asks before the file is even mapped.
+   */
+  portfolio_id: z.uuid("Choose which portfolio these holdings belong to."),
   source_filename: z.string().trim().min(1).max(255),
   market: z.string(),
   as_of_date: z.iso.date("as_of_date must be a real YYYY-MM-DD date"),
@@ -95,6 +104,22 @@ export async function POST(request: Request) {
 
   const supabase = await createClient();
 
+  // Checked before anything is priced. 0027's foreign key would refuse a book
+  // that is not this trader's regardless — the key is on (portfolio_id,
+  // user_id) — but it would refuse it after up to 200 rows had been resolved
+  // over the network, and as a constraint violation rather than a sentence.
+  const { data: book, error: bookError } = await supabase
+    .from("portfolios")
+    .select("id")
+    .eq("id", input.portfolio_id)
+    .maybeSingle();
+  if (bookError) {
+    return NextResponse.json({ error: bookError.message }, { status: 500 });
+  }
+  if (!book) {
+    return NextResponse.json({ error: "Portfolio not found" }, { status: 404 });
+  }
+
   let resolved;
   try {
     resolved = await resolveImportRows(
@@ -107,6 +132,7 @@ export async function POST(request: Request) {
         date: row.date ?? null,
       })),
       market,
+      input.portfolio_id,
     );
   } catch (err) {
     return NextResponse.json(
@@ -192,6 +218,7 @@ export async function POST(request: Request) {
   const { data: batch, error: batchError } = await supabase
     .from("portfolio_imports")
     .insert({
+      portfolio_id: input.portfolio_id,
       source_filename: input.source_filename,
       market,
       as_of_date: input.as_of_date,
@@ -249,6 +276,7 @@ export async function POST(request: Request) {
     tradePlans.push({ id: tradePlanId, thesis_id: thesisId });
     positions.push({
       id: positionId,
+      portfolio_id: input.portfolio_id,
       thesis_id: thesisId,
       trade_plan_id: tradePlanId,
       stock_id: stockId,
@@ -330,7 +358,16 @@ export async function POST(request: Request) {
   if (input.objective !== undefined && input.objective.length > 0) {
     const { error: profileError } = await supabase
       .from("portfolio_profiles")
-      .upsert({ objective: input.objective, updated_at: new Date().toISOString() });
+      // Keyed on the book since 0027, so importing a second portfolio records
+      // ITS objective rather than overwriting the first one's.
+      .upsert(
+        {
+          portfolio_id: input.portfolio_id,
+          objective: input.objective,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "portfolio_id" },
+      );
     if (profileError) {
       console.error("[portfolio-import] failed to save the portfolio objective", profileError);
     }
@@ -343,12 +380,14 @@ export async function POST(request: Request) {
 }
 
 /** Past batches, newest first — the audit trail behind "what did I import?". */
-export async function GET() {
+export async function GET(request: Request) {
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("portfolio_imports")
-    .select("*")
-    .order("created_at", { ascending: false });
+  const scope = await requireScopedRead(request, supabase);
+  if (scope instanceof Response) return scope;
+
+  let query = supabase.from("portfolio_imports").select("*");
+  if (scope.mode === "one") query = query.eq("portfolio_id", scope.id);
+  const { data, error } = await query.order("created_at", { ascending: false });
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

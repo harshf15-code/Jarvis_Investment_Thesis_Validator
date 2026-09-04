@@ -143,6 +143,14 @@ export type Thesis = {
   source: ThesisSource;
   /** The CSV upload that created this thesis, when one did. */
   import_batch_id: string | null;
+  /**
+   * A short name for this idea (0028), produced by the same parse that
+   * produced `market_view`. Null on a thesis that predates 0028 and named no
+   * ticker; `lib/thesis-title.ts` is the only thing that should read it raw.
+   */
+  title: string | null;
+  /** True once the TRADER renamed it. A re-run must not overwrite a chosen name. */
+  title_edited: boolean;
 };
 
 /**
@@ -288,6 +296,14 @@ export type Position = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
   user_id: string;
+  /**
+   * The book this holding belongs to (0027).
+   *
+   * Unlike `user_id` this has no SQL default, so it is REQUIRED in the Insert
+   * type — which is what makes the compiler, rather than a test, find a write
+   * path that forgot to ask which book.
+   */
+  portfolio_id: string;
   thesis_id: string;
   trade_plan_id: string;
   stock_id: string;
@@ -422,6 +438,35 @@ export type Opportunity = {
   watching_only: boolean;
 };
 
+/** `portfolios.ownership` (0027). */
+export type PortfolioOwnership = "owned" | "managed";
+
+/**
+ * `portfolios` (0027) — one book.
+ *
+ * The grain everything below this line is scoped to. `ownership` is not a
+ * badge: a managed book is capital held for someone else, so Jarvis is told to
+ * frame advice about it differently, its output carries a fiduciary
+ * disclaimer, and it is excluded from the aggregate P&L so the trader's own
+ * net-worth number means what it says.
+ *
+ * `base_currency` is a label, not a conversion — this app holds no FX rate and
+ * the cockpit still splits totals per currency (0021).
+ */
+export type Portfolio = {
+  id: string;
+  /** Owner — see `Thesis.user_id`. */
+  user_id: string;
+  created_at: string;
+  name: string;
+  ownership: PortfolioOwnership;
+  /** Free text, and only meaningful when `ownership` is `"managed"`. */
+  beneficiary_name: string | null;
+  base_currency: string;
+  /** Where a bare URL lands. Exactly one per trader, enforced by a partial unique index. */
+  is_default: boolean;
+};
+
 /**
  * `portfolio_imports` (0020) — one row per CSV holdings upload.
  *
@@ -434,6 +479,8 @@ export type PortfolioImport = {
   id: string;
   /** Owner — see `Thesis.user_id`. */
   user_id: string;
+  /** The book these holdings were imported into (0027). */
+  portfolio_id: string;
   created_at: string;
   source_filename: string;
   /** A batch prices against exactly one market — see `lib/markets.ts`. */
@@ -459,11 +506,14 @@ export type PortfolioImportError = {
 
 /**
  * `portfolio_profiles` (0020) — what the trader is trying to do with the book
- * as a whole. Optional, one row per user, and nothing reads it yet: it is
- * collected during the import because that is the one moment a trader is
- * already thinking about their portfolio as a portfolio.
+ * as a whole. Optional, and one row per BOOK since 0027: the whole reason a
+ * managed book gets different advice is that it is being run toward a different
+ * goal. It is collected during the import because that is the one moment a
+ * trader is already thinking about their portfolio as a portfolio.
  */
 export type PortfolioProfile = {
+  /** The primary key since 0027. An objective is a property of a book. */
+  portfolio_id: string;
   user_id: string;
   objective: string | null;
   updated_at: string;
@@ -494,6 +544,8 @@ export type HoldingReviewTrigger =
 export type PortfolioCouncilReportRow = {
   id: string;
   user_id: string;
+  /** The book that was reviewed (0027). */
+  portfolio_id: string;
   created_at: string;
   document: Json;
   /** What was reviewed and at what prices, so a report cannot silently read as
@@ -513,6 +565,8 @@ export type PortfolioCouncilReportRow = {
 export type ScratchpadNote = {
   id: string;
   user_id: string;
+  /** The book this note was written against (0027). */
+  portfolio_id: string;
   created_at: string;
   updated_at: string;
   body: string;
@@ -532,6 +586,8 @@ export type ScratchpadNote = {
 export type PortfolioPatternReadRow = {
   id: string;
   user_id: string;
+  /** The book that was read (0027). */
+  portfolio_id: string;
   created_at: string;
   document: Json;
   /** Which holdings were reviewed, and how they were classified. */
@@ -583,13 +639,13 @@ export type HoldingWatchState = {
 
 export type PortfolioCouncilReportInsert = Pick<
   PortfolioCouncilReportRow,
-  "document" | "holdings_snapshot"
+  "portfolio_id" | "document" | "holdings_snapshot"
 > &
   Partial<Pick<PortfolioCouncilReportRow, "id" | "user_id" | "created_at" | "raw_llm_response">>;
 
 export type PortfolioCouncilReportUpdate = Partial<PortfolioCouncilReportInsert>;
 
-export type ScratchpadNoteInsert = Pick<ScratchpadNote, "body"> &
+export type ScratchpadNoteInsert = Pick<ScratchpadNote, "portfolio_id" | "body"> &
   Partial<
     Pick<ScratchpadNote, "id" | "user_id" | "created_at" | "updated_at" | "ticker" | "archived_at">
   >;
@@ -598,7 +654,7 @@ export type ScratchpadNoteUpdate = Partial<ScratchpadNoteInsert>;
 
 export type PortfolioPatternReadInsert = Pick<
   PortfolioPatternReadRow,
-  "document" | "holdings_snapshot"
+  "portfolio_id" | "document" | "holdings_snapshot"
 > &
   Partial<Pick<PortfolioPatternReadRow, "id" | "user_id" | "created_at" | "raw_llm_response">>;
 
@@ -651,6 +707,8 @@ export type ThesisInsert = Pick<Thesis, "input_text" | "mode" | "markets"> &
       | "selected_candidate_id"
       | "source"
       | "import_batch_id"
+      | "title"
+      | "title_edited"
     >
   >;
 
@@ -744,7 +802,7 @@ export type TradePlanInsert = Pick<TradePlan, "thesis_id"> &
 
 export type PositionInsert = Pick<
   Position,
-  "thesis_id" | "trade_plan_id" | "stock_id" | "ticker"
+  "portfolio_id" | "thesis_id" | "trade_plan_id" | "stock_id" | "ticker"
 > &
   Partial<Pick<Position, "id" | "status" | "created_at">>;
 
@@ -922,7 +980,7 @@ export type LlmBudgetStatus = {
 
 export type PortfolioImportInsert = Pick<
   PortfolioImport,
-  "source_filename" | "market" | "as_of_date" | "total_rows"
+  "portfolio_id" | "source_filename" | "market" | "as_of_date" | "total_rows"
 > &
   Partial<
     Pick<
@@ -931,7 +989,8 @@ export type PortfolioImportInsert = Pick<
     >
   >;
 
-export type PortfolioProfileInsert = Partial<Pick<PortfolioProfile, "objective" | "updated_at">>;
+export type PortfolioProfileInsert = Pick<PortfolioProfile, "portfolio_id"> &
+  Partial<Pick<PortfolioProfile, "objective" | "updated_at">>;
 
 export type StockUpdate = Partial<StockInsert>;
 export type ThesisUpdate = Partial<ThesisInsert>;
@@ -946,6 +1005,22 @@ export type IntelligenceSignalUpdate = Partial<IntelligenceSignalInsert>;
 export type OpportunityUpdate = Partial<OpportunityInsert>;
 export type PortfolioImportUpdate = Partial<PortfolioImportInsert>;
 export type PortfolioProfileUpdate = Partial<PortfolioProfileInsert>;
+
+export type PortfolioInsert = Pick<Portfolio, "name"> &
+  Partial<
+    Pick<
+      Portfolio,
+      | "id"
+      | "user_id"
+      | "created_at"
+      | "ownership"
+      | "beneficiary_name"
+      | "base_currency"
+      | "is_default"
+    >
+  >;
+
+export type PortfolioUpdate = Partial<PortfolioInsert>;
 
 export interface Database {
   public: {
@@ -989,6 +1064,12 @@ export interface Database {
         Relationships: [];
       };
       trade_plans: { Row: TradePlan; Insert: TradePlanInsert; Update: TradePlanUpdate; Relationships: [] };
+      portfolios: {
+        Row: Portfolio;
+        Insert: PortfolioInsert;
+        Update: PortfolioUpdate;
+        Relationships: [];
+      };
       positions: { Row: Position; Insert: PositionInsert; Update: PositionUpdate; Relationships: [] };
       entries: { Row: Entry; Insert: EntryInsert; Update: EntryUpdate; Relationships: [] };
       exits: { Row: Exit; Insert: ExitInsert; Update: ExitUpdate; Relationships: [] };
@@ -1103,6 +1184,7 @@ export interface Database {
       llm_feature: LlmFeature;
       thesis_source: ThesisSource;
       holding_review_trigger: HoldingReviewTrigger;
+      portfolio_ownership: PortfolioOwnership;
     };
     CompositeTypes: Record<string, never>;
   };

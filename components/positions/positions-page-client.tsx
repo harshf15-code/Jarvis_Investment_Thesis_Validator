@@ -19,7 +19,14 @@ import { PositionsTable, type PositionRow } from "./positions-table";
  * "already trimmed" and always offers the trim action: a redundant offer, not
  * a missed alert.
  */
-export function PositionsPageClient({ rows }: { rows: PositionRow[] }) {
+export function PositionsPageClient({
+  rows,
+  books,
+}: {
+  rows: PositionRow[];
+  /** Set only in the roll-up — see `PositionsTable`. */
+  books?: Map<string, { name: string; ownership: string }>;
+}) {
   const router = useRouter();
 
   // Ranked on PERCENT, not on the absolute gap. The absolute is denominated in
@@ -53,7 +60,7 @@ export function PositionsPageClient({ rows }: { rows: PositionRow[] }) {
           onLogTrim={() => router.push(`/positions/${mostUrgent.position.id}`)}
         />
       )}
-      <PositionsTable rows={rows} />
+      <PositionsTable rows={rows} books={books} />
     </>
   );
 }

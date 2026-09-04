@@ -431,6 +431,53 @@ determine. Shape:
 one sentence. Valid JSON: no trailing commas.`;
 }
 
+
+/**
+ * How a book's ownership changes what a panel is told about it.
+ *
+ * Shared by the portfolio Council and the Scratchpad pattern read, because the
+ * one thing that must not happen is the two disagreeing about whose money they
+ * are looking at. This is the second of the three things `ownership` actually
+ * does (the others being the badge and the exclusion from the aggregate total)
+ * — and it is the one that changes the answer rather than the presentation.
+ *
+ * Deliberately a briefing and not a disclaimer. A disclaimer protects the app;
+ * this changes what "should I trim this" means. Capital held for a named person
+ * who did not choose these positions and cannot be asked about them tolerates
+ * less than the trader's own money does, and a panel told nothing will assume
+ * the opposite by default — because every other book it has ever been shown was
+ * the trader's own.
+ */
+export type BookOwnership = {
+  ownership: "owned" | "managed";
+  beneficiary_name: string | null;
+};
+
+export function ownershipFraming(book: BookOwnership | null): string {
+  if (book?.ownership !== "managed") {
+    return (
+      "WHOSE MONEY THIS IS\n" +
+      "The investor's own. They chose these positions and they carry the consequences, so judge " +
+      "the construction against their stated objective and their evident appetite — not against " +
+      "what would be prudent for someone else."
+    );
+  }
+  const who = book.beneficiary_name?.trim() ? book.beneficiary_name.trim() : "someone else";
+  return (
+    "WHOSE MONEY THIS IS\n" +
+    `NOT the trader's own. This book is managed on behalf of ${who}, who did not pick these ` +
+    "positions and is not in the room to be asked about them.\n" +
+    "That changes the standard, and you should say so where it bites:\n" +
+    `- Concentration that a person might reasonably accept in their own account is harder to ` +
+    `justify in ${who}'s.\n` +
+    "- A position held on conviction alone, with no stated reason recorded, is a weaker answer " +
+    "here than it would be in the trader's own book.\n" +
+    "- Where you would say \"this is a matter of appetite\", say instead whose appetite, and " +
+    "whether it is the right one to be applying.\n" +
+    "Do not soften your read because the money belongs to a third party. Sharpen it."
+  );
+}
+
 /**
  * The shared briefing every member reads. Built once from data the route has
  * already fetched, so an N-member consult costs N model calls and zero extra
@@ -440,9 +487,15 @@ export function buildPortfolioOpinionUserContext(input: {
   books: CurrencyBook[];
   objective: string | null;
   totalPositions: number;
+  /** The book being judged. Null only where ownership is genuinely unknown. */
+  book?: BookOwnership | null;
 }): string {
   const lines: string[] = [];
 
+  // First, before the objective and before a single holding. A panel that reads
+  // the positions before it learns whose they are has already formed a view.
+  lines.push(ownershipFraming(input.book ?? null));
+  lines.push("");
   lines.push("WHAT THE INVESTOR SAYS THIS PORTFOLIO IS FOR");
   lines.push(
     input.objective?.trim()

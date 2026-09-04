@@ -2,9 +2,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { thesisTitle } from "@/lib/thesis-title";
 import type { IntelligenceSignal } from "@/lib/types";
 
-type ThesisOption = { id: string; ticker: string | null };
+type ThesisOption = { id: string; title: string | null; ticker: string | null };
 
 export function AddSignalModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [priority, setPriority] = useState<IntelligenceSignal["priority"]>("blue");
@@ -72,7 +73,7 @@ export function AddSignalModal({ onClose, onSaved }: { onClose: () => void; onSa
               <option value="">— None —</option>
               {thesisOptions.map((t) => (
                 <option key={t.id} value={t.id}>
-                  {t.ticker ?? "Macro Thesis"}
+                  {thesisTitle(t)}
                 </option>
               ))}
             </select>

@@ -3,6 +3,7 @@
 import { use } from "react";
 
 import { MemorandumView } from "@/components/thesis/memorandum-view";
+import { ThesisTitleBar } from "@/components/thesis/thesis-title-bar";
 
 /**
  * A thesis IS its memorandum. Jarvis compares the field, picks a winner, and
@@ -14,5 +15,12 @@ import { MemorandumView } from "@/components/thesis/memorandum-view";
  */
 export default function ThesisMemorandumPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  return <MemorandumView thesisId={id} />;
+  return (
+    <div className="flex flex-col gap-4">
+      {/* The IDEA's name, above the memorandum's own headline. Renaming it here
+          is what makes the thesis list readable — see `lib/thesis-title.ts`. */}
+      <ThesisTitleBar thesisId={id} />
+      <MemorandumView thesisId={id} />
+    </div>
+  );
 }

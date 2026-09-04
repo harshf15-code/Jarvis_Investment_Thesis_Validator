@@ -3,6 +3,8 @@
 import { AlertTriangle } from "lucide-react";
 
 import { CouncilDisclaimer } from "@/components/council/disclaimer";
+import { FiduciaryNote } from "@/components/portfolio/fiduciary-note";
+import type { Portfolio } from "@/lib/types";
 import {
   callsByTicker,
   portfolioCouncilTally,
@@ -31,6 +33,7 @@ export function PortfolioCouncilReportView({
   heldTickers,
   asOf,
   stale,
+  portfolio,
 }: {
   report: PortfolioCouncilReport;
   /** Every open ticker, so positions with no view still appear. */
@@ -38,6 +41,8 @@ export function PortfolioCouncilReportView({
   asOf: string | null;
   /** The book has changed since this report was written. */
   stale: boolean;
+  /** The book judged, so a managed one carries its own note. */
+  portfolio: Pick<Portfolio, "ownership" | "beneficiary_name"> | null;
 }) {
   const tally = portfolioCouncilTally(report);
   const grouped = callsByTicker(report);
@@ -53,6 +58,8 @@ export function PortfolioCouncilReportView({
           </span>
         </div>
       )}
+
+      <FiduciaryNote portfolio={portfolio} />
 
       <CouncilDisclaimer />
 
