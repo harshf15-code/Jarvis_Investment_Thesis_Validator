@@ -23,7 +23,7 @@ import {
 import { checkBudget } from "@/lib/llm/budget";
 import { meteredGenerateText } from "@/lib/llm/meter";
 import { getFundamentals, getQuote } from "@/lib/market-data";
-import { parsePortfolioParam, portfolioParamResponse, requirePortfolioScope } from "@/lib/portfolio/active";
+import { parsePortfolioParam, portfolioParamResponse, requireScopedRead } from "@/lib/portfolio/active";
 import { createClient } from "@/lib/supabase/server";
 import type { Json } from "@/lib/types";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
@@ -394,10 +394,10 @@ const HISTORY_PAGE = 20;
  * `?before=<ISO timestamp>` walks backwards from there.
  */
 export async function GET(request: Request) {
-  const scope = requirePortfolioScope(request);
+  const supabase = await createClient();
+  const scope = await requireScopedRead(request, supabase);
   if (scope instanceof Response) return scope;
 
-  const supabase = await createClient();
   const before = new URL(request.url).searchParams.get("before");
 
   let query = supabase

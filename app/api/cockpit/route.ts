@@ -167,10 +167,17 @@ export async function GET(request: Request) {
     };
   });
 
-  // The headline sums OWNED books only. A managed book is rendered beneath as
-  // its own labelled card with its own totals, never folded into the number the
-  // trader reads as their own net worth.
-  const headlineIds = new Set(ownedOnly(inScope).map((p) => p.id));
+  // In the ROLL-UP the headline sums owned books only: a managed book is
+  // somebody else's capital, and folding it into the number a trader reads as
+  // their own net worth makes that number mean something other than what it
+  // says. It is rendered beneath instead, as its own labelled card.
+  //
+  // Opening a managed book on its own is a different question, and gets a
+  // different answer. "How is the money I run for my mother doing" is the whole
+  // reason that book exists; excluding it here too left the screen showing her
+  // positions above a blank P&L, which is not caution, just a missing number.
+  const headlineBooks = scope.mode === "all" ? ownedOnly(inScope) : inScope;
+  const headlineIds = new Set(headlineBooks.map((p) => p.id));
   const headline = new Map<string, Bucket>();
   for (const [portfolioId, buckets] of perBook) {
     if (!headlineIds.has(portfolioId)) continue;

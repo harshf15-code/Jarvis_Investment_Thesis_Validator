@@ -75,11 +75,25 @@ create policy "portfolios_owner_all" on portfolios
 --
 -- Five is a product decision, not a technical limit, and raising it is a
 -- one-line change here and in `lib/portfolio/limits.ts`.
+--
+-- The advisory lock is what makes the count MEAN anything. Counting rows and
+-- then inserting is two statements, and an uncommitted row is invisible to
+-- everyone else -- so two requests from one trader who already has four books
+-- can each count four and each commit, leaving six. That is not a hypothetical
+-- ordering: the create dialog's own double-click produces it. Taking a lock
+-- keyed on the trader first serialises exactly those two, and nobody else:
+-- 0017's roster cap does not need this because its rows arrive one at a time
+-- from a single form, and this one hangs off a button that can be pressed twice.
+--
+-- Transaction-scoped, so it is released at commit or rollback with no unlock
+-- path to forget. `hashtext` of a constant namespaces it against every other
+-- advisory lock in the database.
 create or replace function public.enforce_portfolio_cap()
 returns trigger
 language plpgsql
 as $$
 begin
+  perform pg_advisory_xact_lock(hashtext('portfolios_cap'), hashtext(new.user_id::text));
   if (select count(*) from portfolios where user_id = new.user_id) >= 5 then
     raise exception 'You already have 5 portfolios. Delete one before adding another.'
       using errcode = 'check_violation';

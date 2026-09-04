@@ -27,12 +27,19 @@ const row = (over: Partial<Draft> = {}): Draft => ({
 /** The book being imported into. Uuid-shaped: the route validates it. */
 const PF1 = "11111111-1111-4111-8111-111111111111";
 
-/** `held` are the tickers the caller already holds IN THIS BOOK (0027). */
-function buildSupabaseMock(held: string[] = []) {
+/** `held` are the tickers the caller already holds IN THIS BOOK (0027).
+ *  `book` is null to stand in for a portfolio this trader cannot see. */
+function buildSupabaseMock(held: string[] = [], book: { id: string } | null = { id: PF1 }) {
   const seen: Record<string, unknown> = {};
   return {
     seen,
     from: vi.fn().mockImplementation((table: string) => {
+      if (table === "portfolios") {
+        // The route checks the book exists before pricing anything.
+        return {
+          select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: book, error: null }) }) }),
+        };
+      }
       if (table === "positions") {
         // Chainable: duplicate detection now filters by book as well as status.
         const chain: Record<string, unknown> = {
@@ -215,8 +222,22 @@ describe("POST /api/portfolio/resolve", () => {
     // A failed positions lookup would otherwise mean "nothing is a duplicate",
     // which is the wrong default for a re-upload.
     vi.mocked(createClient).mockResolvedValue({
-      from: () => ({ select: () => ({ in: async () => ({ data: null, error: { message: "boom" } }) }) }),
+      from: (table: string) =>
+        table === "portfolios"
+          ? { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: PF1 }, error: null }) }) }) }
+          : { select: () => ({ eq: () => ({ in: async () => ({ data: null, error: { message: "boom" } }) }) }) },
     } as never);
     expect((await POST(post({ rows: [row()] }))).status).toBe(500);
+  });
+
+  it("404s on a book this trader cannot see, before pricing anything", async () => {
+    // RLS hides someone else's row rather than erroring, so without the check
+    // the book simply looks empty — and every row previews as clean. A preview
+    // that exists to flag a re-upload must not answer "nothing to flag" when
+    // the truth is "wrong book".
+    vi.mocked(createClient).mockResolvedValue(buildSupabaseMock([], null) as never);
+    const res = await POST(post({ rows: [row()] }));
+    expect(res.status).toBe(404);
+    expect(vi.mocked(getQuote)).not.toHaveBeenCalled();
   });
 });

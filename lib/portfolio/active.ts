@@ -39,6 +39,52 @@ export function requirePortfolioScope(request: Request): PortfolioScope | NextRe
 }
 
 /**
+ * Refuses a scope naming a book this trader cannot see, or `null` to carry on.
+ *
+ * Parsing proves a string is uuid-SHAPED. It does not prove the book exists,
+ * and RLS hides someone else's row rather than erroring on it — so without this
+ * a deleted or foreign id reads as a book that is simply empty. Every history
+ * endpoint would answer 200 with `[]`, and the import preview would answer "no
+ * duplicates found", which is not an empty answer but a wrong one: the check
+ * that exists to stop a re-upload silently reports nothing to stop.
+ *
+ * 404 rather than 403, matching the write paths and RLS itself — refusing
+ * differently would confirm that the id exists.
+ */
+export async function requireVisibleBook(
+  supabase: Client,
+  portfolioId: string,
+): Promise<NextResponse | null> {
+  const { data, error } = await supabase
+    .from("portfolios")
+    .select("id")
+    .eq("id", portfolioId)
+    .maybeSingle();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!data) return NextResponse.json({ error: "Portfolio not found" }, { status: 404 });
+  return null;
+}
+
+/**
+ * `requirePortfolioScope` plus the existence check — what a scoped READ wants.
+ *
+ * The roll-up needs no check: it names no book, and RLS already bounds it to
+ * this trader's own.
+ */
+export async function requireScopedRead(
+  request: Request,
+  supabase: Client,
+): Promise<PortfolioScope | NextResponse> {
+  const scope = requirePortfolioScope(request);
+  if (scope instanceof NextResponse) return scope;
+  if (scope.mode === "one") {
+    const refusal = await requireVisibleBook(supabase, scope.id);
+    if (refusal) return refusal;
+  }
+  return scope;
+}
+
+/**
  * This trader's books, default first.
  *
  * RLS scopes it. Every scoped route loads this once and resolves the scope

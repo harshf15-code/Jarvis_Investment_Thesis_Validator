@@ -4,6 +4,7 @@ import { z } from "zod";
 import { currentUser } from "@/lib/auth/user";
 import { isLiveMarket } from "@/lib/markets";
 import { MAX_IMPORT_ROWS, RESOLVE_CHUNK } from "@/lib/portfolio-import";
+import { requireVisibleBook } from "@/lib/portfolio/active";
 import { resolveImportRows } from "@/lib/portfolio/resolve";
 import { createClient } from "@/lib/supabase/server";
 import type { MarketCode } from "@/lib/types";
@@ -69,6 +70,14 @@ export async function POST(request: Request) {
   }
 
   const supabase = await createClient();
+
+  // Before anything is priced. `resolveImportRows` asks this book what it
+  // already holds, so a book that is not this trader's would come back empty
+  // and every row would preview as clean — the preview's whole job is to flag
+  // a re-upload, and silently finding nothing is worse than refusing.
+  const refusal = await requireVisibleBook(supabase, portfolio_id);
+  if (refusal) return refusal;
+
   try {
     const resolved = await resolveImportRows(
       supabase,

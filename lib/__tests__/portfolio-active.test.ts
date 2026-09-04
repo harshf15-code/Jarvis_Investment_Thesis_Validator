@@ -11,6 +11,9 @@ import type { Portfolio } from "@/lib/types";
 
 const PF1 = "11111111-1111-4111-8111-111111111111";
 const PF2 = "22222222-2222-4222-8222-222222222222";
+/** Has hex LETTERS in it, unlike PF1 — the only kind of uuid whose case can
+ *  actually change, and therefore the only kind that tests the lower-casing. */
+const PF3 = "abcdef01-dead-4bee-8fad-facade123456";
 
 const owned = fakePortfolio({ id: PF1 }) as Portfolio;
 const managed = fakePortfolio({
@@ -35,8 +38,22 @@ describe("parsePortfolioParam", () => {
     expect(parsePortfolioParam(" all ")).toEqual({ mode: "all" });
   });
 
-  it("is case-insensitive about the uuid, since Postgres is", () => {
-    expect(parsePortfolioParam(PF1.toUpperCase())?.mode).toBe("one");
+  it("lower-cases a uuid so it can still be matched against a stored one", () => {
+    // `PF1.toUpperCase()` is `PF1` — it is all digits — so a test written that
+    // way passes without exercising anything. Postgres renders `uuid` in lower
+    // case and `resolveScope` matches on string equality, so an id that arrived
+    // upper-cased would parse fine and then resolve to nothing, which every
+    // route reports as a 404 on a book the trader owns.
+    expect(PF3).not.toBe(PF3.toUpperCase());
+    expect(parsePortfolioParam(PF3.toUpperCase())).toEqual({ mode: "one", id: PF3 });
+  });
+
+  it("resolves an upper-cased uuid to the book it names", () => {
+    // The assertion the parser exists to support: parse then resolve, the way
+    // every route does it.
+    const book = fakePortfolio({ id: PF3 }) as Portfolio;
+    const scope = parsePortfolioParam(PF3.toUpperCase());
+    expect(scope && resolveScope([book], scope)).toEqual([book]);
   });
 
   it("refuses a missing parameter rather than defaulting", () => {

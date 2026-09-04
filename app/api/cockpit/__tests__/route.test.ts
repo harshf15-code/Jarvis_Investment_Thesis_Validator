@@ -350,6 +350,32 @@ describe("GET /api/cockpit", () => {
     expect(body.positions).toHaveLength(2);
   });
 
+  it("gives a MANAGED book opened on its own a real headline total", async () => {
+    // The exclusion is about the ROLL-UP: a managed book must not be folded
+    // into the trader's own net worth. Opening it on its own asks a different
+    // question — "how is the money I run for my mother doing" is the whole
+    // reason that book exists — and excluding it there too left her positions
+    // on screen above a blank P&L, which is not caution, just a missing number.
+    vi.mocked(createClient).mockResolvedValue(
+      buildSupabaseMock({
+        portfolios: [OWNED, MANAGED],
+        positions: [{ ...POSITION, id: "p2", stock_id: "s2", portfolio_id: PF2 }],
+        entries: [{ position_id: "p2", quantity: 10, price: 100 }],
+        exits: [],
+        stocks: [{ id: "s2", last_price: 150, exchange: "US", currency: "USD" }],
+        trade_plans: [],
+        theses: [],
+        jarvis_recommendations: [],
+      }) as never,
+    );
+
+    const body = await (await GET(req(PF2))).json();
+
+    expect(body.totalsByCurrency).toHaveLength(1);
+    expect(body.totalsByCurrency[0].absolute).toBe(500); // (150-100)*10
+    expect(body.totalsByCurrency[0].positions).toBe(1);
+  });
+
   it("gives a single book its own byPortfolio entry so the header can name it", async () => {
     vi.mocked(createClient).mockResolvedValue(
       mock({ positions: [], jarvis_recommendations: [] }) as never,

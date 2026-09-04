@@ -14,7 +14,7 @@ import {
 import { checkBudget } from "@/lib/llm/budget";
 import { meteredGenerateText } from "@/lib/llm/meter";
 import { getSectorProfile } from "@/lib/market-data";
-import { parsePortfolioParam, portfolioParamResponse, requirePortfolioScope } from "@/lib/portfolio/active";
+import { parsePortfolioParam, portfolioParamResponse, requireScopedRead } from "@/lib/portfolio/active";
 import { createClient } from "@/lib/supabase/server";
 import type { Json } from "@/lib/types";
 
@@ -245,11 +245,11 @@ export async function POST(request: Request) {
 /** History, newest first, cursor-paged. RLS scopes it to the trader; the
  *  parameter scopes it to a book. */
 export async function GET(request: Request) {
-  const scope = requirePortfolioScope(request);
+  const supabase = await createClient();
+  const scope = await requireScopedRead(request, supabase);
   if (scope instanceof Response) return scope;
 
   const before = new URL(request.url).searchParams.get("before");
-  const supabase = await createClient();
 
   let query = supabase
     .from("portfolio_pattern_reads")

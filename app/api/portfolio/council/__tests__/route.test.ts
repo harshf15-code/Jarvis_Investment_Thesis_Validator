@@ -24,7 +24,7 @@ import { currentUser } from "@/lib/auth/user";
 import { checkBudget } from "@/lib/llm/budget";
 import { getFundamentals, getQuote } from "@/lib/market-data";
 import { createClient } from "@/lib/supabase/server";
-import { POST } from "../route";
+import { GET, POST } from "../route";
 
 const MEMBER_IDS = [
   "11111111-1111-4111-8111-111111111111",
@@ -461,5 +461,30 @@ describe("spend guard", () => {
     } as never);
     expect((await POST(post())).status).toBe(503);
     expect(generateText).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/portfolio/council", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+  });
+
+  it("refuses a read that does not say which portfolio", async () => {
+    vi.mocked(createClient).mockResolvedValue(buildMock() as never);
+    const res = await GET(new Request("http://test/api/portfolio/council"));
+    expect(res.status).toBe(400);
+  });
+
+  it("404s on a book this trader cannot see, rather than an empty history", async () => {
+    // A uuid that parses is not a book that exists. RLS hides someone else's
+    // row instead of erroring, so without the check a deleted or foreign id
+    // reads as a book that simply never had a consult — a 200 saying "nothing
+    // here" about a question that was never valid.
+    vi.mocked(createClient).mockResolvedValue(buildMock({ portfolio: null }) as never);
+    const res = await GET(
+      new Request("http://test/api/portfolio/council?portfolio=99999999-9999-4999-8999-999999999999"),
+    );
+    expect(res.status).toBe(404);
   });
 });

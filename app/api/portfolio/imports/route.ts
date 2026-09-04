@@ -7,7 +7,7 @@ import { isLiveMarket } from "@/lib/markets";
 import { MAX_IMPORT_ROWS } from "@/lib/portfolio-import";
 import { resolveImportRows } from "@/lib/portfolio/resolve";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requirePortfolioScope } from "@/lib/portfolio/active";
+import { requireScopedRead } from "@/lib/portfolio/active";
 import { createClient } from "@/lib/supabase/server";
 import type {
   EntryInsert,
@@ -381,10 +381,10 @@ export async function POST(request: Request) {
 
 /** Past batches, newest first — the audit trail behind "what did I import?". */
 export async function GET(request: Request) {
-  const scope = requirePortfolioScope(request);
+  const supabase = await createClient();
+  const scope = await requireScopedRead(request, supabase);
   if (scope instanceof Response) return scope;
 
-  const supabase = await createClient();
   let query = supabase.from("portfolio_imports").select("*");
   if (scope.mode === "one") query = query.eq("portfolio_id", scope.id);
   const { data, error } = await query.order("created_at", { ascending: false });

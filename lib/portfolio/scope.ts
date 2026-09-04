@@ -29,12 +29,20 @@ export const PORTFOLIO_PARAM_ERROR =
 export const PORTFOLIO_WRITE_SCOPE_ERROR =
   "Choose one portfolio. Something can be recorded in a book, but not in a roll-up of several.";
 
-/** `null` when the parameter is missing or malformed — the caller returns a 400. */
+/**
+ * `null` when the parameter is missing or malformed — the caller returns a 400.
+ *
+ * A valid uuid is LOWER-CASED on the way through. Postgres renders `uuid` in
+ * lower case, and `resolveScope` matches on string equality, so an id that
+ * arrived upper-cased — from a hand-typed URL, or anything that upper-cases
+ * hex — would parse cleanly and then resolve to nothing, which the routes
+ * report as a 404 on a book the trader owns.
+ */
 export function parsePortfolioParam(raw: string | null): PortfolioScope | null {
   if (raw === null) return null;
   const value = raw.trim();
   if (value === ALL_PORTFOLIOS) return { mode: "all" };
-  if (UUID.test(value)) return { mode: "one", id: value };
+  if (UUID.test(value)) return { mode: "one", id: value.toLowerCase() };
   return null;
 }
 
