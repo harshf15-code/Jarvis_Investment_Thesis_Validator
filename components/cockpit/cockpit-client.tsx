@@ -99,17 +99,26 @@ export function CockpitClient({ scopeParam }: { scopeParam: string }) {
   // reading as "everything I have" when it deliberately is not.
   const managed = data.byPortfolio.filter((b) => b.portfolio.ownership === "managed");
 
-  // Spec Section 5: the freshest quote behind anything on this screen, stamped
-  // in its own exchange's timezone. Prices are never polled — this reflects
-  // whatever the last on-demand refresh stored.
-  const freshest = data.positions.reduce<PositionRow | null>(
-    (latest, row) =>
-      row.stock?.last_price_at &&
-      (!latest?.stock?.last_price_at || row.stock.last_price_at > latest.stock.last_price_at)
-        ? row
-        : latest,
-    null,
-  );
+  // Spec Section 5: the freshest quote behind this screen, stamped in its own
+  // exchange's timezone.
+  //
+  // Split by asset class, and that split is the point. Coins are polled hourly
+  // every day of the week; equities are not polled at all outside a session.
+  // One combined stamp would be the coin's on any screen holding one, and
+  // would present a Friday-evening equity price as minutes old right through
+  // the weekend — a price that is three days stale, labelled fresh, next to a
+  // stop-loss decision. Two stamps say two true things instead of one false one.
+  const freshestOf = (rows: PositionRow[]) =>
+    rows.reduce<PositionRow | null>(
+      (latest, row) =>
+        row.stock?.last_price_at &&
+        (!latest?.stock?.last_price_at || row.stock.last_price_at > latest.stock.last_price_at)
+          ? row
+          : latest,
+      null,
+    );
+  const freshest = freshestOf(data.positions.filter((r) => r.stock?.asset_class !== "crypto"));
+  const freshestCoin = freshestOf(data.positions.filter((r) => r.stock?.asset_class === "crypto"));
 
   return (
     <div>
@@ -207,6 +216,11 @@ export function CockpitClient({ scopeParam }: { scopeParam: string }) {
             <LastUpdated
               at={freshest?.stock?.last_price_at ?? null}
               exchange={freshest?.stock?.exchange ?? "NSE"}
+            />
+            <LastUpdated
+              at={freshestCoin?.stock?.last_price_at ?? null}
+              exchange="CRYPTO"
+              label="Coins"
             />
           </div>
           <Link href={`/positions?portfolio=${scopeParam}`} className="text-xs text-primary underline">

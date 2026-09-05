@@ -18,6 +18,7 @@ function holding(over: Partial<CouncilHolding> = {}): CouncilHolding {
     ticker: "INFY",
     companyName: "Infosys",
     currency: "INR",
+    assetClass: "equity",
     quantity: 10,
     averagePrice: 1400,
     currentPrice: 1200,
@@ -363,5 +364,123 @@ describe("tally and grouping", () => {
       { member: "A", call: "TRIM", reason: "Half the book." },
       { member: "B", call: "ADD", reason: "cheap" },
     ]);
+  });
+});
+
+describe("asset-class exposure", () => {
+  const btc = () =>
+    holding({
+      ticker: "BTC",
+      companyName: "Bitcoin",
+      assetClass: "crypto",
+      quantity: 1,
+      averagePrice: 5_000_000,
+      currentPrice: 7_500_000,
+    });
+  // 10 x 1200 = 12,000 INR of equity against 7,500,000 of BTC.
+  const infy = () => holding({ currentPrice: 1200, quantity: 10 });
+
+  it("reports each asset class's share of the sub-book", () => {
+    const [book] = splitByCurrency([infy(), btc()]);
+    const crypto = book.exposure.find((e) => e.assetClass === "crypto");
+    const equity = book.exposure.find((e) => e.assetClass === "equity");
+    expect(crypto?.pct).toBeCloseTo((7_500_000 / 7_512_000) * 100, 4);
+    expect(equity?.pct).toBeCloseTo((12_000 / 7_512_000) * 100, 4);
+  });
+
+  it("orders it biggest first", () => {
+    const [book] = splitByCurrency([infy(), btc()]);
+    expect(book.exposure.map((e) => e.assetClass)).toEqual(["crypto", "equity"]);
+  });
+
+  it("computes it WITHIN a currency, never across two", () => {
+    // There is no honest total across INR and USD without an exchange rate
+    // this app does not hold. A cross-currency asset-class percentage would be
+    // the one number in the prompt that quietly required an FX assumption.
+    const books = splitByCurrency([infy(), holding({ ticker: "AAPL", currency: "USD", currentPrice: 200 })]);
+    expect(books).toHaveLength(2);
+    for (const b of books) {
+      expect(b.exposure).toEqual([{ assetClass: "equity", marketValue: expect.any(Number), pct: 100 }]);
+    }
+  });
+
+  it("excludes an unpriced holding, exactly as weights do", () => {
+    const [book] = splitByCurrency([infy(), btc(), holding({ ticker: "TCS", currentPrice: null })]);
+    const total = book.exposure.reduce((sum, e) => sum + e.pct, 0);
+    expect(total).toBeCloseTo(100, 6);
+  });
+
+  it("reports nothing when nothing in the sub-book would price", () => {
+    const [book] = splitByCurrency([holding({ currentPrice: null })]);
+    expect(book.exposure).toEqual([]);
+  });
+
+  it("puts the exposure in the prompt, above the holdings", () => {
+    const prompt = buildPortfolioOpinionUserContext({
+      books: splitByCurrency([infy(), btc()]),
+      objective: "Retirement in twenty years.",
+      totalPositions: 2,
+    });
+    expect(prompt).toMatch(/Asset-class exposure: 99.8% crypto, 0.2% equities/);
+    expect(prompt.indexOf("Asset-class exposure")).toBeLessThan(prompt.indexOf("- BTC"));
+  });
+
+  it("tells the panel a coin has no fundamentals to fault it for", () => {
+    // The single most useful thing a Council can say about a book holding
+    // crypto is how much of it is crypto -- not that the coin lacks a P/E.
+    const prompt = buildPortfolioOpinionUserContext({
+      books: splitByCurrency([infy(), btc()]),
+      objective: null,
+      totalPositions: 2,
+    });
+    expect(prompt).toMatch(/do not fault it for lacking one/);
+    expect(prompt).toMatch(/Asset class: cryptocurrency/);
+  });
+
+  it("says nothing about crypto in an all-equity book", () => {
+    const prompt = buildPortfolioOpinionUserContext({
+      books: splitByCurrency([infy(), holding({ ticker: "TCS", currentPrice: 3000 })]),
+      objective: null,
+      totalPositions: 2,
+    });
+    expect(prompt).not.toMatch(/cryptocurrency/i);
+    expect(prompt).toMatch(/Asset-class exposure: 100.0% equities/);
+  });
+});
+
+describe("aggregateByListing — asset class in the key", () => {
+  it("keeps a coin and an equity with the same ticker apart", () => {
+    // Not hypothetical: a spot-Bitcoin trust can list under the very symbol its
+    // coin uses. Collapsed, the row's quantity adds coin units to share counts,
+    // its price is whichever leg priced first, and its asset class is whichever
+    // was seen first — market value, weight and exposure all wrong at once.
+    const rows = aggregateByListing([
+      holding({ ticker: "BTC", currency: "USD", assetClass: "crypto", quantity: 2, currentPrice: 90_000 }),
+      holding({ ticker: "BTC", currency: "USD", assetClass: "equity", quantity: 100, currentPrice: 60 }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.assetClass === "crypto")?.quantity).toBe(2);
+    expect(rows.find((r) => r.assetClass === "equity")?.quantity).toBe(100);
+  });
+
+  it("still merges two positions in the SAME coin", () => {
+    // The whole purpose of aggregation is unchanged: one listing, one row.
+    const rows = aggregateByListing([
+      holding({ ticker: "BTC", currency: "INR", assetClass: "crypto", quantity: 1, averagePrice: 100 }),
+      holding({ ticker: "BTC", currency: "INR", assetClass: "crypto", quantity: 3, averagePrice: 200 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].quantity).toBe(4);
+  });
+
+  it("weighs the collision correctly once separated", () => {
+    const [book] = splitByCurrency(
+      aggregateByListing([
+        holding({ ticker: "BTC", currency: "USD", assetClass: "crypto", quantity: 1, currentPrice: 90_000 }),
+        holding({ ticker: "BTC", currency: "USD", assetClass: "equity", quantity: 100, currentPrice: 100 }),
+      ]),
+    );
+    const crypto = book.exposure.find((e) => e.assetClass === "crypto");
+    expect(crypto?.pct).toBeCloseTo(90, 6);
   });
 });

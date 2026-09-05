@@ -18,10 +18,12 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 vi.mock("@/lib/market-data", () => ({ getQuote: vi.fn(), getFundamentals: vi.fn() }));
+vi.mock("@/lib/crypto-data", () => ({ getCryptoPrices: vi.fn() }));
 
 import { generateText } from "ai";
 import { currentUser } from "@/lib/auth/user";
 import { checkBudget } from "@/lib/llm/budget";
+import { getCryptoPrices } from "@/lib/crypto-data";
 import { getFundamentals, getQuote } from "@/lib/market-data";
 import { createClient } from "@/lib/supabase/server";
 import { GET, POST } from "../route";
@@ -58,6 +60,10 @@ function buildMock(
     exits?: { position_id: string; quantity: number }[];
     tickers?: string[];
     currencies?: string[];
+    /** Positions at these indices are coins, priced through CoinGecko. */
+    coinAt?: number[];
+    /** Force a mismatched row shape, to prove routing does not rely on 0031. */
+    mismatch?: "crypto-without-id" | "equity-with-id";
     /** `null` stands for "not this trader's book", which must 404. */
     portfolio?: Record<string, unknown> | null;
   } = {},
@@ -98,13 +104,33 @@ function buildMock(
         return {
           select: () => ({
             in: async () => ({
-              data: positions.map((p, i) => ({
-                id: p.stock_id,
-                ticker: p.ticker,
-                yahoo_symbol: `${p.ticker}.NS`,
-                currency: opts.currencies?.[i] ?? (i === 0 ? "INR" : "USD"),
-                last_price: 1000,
-              })),
+              data: positions.map((p, i) => {
+                const isCoin = (opts.coinAt ?? []).includes(i);
+                const mismatched = opts.mismatch != null && i === 1;
+                return {
+                  id: p.stock_id,
+                  ticker: p.ticker,
+                  yahoo_symbol: isCoin
+                    ? `coingecko:${p.ticker.toLowerCase()}:inr`
+                    : `${p.ticker}.NS`,
+                  currency: opts.currencies?.[i] ?? (i === 0 ? "INR" : "USD"),
+                  last_price: 1000,
+                  coingecko_id: mismatched
+                    ? opts.mismatch === "equity-with-id"
+                      ? p.ticker.toLowerCase()
+                      : null
+                    : isCoin
+                      ? p.ticker.toLowerCase()
+                      : null,
+                  asset_class: mismatched
+                    ? opts.mismatch === "crypto-without-id"
+                      ? "crypto"
+                      : "equity"
+                    : isCoin
+                      ? "crypto"
+                      : "equity",
+                };
+              }),
               error: null,
             }),
           }),
@@ -232,6 +258,7 @@ describe("POST /api/portfolio/council", () => {
       price: 1200, asOf: new Date(), name: "A Company", currency: "INR",
     } as never);
     vi.mocked(getFundamentals).mockResolvedValue({ trailingPE: 20 } as never);
+    vi.mocked(getCryptoPrices).mockResolvedValue(new Map() as never);
     vi.mocked(generateText).mockImplementation(async (args) =>
       ((args.system as string).includes("summarising") ? fenced(SYNTHESIS) : fenced(OPINION)) as never,
     );
@@ -486,5 +513,118 @@ describe("GET /api/portfolio/council", () => {
       new Request("http://test/api/portfolio/council?portfolio=99999999-9999-4999-8999-999999999999"),
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/portfolio/council — crypto", () => {
+  /** The prompt the panel actually received. */
+  const promptSent = () =>
+    vi.mocked(generateText).mock.calls.map((c) => JSON.stringify(c[0])).join("\n");
+
+  beforeEach(() => {
+    // This describe is a sibling of the one above, so none of its setup runs
+    // here. Repeated rather than hoisted: the two blocks differ in exactly
+    // the client and the price map, and sharing a mutable setup between them
+    // is how one test starts depending on another's leftovers.
+    vi.clearAllMocks();
+    saved = null;
+    ledger.length = 0;
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+    vi.mocked(checkBudget).mockResolvedValue({ ok: true } as never);
+    vi.mocked(getQuote).mockResolvedValue({
+      price: 1200, asOf: new Date(), name: "A Company", currency: "INR",
+    } as never);
+    vi.mocked(getFundamentals).mockResolvedValue({ trailingPE: 20 } as never);
+    vi.mocked(generateText).mockImplementation(async (args) =>
+      ((args.system as string).includes("summarising") ? fenced(SYNTHESIS) : fenced(OPINION)) as never,
+    );
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({ positions: 2, currencies: ["INR", "INR"], coinAt: [1] }) as never,
+    );
+    vi.mocked(getCryptoPrices).mockResolvedValue(
+      new Map([["t1", { price: 7_500_000, asOf: new Date("2026-09-05T00:00:00Z") }]]) as never,
+    );
+  });
+
+  it("prices a coin through CoinGecko, not through Yahoo", async () => {
+    // Before this, getQuote was handed the synthetic coingecko:<id>:<currency>
+    // symbol, failed, and every coin reached the panel as "price UNAVAILABLE"
+    // with a null weight -- the one holding an exposure read is about.
+    await POST(post());
+    expect(getCryptoPrices).toHaveBeenCalledWith(["t1"], "INR");
+    // The equity leg still goes to Yahoo; the coin never does.
+    expect(vi.mocked(getQuote).mock.calls.flat()).not.toContain("coingecko:t1:inr");
+    expect(getQuote).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks Yahoo for no fundamentals on a coin", async () => {
+    // A coin has none. Asking anyway spends a request per coin, every consult,
+    // to receive nothing.
+    await POST(post());
+    expect(getFundamentals).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives the panel the asset-class exposure of the book", async () => {
+    await POST(post());
+    expect(promptSent()).toMatch(/Asset-class exposure/);
+  });
+
+  it("still consults when CoinGecko is down, with the coin unpriced", async () => {
+    // Same rule as a failed Yahoo quote: the holding is shown with its number
+    // marked unavailable. Dropping it would flatter the weights of the rest.
+    vi.mocked(getCryptoPrices).mockRejectedValue(new Error("429"));
+    const res = await POST(post());
+    expect(res.status).toBe(201);
+    expect(promptSent()).toMatch(/UNAVAILABLE/);
+  });
+
+  it("asks CoinGecko once per currency, not once per coin", async () => {
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({ positions: 2, currencies: ["INR", "INR"], coinAt: [0, 1] }) as never,
+    );
+    await POST(post());
+    expect(getCryptoPrices).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/portfolio/council — price routing", () => {
+  // 0031 makes both shapes below unrepresentable in the database. These tests
+  // exist anyway: the branch should ask the question it means, so that the
+  // constraint is defence in depth rather than the only thing holding the
+  // behaviour up.
+  const setup = (mismatch: "crypto-without-id" | "equity-with-id") => {
+    vi.clearAllMocks();
+    saved = null;
+    ledger.length = 0;
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+    vi.mocked(checkBudget).mockResolvedValue({ ok: true } as never);
+    vi.mocked(getQuote).mockResolvedValue({
+      price: 1200, asOf: new Date(), name: "A Company", currency: "INR",
+    } as never);
+    vi.mocked(getFundamentals).mockResolvedValue({ trailingPE: 20 } as never);
+    vi.mocked(getCryptoPrices).mockResolvedValue(new Map() as never);
+    vi.mocked(generateText).mockImplementation(async (args) =>
+      ((args.system as string).includes("summarising") ? fenced(SYNTHESIS) : fenced(OPINION)) as never,
+    );
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({ positions: 2, currencies: ["INR", "INR"], mismatch }) as never,
+    );
+  };
+
+  it("never sends a synthetic symbol to Yahoo, even with no CoinGecko id", async () => {
+    // Routing on Boolean(coingecko_id) would call it an equity and hand Yahoo
+    // `coingecko:t1:inr`.
+    setup("crypto-without-id");
+    await POST(post());
+    expect(vi.mocked(getQuote).mock.calls.flat()).not.toContain("coingecko:t1:inr");
+  });
+
+  it("does not ask CoinGecko about an equity that carries an id", async () => {
+    // The mirror image: routing on the id alone would skip Yahoo entirely and
+    // leave a real share unpriced.
+    setup("equity-with-id");
+    await POST(post());
+    expect(getCryptoPrices).not.toHaveBeenCalled();
+    expect(vi.mocked(getQuote).mock.calls.flat()).toContain("T1.NS");
   });
 });

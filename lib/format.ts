@@ -49,6 +49,11 @@ export function formatCurrency(value: number, currency: string): string {
  * timezone (UTC on Vercel), not anything timezone-meaningful to the user.
  */
 export function exchangeTimeZone(exchange: ExchangeCode): string {
+  // CRYPTO has no exchange and no session, so there is no "its own timezone"
+  // to render it in. It falls to the app's default deliberately rather than by
+  // accident: UTC would be the more literal answer for a global asset, but it
+  // would put one clock on this screen that matches no other timestamp the
+  // trader reads, which is a worse way to be right.
   return exchange === "US" ? "America/New_York" : "Asia/Kolkata";
 }
 

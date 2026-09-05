@@ -209,6 +209,7 @@ const holding = (over: Partial<PatternHolding> = {}): PatternHolding => ({
   ticker: "HAL",
   companyName: "Hindustan Aeronautics",
   source: "imported",
+  assetClass: "equity",
   sector: "Industrials",
   industry: "Aerospace & Defense",
   rationale: "Defence order book and the capex cycle.",
@@ -281,5 +282,87 @@ describe("buildPatternReadUserContext", () => {
       today: "2026-09-01",
     });
     expect(prompt).not.toContain("SCRATCHPAD NOTES");
+  });
+});
+
+describe("pattern read — asset class", () => {
+  const coin = () => holding({ ticker: "BTC", companyName: "Bitcoin", assetClass: "crypto", sector: null, industry: null });
+
+  it("names the asset class instead of reporting a missing sector", () => {
+    // "Not classified" reads as a data failure. For a coin it is not a
+    // failure, and a read that treats it as one will report a gap that is not
+    // there.
+    const prompt = buildPatternReadUserContext({
+      holdings: [coin()],
+      objective: null,
+      notes: [],
+      today: "2026-09-05",
+    });
+    expect(prompt).toMatch(/Asset class: cryptocurrency/);
+    expect(prompt).not.toMatch(/not classified by the data source/);
+  });
+
+  it("counts the mix, and says plainly that it is a count", () => {
+    // This read has no prices and no quantities. A percentage here would have
+    // to be invented, and an invented number in a prompt is indistinguishable
+    // from a measured one by the time it reaches the output.
+    const prompt = buildPatternReadUserContext({
+      holdings: [holding(), coin()],
+      objective: null,
+      notes: [],
+      today: "2026-09-05",
+    });
+    expect(prompt).toMatch(/1 of these is a cryptocurrency, and 1 is an equity/);
+    expect(prompt).toMatch(/not shares of the money/);
+  });
+
+  it("still reports a real sector for an equity", () => {
+    const prompt = buildPatternReadUserContext({
+      holdings: [holding()],
+      objective: null,
+      notes: [],
+      today: "2026-09-05",
+    });
+    expect(prompt).toMatch(/Sector: Industrials/);
+  });
+
+  it("says nothing about asset class in an all-equity book", () => {
+    const prompt = buildPatternReadUserContext({
+      holdings: [holding(), holding({ ticker: "VBL" })],
+      objective: null,
+      notes: [],
+      today: "2026-09-05",
+    });
+    expect(prompt).not.toMatch(/cryptocurrenc/i);
+  });
+});
+
+describe("pattern read — an all-crypto book", () => {
+  const coin = (over = {}) =>
+    holding({ ticker: "BTC", assetClass: "crypto", sector: null, industry: null, ...over });
+
+  it("never tells an all-crypto book it also holds shares", () => {
+    // Told "0 are equities" and then that they hold coins "alongside shares",
+    // the model has a contradiction inside a block the prompt labels as fact.
+    const prompt = buildPatternReadUserContext({
+      holdings: [coin(), coin({ ticker: "ETH" })],
+      objective: null,
+      notes: [],
+      today: "2026-09-05",
+    });
+    expect(prompt).toMatch(/2 of these are cryptocurrencies, and 0 are equities/);
+    expect(prompt).not.toMatch(/alongside shares/);
+    expect(prompt).toMatch(/entirely crypto/);
+  });
+
+  it("still says \"alongside shares\" when there IS a mix", () => {
+    const prompt = buildPatternReadUserContext({
+      holdings: [holding(), coin()],
+      objective: null,
+      notes: [],
+      today: "2026-09-05",
+    });
+    expect(prompt).toMatch(/alongside shares/);
+    expect(prompt).not.toMatch(/entirely crypto/);
   });
 });

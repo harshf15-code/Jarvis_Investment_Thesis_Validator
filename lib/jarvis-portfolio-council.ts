@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { extractTrailingJsonBlock } from "@/lib/jarvis-thesis-parser";
 import { COUNCIL_DISCLAIMER } from "@/lib/jarvis-council";
+import type { AssetClass } from "@/lib/types";
 
 /**
  * The Investment Council consulted on the WHOLE BOOK.
@@ -107,6 +108,9 @@ export type CouncilHolding = {
   ticker: string;
   companyName: string | null;
   currency: string;
+  /** Equity or coin. Drives the exposure block, and is why a coin arrives with
+   *  no fundamentals rather than with an empty-looking set of them. */
+  assetClass: AssetClass;
   quantity: number;
   averagePrice: number;
   /** Freshly fetched. Null when the listing would not price at consult time. */
@@ -122,6 +126,9 @@ export type CurrencyBook = {
   currency: string;
   costBasis: number;
   marketValue: number;
+  /** Share of this sub-book's market value by asset class, biggest first.
+   *  Empty when nothing in the sub-book would price. */
+  exposure: { assetClass: AssetClass; marketValue: number; pct: number }[];
   holdings: (CouncilHolding & {
     /** Share of THIS currency's book by market value, 0-100. */
     weightPct: number | null;
@@ -143,7 +150,15 @@ export function aggregateByListing(holdings: CouncilHolding[]): CouncilHolding[]
   for (const h of holdings) {
     // Currency is part of the key: the same ticker on two markets is two
     // different instruments, which is the whole reason a batch names one.
-    const key = `${h.ticker.toUpperCase()}|${h.currency}`;
+    //
+    // Asset class is part of it for the same reason, and the collision is not
+    // hypothetical: a spot-Bitcoin trust can list under the very symbol its
+    // coin uses. Without this, one USD book holding both collapses them into a
+    // single row whose quantity adds coin units to share counts, whose price is
+    // whichever leg priced first, and whose asset class is whichever leg was
+    // seen first — a market value, a weight and an exposure figure all wrong at
+    // once, with nothing on screen to suggest it.
+    const key = `${h.ticker.toUpperCase()}|${h.currency}|${h.assetClass}`;
     byKey.set(key, [...(byKey.get(key) ?? []), h]);
   }
 
@@ -180,6 +195,39 @@ export function aggregateByListing(holdings: CouncilHolding[]): CouncilHolding[]
  * weight — it is still listed, because a position nobody can value is a fact
  * about the book worth seeing.
  */
+/**
+ * What share of one sub-book sits in each asset class.
+ *
+ * Computed WITHIN a currency for the same reason weights are: there is no
+ * honest total across INR and USD without an exchange rate this app does not
+ * hold. A cross-currency asset-class percentage would be the one number in the
+ * whole prompt that quietly required an FX assumption.
+ *
+ * Unpriced holdings contribute nothing, exactly as they contribute no weight.
+ * The percentages therefore describe the priced part of the book, and the
+ * prompt says so rather than letting the panel read them as the whole.
+ */
+function exposureByAssetClass(
+  list: CouncilHolding[],
+  valueOf: (h: CouncilHolding) => number | null,
+  marketValue: number,
+): { assetClass: AssetClass; marketValue: number; pct: number }[] {
+  if (marketValue <= 0) return [];
+  const totals = new Map<AssetClass, number>();
+  for (const h of list) {
+    const value = valueOf(h);
+    if (value === null) continue;
+    totals.set(h.assetClass, (totals.get(h.assetClass) ?? 0) + value);
+  }
+  return [...totals.entries()]
+    .map(([assetClass, value]) => ({
+      assetClass,
+      marketValue: value,
+      pct: (value / marketValue) * 100,
+    }))
+    .sort((a, b) => b.marketValue - a.marketValue);
+}
+
 export function splitByCurrency(holdings: CouncilHolding[]): CurrencyBook[] {
   const books = new Map<string, CouncilHolding[]>();
   for (const holding of holdings) {
@@ -198,6 +246,7 @@ export function splitByCurrency(holdings: CouncilHolding[]): CurrencyBook[] {
         currency,
         costBasis,
         marketValue,
+        exposure: exposureByAssetClass(list, valueOf, marketValue),
         holdings: list
           .map((h) => {
             const value = valueOf(h);
@@ -483,6 +532,11 @@ export function ownershipFraming(book: BookOwnership | null): string {
  * already fetched, so an N-member consult costs N model calls and zero extra
  * market-data lookups.
  */
+const ASSET_CLASS_LABEL: Record<AssetClass, string> = {
+  equity: "equities",
+  crypto: "crypto",
+};
+
 export function buildPortfolioOpinionUserContext(input: {
   books: CurrencyBook[];
   objective: string | null;
@@ -520,9 +574,27 @@ export function buildPortfolioOpinionUserContext(input: {
       `--- ${book.currency} sub-book — ${book.holdings.length} position${book.holdings.length === 1 ? "" : "s"}, ` +
         `cost basis ${round(book.costBasis)} ${book.currency}, market value ${round(book.marketValue)} ${book.currency} ---`,
     );
+    if (book.exposure.length > 0) {
+      lines.push(
+        `  Asset-class exposure: ${book.exposure
+          .map((e) => `${e.pct.toFixed(1)}% ${ASSET_CLASS_LABEL[e.assetClass]}`)
+          .join(", ")}. This is a share of what PRICED, not of every position.`,
+      );
+      if (book.exposure.some((e) => e.assetClass === "crypto")) {
+        lines.push(
+          "  Crypto here is a holding, not a thesis this app researched: there are no " +
+            "fundamentals behind a coin and none are shown for one. Judge it as an " +
+            "exposure and a size — how much of this sub-book sits in one volatile " +
+            "asset class, and whether that size matches what they say the money is for. " +
+            "Do not invent a valuation case for a coin, and do not fault it for lacking one.",
+        );
+      }
+    }
+
     for (const h of book.holdings) {
       lines.push("");
       lines.push(`- ${h.ticker}${h.companyName ? ` (${h.companyName})` : ""}`);
+      if (h.assetClass === "crypto") lines.push("  Asset class: cryptocurrency.");
       lines.push(
         `  Weight in this sub-book: ${h.weightPct === null ? "UNKNOWN — this holding would not price" : `${h.weightPct.toFixed(1)}%`}`,
       );
