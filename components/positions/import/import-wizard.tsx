@@ -279,11 +279,12 @@ export function ImportWizard({
           <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">
             <div>
               <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                2 · Which market is this portfolio?
+                2 · What is in this file?
               </h2>
               <p className="mt-1 text-xs text-on-surface-variant">
                 One market per file. The same symbol is listed in two of them at very different
-                prices in different currencies, so this is asked, never guessed.
+                prices in different currencies, so this is asked, never guessed. Crypto prices in
+                whatever currency the portfolio you picked is kept in.
               </p>
             </div>
 

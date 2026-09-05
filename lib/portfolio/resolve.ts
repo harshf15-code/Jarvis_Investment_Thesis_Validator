@@ -1,4 +1,5 @@
 import { MAX_CONCURRENT_QUOTES, mapWithConcurrency } from "@/lib/concurrency";
+import { cryptoStockKey, getCryptoPrices } from "@/lib/crypto-data";
 import { getQuote, resolveYahooSymbol } from "@/lib/market-data";
 import { currencyForMarket, exchangesFor } from "@/lib/markets";
 import {
@@ -81,34 +82,42 @@ export async function resolveImportRows(
   const expected = currencyForMarket(market);
   const wrongCurrency = new Map<number, string>();
 
-  await mapWithConcurrency(priceable, MAX_CONCURRENT_QUOTES, async (row) => {
-    for (const exchange of exchanges) {
-      const yahooSymbol = resolveYahooSymbol(row.ticker, exchange);
-      try {
-        const quote = await getQuote(yahooSymbol);
-        // A US probe is a BARE ticker, so Yahoo is free to answer with a
-        // foreign listing — `NESN` is Swiss francs, not dollars. Priced in the
-        // wrong money it would import as a plausible cost basis off by the
-        // exchange rate, which is exactly the failure one-market-per-batch
-        // exists to prevent. Reject rather than convert: this app holds no FX
-        // rate, and guessing one is how a book stops being true.
-        if (quote.currency != null && quote.currency !== expected) {
-          wrongCurrency.set(row.index, quote.currency);
+  // Crypto prices through CoinGecko; everything else through Yahoo. ONLY this
+  // step branches — validation, duplicate detection and the status tail below
+  // are shared, so a coin re-uploaded flags exactly like a share re-uploaded
+  // and there is no second copy of that logic to drift.
+  if (market === "CRYPTO") {
+    await priceCryptoRows(supabase, priceable, portfolioId);
+  } else {
+    await mapWithConcurrency(priceable, MAX_CONCURRENT_QUOTES, async (row) => {
+      for (const exchange of exchanges) {
+        const yahooSymbol = resolveYahooSymbol(row.ticker, exchange);
+        try {
+          const quote = await getQuote(yahooSymbol);
+          // A US probe is a BARE ticker, so Yahoo is free to answer with a
+          // foreign listing — `NESN` is Swiss francs, not dollars. Priced in
+          // the wrong money it would import as a plausible cost basis off by
+          // the exchange rate, which is exactly the failure one-market-per-batch
+          // exists to prevent. Reject rather than convert: this app holds no FX
+          // rate, and guessing one is how a book stops being true.
+          if (quote.currency != null && quote.currency !== expected) {
+            wrongCurrency.set(row.index, quote.currency);
+            continue;
+          }
+          row.exchange = exchange;
+          row.yahooSymbol = yahooSymbol;
+          row.companyName = quote.name;
+          row.lastPrice = quote.price;
+          row.currency = quote.currency ?? expected;
+          return;
+        } catch {
+          // Not listed on this exchange, or Yahoo is unhappy. Try the next one;
+          // exhausting the list is what "unresolved" means.
           continue;
         }
-        row.exchange = exchange;
-        row.yahooSymbol = yahooSymbol;
-        row.companyName = quote.name;
-        row.lastPrice = quote.price;
-        row.currency = quote.currency ?? expected;
-        return;
-      } catch {
-        // Not listed on this exchange, or Yahoo is unhappy. Try the next one;
-        // exhausting the list is what "unresolved" means.
-        continue;
       }
-    }
-  });
+    });
+  }
 
   for (const [position, row] of resolved.entries()) {
     const invalid = rowValidationError(row);
@@ -121,7 +130,9 @@ export async function resolveImportRows(
       row.reason =
         wrong !== undefined
           ? `${row.ticker} priced in ${wrong}, not ${expected} — that is a different listing to the one this market means`
-          : `No listing found for ${row.ticker} in this market`;
+          : market === "CRYPTO"
+            ? `${row.ticker} is not one of the tracked top ten coins`
+            : `No listing found for ${row.ticker} in this market`;
     } else if (repeats.has(position) || knownRepeatSet.has(row.index)) {
       row.status = "duplicate";
       row.reason = `${row.ticker} appears more than once in this file`;
@@ -132,6 +143,68 @@ export async function resolveImportRows(
   }
 
   return resolved;
+}
+
+/**
+ * Prices crypto rows in the BOOK's currency, resolving tickers against the
+ * tracked universe.
+ *
+ * Mutates the rows it is given, exactly as the Yahoo loop above does, so the
+ * shared status tail can judge both the same way.
+ *
+ * There is no currency gate here, and that is not an omission. The equity path
+ * needs one because a bare US ticker lets Yahoo answer with a foreign listing;
+ * CoinGecko is ASKED for a currency and returns that currency or nothing, so
+ * there is no wrong money to catch.
+ */
+async function priceCryptoRows(
+  supabase: UserClient,
+  rows: ResolvedImportRow[],
+  portfolioId: string,
+): Promise<void> {
+  if (rows.length === 0) return;
+
+  const { data: book, error: bookError } = await supabase
+    .from("portfolios")
+    .select("base_currency")
+    .eq("id", portfolioId)
+    .maybeSingle();
+  if (bookError) {
+    throw new Error(`Could not read the portfolio's currency: ${bookError.message}`);
+  }
+  // The book is checked for existence by the route before this runs, so a
+  // missing row here would be a programming error rather than a user one.
+  const currency = book?.base_currency ?? "USD";
+
+  const symbols = [...new Set(rows.map((r) => r.ticker.trim().toUpperCase()))];
+  const { data: coins, error: coinError } = await supabase
+    .from("crypto_universe")
+    .select("coingecko_id, symbol, name")
+    .in("symbol", symbols);
+  if (coinError) {
+    throw new Error(`Could not read the crypto universe: ${coinError.message}`);
+  }
+  const coinBySymbol = new Map((coins ?? []).map((c) => [c.symbol.toUpperCase(), c]));
+
+  // One call prices every coin in the batch: `/simple/price` is batched.
+  const ids = [...new Set([...coinBySymbol.values()].map((c) => c.coingecko_id))];
+  const prices = await getCryptoPrices(ids, currency);
+
+  for (const row of rows) {
+    const coin = coinBySymbol.get(row.ticker.trim().toUpperCase());
+    // Left unresolved, which the status tail turns into a readable reason.
+    if (!coin) continue;
+
+    row.ticker = coin.symbol;
+    row.exchange = "CRYPTO";
+    row.yahooSymbol = cryptoStockKey(coin.coingecko_id, currency);
+    row.companyName = coin.name;
+    row.currency = currency;
+    // A coin the batch could not price still RESOLVES — the holding is real and
+    // worth importing, and the next hourly poll fills the price in. Only an
+    // unknown ticker is unresolved.
+    row.lastPrice = prices.get(coin.coingecko_id)?.price ?? null;
+  }
 }
 
 /** Tickers this BOOK already has an open position in. RLS scopes it to the
