@@ -1,11 +1,15 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/auth/user", () => ({ currentUser: vi.fn() }));
 vi.mock("@/lib/crypto-data", () => ({ fetchTopCoins: vi.fn() }));
 
+import { currentUser } from "@/lib/auth/user";
 import { fetchTopCoins } from "@/lib/crypto-data";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { POST } from "../route";
+import { createClient } from "@/lib/supabase/server";
+import { GET, POST } from "../route";
 
 let upserted: Record<string, unknown>[] | null = null;
 /** The `not(... in ...)` filter the prune deletes by, or null if it never ran. */
@@ -112,5 +116,60 @@ describe("POST /api/crypto/universe", () => {
   it("500s when the write fails, so a silent no-op cannot look like a refresh", async () => {
     vi.mocked(createAdminClient).mockReturnValue(mockAdmin({ message: "boom" }) as never);
     expect((await POST(post())).status).toBe(500);
+  });
+});
+
+describe("GET /api/crypto/universe", () => {
+  /** Reads through the caller's own session: 0030 grants `authenticated`
+   *  select on this table, so no service-role client is involved. */
+  function buildReadMock(error: { message: string } | null = null) {
+    return {
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table !== "crypto_universe") throw new Error(`unexpected table ${table}`);
+        return {
+          select: () => ({
+            order: async () => ({
+              data: error
+                ? null
+                : [{ coingecko_id: "bitcoin", symbol: "BTC", name: "Bitcoin", market_cap_rank: 1 }],
+              error,
+            }),
+          }),
+        };
+      }),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+    vi.mocked(createClient).mockResolvedValue(buildReadMock() as never);
+  });
+
+  it("lists the coins a trader may add", async () => {
+    const res = await GET();
+    expect(res.status).toBe(200);
+    expect((await res.json()).coins).toEqual([
+      { coingecko_id: "bitcoin", symbol: "BTC", name: "Bitcoin", market_cap_rank: 1 },
+    ]);
+  });
+
+  it("does not answer an anonymous caller", async () => {
+    // Reading the list is not privileged, but it is not public either -- and
+    // the bearer secret guarding POST is for a cron job, not for a person.
+    vi.mocked(currentUser).mockResolvedValue(null as never);
+    expect((await GET()).status).toBe(401);
+  });
+
+  it("reports a failed read rather than an empty universe", async () => {
+    // An empty list renders as "there are no coins", which is a very different
+    // thing to tell someone than "we could not reach the list".
+    vi.mocked(createClient).mockResolvedValue(buildReadMock({ message: "boom" }) as never);
+    expect((await GET()).status).toBe(500);
+  });
+
+  it("never spends CoinGecko quota on a read", async () => {
+    await GET();
+    expect(fetchTopCoins).not.toHaveBeenCalled();
   });
 });

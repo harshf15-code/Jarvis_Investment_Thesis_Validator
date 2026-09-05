@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Upload, Users } from "lucide-react";
 
+import { AddCoinButton } from "@/components/positions/add-coin-button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PositionsPageClient } from "@/components/positions/positions-page-client";
 import type { PositionRow } from "@/components/positions/positions-table";
@@ -54,6 +55,9 @@ export default async function PositionsPage({ searchParams }: PageProps) {
               Consult the Council
             </Link>
           )}
+          {/* The single-coin path. It asks which book it is going into, so
+              unlike the two links beside it there is no scope to carry. */}
+          <AddCoinButton />
           <Link
             href={`/positions/import?portfolio=${scopeParam(scope)}`}
             className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-1.5 text-xs text-on-surface-variant transition-colors hover:border-white/25 hover:text-on-surface"

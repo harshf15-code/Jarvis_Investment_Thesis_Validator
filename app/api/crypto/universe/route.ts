@@ -1,8 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
+import { currentUser } from "@/lib/auth/user";
 import { fetchTopCoins } from "@/lib/crypto-data";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 
 /**
  * Refreshes the top-ten crypto universe. Called by pg_cron, weekly.
@@ -35,6 +37,28 @@ function authorized(request: Request): boolean {
   // `timingSafeEqual` throws on a length mismatch, which is itself a leak of
   // one bit; compare lengths first and always run the comparison.
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * The coins a trader may add, for the add-a-coin form.
+ *
+ * Session-authenticated, unlike the POST below — reading which ten coins are
+ * tracked is not privileged, and 0030 grants `authenticated` select on this
+ * table for exactly this. The two verbs on this route answer to different
+ * callers on purpose: a weekly job writes it, a person reads it.
+ */
+export async function GET() {
+  const user = await currentUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("crypto_universe")
+    .select("coingecko_id, symbol, name, market_cap_rank")
+    .order("market_cap_rank", { ascending: true });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ coins: data ?? [] });
 }
 
 export async function POST(request: Request) {
