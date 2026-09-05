@@ -156,6 +156,42 @@ select cron.schedule(
   $$
 );
 
+-- poll-prices-crypto: HOURLY, ALL SEVEN DAYS (0030).
+--
+-- Crypto has no session, so unlike the two equity jobs above this one has no
+-- window to widen and no `isMarketOpen` behind it -- the function BYPASSES that
+-- check for CRYPTO rather than consulting it. Asking whether the market is open
+-- is not a check that passes for a coin; it is the wrong question.
+--
+-- That is the whole point of this job. The PRD originally proposed pricing
+-- crypto only when poll-prices was already awake for NSE or US hours, and said
+-- plainly what it would cost: "a crypto stop or target that breaches over a
+-- weekend is not detected until Monday." Hourly, seven days, means it is
+-- detected.
+--
+-- ~730 invocations a month at one CoinGecko call per distinct currency is
+-- roughly 7-15% of the Demo tier's 10,000 monthly credits.
+select cron.schedule(
+  'poll-prices-crypto',
+  '0 * * * *',
+  $$
+  select net.http_post(
+    url := 'https://<PROJECT_REF>.supabase.co/functions/v1/poll-prices?market=CRYPTO',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'),
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb,
+    -- Bounded by the number of distinct currencies held, not by the number of
+    -- coins: /simple/price is batched. Two books in two currencies is two
+    -- requests, so the 5s default would be tight but the equity jobs' own
+    -- widening is the precedent here.
+    timeout_milliseconds := 60000
+  );
+  $$
+);
+
+
 -- crypto-universe: the top ten by market cap, WEEKLY (0030).
 --
 -- Weekly is ample and a stale table is harmless, because this list governs what
@@ -195,3 +231,4 @@ select cron.schedule(
 --   select cron.unschedule('holding-watch');
 --   select cron.unschedule('daily-digest');
 --   select cron.unschedule('crypto-universe');
+--   select cron.unschedule('poll-prices-crypto');

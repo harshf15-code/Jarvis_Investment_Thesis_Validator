@@ -113,15 +113,97 @@ async function getQuote(
   };
 }
 
-type Market = "NSE" | "US";
-type Exchange = "NSE" | "BSE" | "US";
+type Market = "NSE" | "US" | "CRYPTO";
+type Exchange = "NSE" | "BSE" | "US" | "CRYPTO";
 type PositionAlertType =
   | "stop_loss_breached"
   | "trim_target_1_reached"
   | "trim_target_2_reached"
   | "time_exit_due";
 
-type StockRow = { id: string; yahoo_symbol: string; exchange: Exchange };
+type StockRow = {
+  id: string;
+  yahoo_symbol: string;
+  exchange: Exchange;
+  /** 0030. Null for every equity. */
+  coingecko_id: string | null;
+  /** The currency this ROW is priced in — for a coin, its book's. */
+  currency: string;
+};
+
+/**
+ * Prices every crypto stock row, batched by currency.
+ *
+ * Deno cannot import from `/lib`, which is why `withRetry` is reimplemented in
+ * this file and why this is not `lib/crypto-data.ts`. It reads `coingecko_id`
+ * and `currency` straight off the row rather than parsing them back out of the
+ * synthetic `yahoo_symbol` — the columns are there, and parsing a key we
+ * generated would be a second place for its format to matter.
+ *
+ * One request per distinct currency, not per coin: `/simple/price` takes one
+ * `vs_currencies` and returns it for every id in the batch. Two books in two
+ * currencies is two calls.
+ */
+async function fetchCryptoPrices(
+  stocks: StockRow[],
+): Promise<Map<string, { price: number; asOf: Date }>> {
+  const out = new Map<string, { price: number; asOf: Date }>();
+  const key = Deno.env.get("COINGECKO_API_KEY");
+  if (!key) {
+    console.error("poll-prices: COINGECKO_API_KEY is not set; no crypto row can be priced");
+    return out;
+  }
+
+  const byCurrency = new Map<string, StockRow[]>();
+  for (const stock of stocks) {
+    if (!stock.coingecko_id) continue;
+    const list = byCurrency.get(stock.currency) ?? [];
+    list.push(stock);
+    byCurrency.set(stock.currency, list);
+  }
+
+  for (const [currency, group] of byCurrency) {
+    const vs = currency.toLowerCase();
+    const ids = [...new Set(group.map((s) => s.coingecko_id!))];
+    const params = new URLSearchParams({
+      ids: ids.join(","),
+      vs_currencies: vs,
+      include_last_updated_at: "true",
+    });
+
+    try {
+      // Retried only on 5xx, matching `lib/crypto-data.ts`: a 429 will not
+      // clear inside a backoff, and retrying it spends more of a metered
+      // monthly quota to learn the same thing. The next hourly run is the retry.
+      const res = await withRetry(async () => {
+        const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?${params}`, {
+          headers: { "x-cg-demo-api-key": key, accept: "application/json" },
+        });
+        if (r.status >= 500) throw new Error(`CoinGecko returned ${r.status}`);
+        return r;
+      });
+      if (!res.ok) {
+        console.error(`poll-prices: CoinGecko returned ${res.status} for ${currency}`);
+        continue;
+      }
+      const body = (await res.json()) as Record<string, Record<string, number>>;
+      for (const stock of group) {
+        const quoted = body[stock.coingecko_id!]?.[vs];
+        if (typeof quoted !== "number") continue;
+        const stamp = body[stock.coingecko_id!]?.last_updated_at;
+        out.set(stock.id, {
+          price: quoted,
+          asOf: typeof stamp === "number" ? new Date(stamp * 1000) : new Date(),
+        });
+      }
+    } catch (err) {
+      // One currency failing must not abort the others — same isolation rule
+      // the per-position loop below follows.
+      console.error(`poll-prices: crypto fetch failed for ${currency}`, err);
+    }
+  }
+  return out;
+}
 
 type PositionRow = {
   id: string;
@@ -259,17 +341,23 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const marketParam = url.searchParams.get("market");
 
-  if (marketParam !== "NSE" && marketParam !== "US") {
-    return jsonResponse({ error: 'market query param must be "NSE" or "US"' }, 400);
+  if (marketParam !== "NSE" && marketParam !== "US" && marketParam !== "CRYPTO") {
+    return jsonResponse({ error: 'market query param must be "NSE", "US" or "CRYPTO"' }, 400);
   }
   const market: Market = marketParam;
 
-  if (!isMarketOpen(market, new Date())) {
+  // Crypto has no session, so asking whether the market is open is not a check
+  // that passes — it is the wrong question. `isMarketOpen` knows two equity
+  // sessions and would answer "closed" all weekend for an asset that trades
+  // straight through it, which is exactly when a stop is most likely to breach
+  // unwatched. This job runs hourly, seven days.
+  if (market !== "CRYPTO" && !isMarketOpen(market, new Date())) {
     return jsonResponse({ skipped: true, reason: "market closed" }, 200);
   }
 
   const supabase = createAdminClient();
-  const exchanges: Exchange[] = market === "NSE" ? ["NSE", "BSE"] : ["US"];
+  const exchanges: Exchange[] =
+    market === "NSE" ? ["NSE", "BSE"] : market === "CRYPTO" ? ["CRYPTO"] : ["US"];
 
   const { data: activePositions, error: positionsError } = await supabase
     .from("positions")
@@ -287,7 +375,7 @@ Deno.serve(async (req: Request) => {
   const stockIds = [...new Set(positionRows.map((p) => p.stock_id))];
   const { data: stocks, error: stocksError } = await supabase
     .from("stocks")
-    .select("id, yahoo_symbol, exchange")
+    .select("id, yahoo_symbol, exchange, coingecko_id, currency")
     .in("id", stockIds);
   if (stocksError) {
     return jsonResponse({ error: stocksError.message }, 500);
@@ -315,6 +403,18 @@ Deno.serve(async (req: Request) => {
   }
   const tradePlanById = new Map<string, TradePlanRow>((tradePlans ?? []).map((t: TradePlanRow) => [t.id, t]));
 
+  // Fetched BEFORE the loop and in one batch per currency, unlike the equity
+  // path's per-symbol `getQuote`. The endpoint prices every id in a request, so
+  // a per-position call would be strictly more requests for the same answer.
+  const cryptoPrices =
+    market === "CRYPTO"
+      ? await fetchCryptoPrices(
+          [...new Set(relevantPositions.map((p) => p.stock_id))]
+            .map((id) => stockById.get(id))
+            .filter((s): s is StockRow => s !== undefined),
+        )
+      : new Map<string, { price: number; asOf: Date }>();
+
   const now = new Date();
   let processed = 0;
 
@@ -324,7 +424,22 @@ Deno.serve(async (req: Request) => {
     if (!tradePlan) continue;
 
     try {
-      const quote = await getQuote(stock.yahoo_symbol);
+      // A coin's price came from the batch above; an equity's is fetched here.
+      // Both produce the same shape, so everything below this point — the
+      // stock update, the trigger evaluation, the alert write — is identical
+      // for the two asset classes and has no idea which it is looking at.
+      const quote =
+        market === "CRYPTO"
+          ? cryptoPrices.get(stock.id)
+          : await getQuote(stock.yahoo_symbol);
+      if (!quote) {
+        // Priced by nobody this run: CoinGecko omitted it, or the whole
+        // currency's request failed. Leaving `last_price` alone is right — the
+        // stored price with its older `last_price_at` is honest, where writing
+        // a zero would read as a total loss and fire every stop in the book.
+        continue;
+      }
+
       await supabase
         .from("stocks")
         .update({
@@ -333,7 +448,9 @@ Deno.serve(async (req: Request) => {
           // Re-asserted from the quote rather than written once and trusted
           // forever (0021). This is the path that runs most often, so it is
           // the one that actually corrects a row seeded from `exchange`.
-          ...(quote.currency ? { currency: quote.currency } : {}),
+          // A coin has no such correction to make: its currency is the book's,
+          // and CoinGecko was ASKED for that currency rather than reporting one.
+          ...("currency" in quote && quote.currency ? { currency: quote.currency } : {}),
         })
         .eq("id", stock.id);
 
