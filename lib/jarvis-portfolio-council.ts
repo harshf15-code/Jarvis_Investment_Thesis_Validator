@@ -150,7 +150,15 @@ export function aggregateByListing(holdings: CouncilHolding[]): CouncilHolding[]
   for (const h of holdings) {
     // Currency is part of the key: the same ticker on two markets is two
     // different instruments, which is the whole reason a batch names one.
-    const key = `${h.ticker.toUpperCase()}|${h.currency}`;
+    //
+    // Asset class is part of it for the same reason, and the collision is not
+    // hypothetical: a spot-Bitcoin trust can list under the very symbol its
+    // coin uses. Without this, one USD book holding both collapses them into a
+    // single row whose quantity adds coin units to share counts, whose price is
+    // whichever leg priced first, and whose asset class is whichever leg was
+    // seen first — a market value, a weight and an exposure figure all wrong at
+    // once, with nothing on screen to suggest it.
+    const key = `${h.ticker.toUpperCase()}|${h.currency}|${h.assetClass}`;
     byKey.set(key, [...(byKey.get(key) ?? []), h]);
   }
 

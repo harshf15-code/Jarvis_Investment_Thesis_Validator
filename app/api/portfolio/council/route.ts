@@ -182,7 +182,14 @@ export async function POST(request: Request) {
   // synthetic `coingecko:<id>:<currency>` symbol at all. Before this, every
   // coin in a book reached the panel as "price UNAVAILABLE" with a null
   // weight, which is precisely the holding an exposure read is about.
-  const coinStocks = [...stockById.values()].filter((s) => s.coingecko_id);
+  // Routed on `asset_class`, never on "does it have an id". The two are kept in
+  // step by a constraint (0031) rather than by convention, but the branch still
+  // asks the question it means: an equity that somehow carried a CoinGecko id
+  // would otherwise skip Yahoo and go unpriced, and a coin whose id was missing
+  // would be handed its synthetic symbol to ask Yahoo with.
+  const coinStocks = [...stockById.values()].filter(
+    (s) => s.asset_class === "crypto" && s.coingecko_id,
+  );
   const coinPrices = new Map<string, number>();
   await Promise.all(
     [...new Set(coinStocks.map((s) => s.currency))].map(async (currency) => {
@@ -218,7 +225,7 @@ export async function POST(request: Request) {
       const remaining = weightedAverage.totalQuantity - (exitedByPosition.get(position.id) ?? 0);
       if (remaining <= 0) return null;
 
-      const isCoin = Boolean(stock.coingecko_id);
+      const isCoin = stock.asset_class === "crypto";
       // Neither call is made for a coin. Yahoo cannot answer a synthetic
       // symbol, and a coin has no fundamentals to fetch — asking anyway would
       // spend two requests per coin to receive nothing, every consult.
@@ -232,9 +239,12 @@ export async function POST(request: Request) {
             getQuote(stock.yahoo_symbol).catch(() => null),
             getFundamentals(stock.yahoo_symbol).catch(() => ({})),
           ]);
-      const coinPrice = isCoin
-        ? (coinPrices.get(`${stock.coingecko_id}|${stock.currency}`) ?? null)
-        : null;
+      // A coin with no id cannot be priced and is not asked of anyone. It is
+      // still listed, unpriced, like any holding that would not price.
+      const coinPrice =
+        isCoin && stock.coingecko_id
+          ? (coinPrices.get(`${stock.coingecko_id}|${stock.currency}`) ?? null)
+          : null;
       const thesis = thesisById.get(position.thesis_id);
       const plan = planById.get(position.trade_plan_id);
 

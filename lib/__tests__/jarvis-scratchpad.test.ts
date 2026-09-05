@@ -336,3 +336,33 @@ describe("pattern read — asset class", () => {
     expect(prompt).not.toMatch(/cryptocurrenc/i);
   });
 });
+
+describe("pattern read — an all-crypto book", () => {
+  const coin = (over = {}) =>
+    holding({ ticker: "BTC", assetClass: "crypto", sector: null, industry: null, ...over });
+
+  it("never tells an all-crypto book it also holds shares", () => {
+    // Told "0 are equities" and then that they hold coins "alongside shares",
+    // the model has a contradiction inside a block the prompt labels as fact.
+    const prompt = buildPatternReadUserContext({
+      holdings: [coin(), coin({ ticker: "ETH" })],
+      objective: null,
+      notes: [],
+      today: "2026-09-05",
+    });
+    expect(prompt).toMatch(/2 of these are cryptocurrencies, and 0 are equities/);
+    expect(prompt).not.toMatch(/alongside shares/);
+    expect(prompt).toMatch(/entirely crypto/);
+  });
+
+  it("still says \"alongside shares\" when there IS a mix", () => {
+    const prompt = buildPatternReadUserContext({
+      holdings: [holding(), coin()],
+      objective: null,
+      notes: [],
+      today: "2026-09-05",
+    });
+    expect(prompt).toMatch(/alongside shares/);
+    expect(prompt).not.toMatch(/entirely crypto/);
+  });
+});

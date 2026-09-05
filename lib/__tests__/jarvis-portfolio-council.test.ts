@@ -447,3 +447,40 @@ describe("asset-class exposure", () => {
     expect(prompt).toMatch(/Asset-class exposure: 100.0% equities/);
   });
 });
+
+describe("aggregateByListing — asset class in the key", () => {
+  it("keeps a coin and an equity with the same ticker apart", () => {
+    // Not hypothetical: a spot-Bitcoin trust can list under the very symbol its
+    // coin uses. Collapsed, the row's quantity adds coin units to share counts,
+    // its price is whichever leg priced first, and its asset class is whichever
+    // was seen first — market value, weight and exposure all wrong at once.
+    const rows = aggregateByListing([
+      holding({ ticker: "BTC", currency: "USD", assetClass: "crypto", quantity: 2, currentPrice: 90_000 }),
+      holding({ ticker: "BTC", currency: "USD", assetClass: "equity", quantity: 100, currentPrice: 60 }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.assetClass === "crypto")?.quantity).toBe(2);
+    expect(rows.find((r) => r.assetClass === "equity")?.quantity).toBe(100);
+  });
+
+  it("still merges two positions in the SAME coin", () => {
+    // The whole purpose of aggregation is unchanged: one listing, one row.
+    const rows = aggregateByListing([
+      holding({ ticker: "BTC", currency: "INR", assetClass: "crypto", quantity: 1, averagePrice: 100 }),
+      holding({ ticker: "BTC", currency: "INR", assetClass: "crypto", quantity: 3, averagePrice: 200 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].quantity).toBe(4);
+  });
+
+  it("weighs the collision correctly once separated", () => {
+    const [book] = splitByCurrency(
+      aggregateByListing([
+        holding({ ticker: "BTC", currency: "USD", assetClass: "crypto", quantity: 1, currentPrice: 90_000 }),
+        holding({ ticker: "BTC", currency: "USD", assetClass: "equity", quantity: 100, currentPrice: 100 }),
+      ]),
+    );
+    const crypto = book.exposure.find((e) => e.assetClass === "crypto");
+    expect(crypto?.pct).toBeCloseTo(90, 6);
+  });
+});

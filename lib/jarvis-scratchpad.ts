@@ -265,10 +265,18 @@ export function buildPatternReadUserContext(input: {
   // invented, and an invented number in a prompt is indistinguishable from a
   // measured one by the time it reaches the output.
   const coins = input.holdings.filter((h) => h.assetClass === "crypto").length;
+  const equities = input.holdings.length - coins;
   if (coins > 0) {
     lines.push(
-      `${coins} of these ${coins === 1 ? "is a cryptocurrency" : "are cryptocurrencies"}, and ${input.holdings.length - coins} ${input.holdings.length - coins === 1 ? "is an equity" : "are equities"}. ` +
-        "Choosing to hold coins alongside shares is itself part of the taste you are reading. " +
+      `${coins} of these ${coins === 1 ? "is a cryptocurrency" : "are cryptocurrencies"}, and ${equities} ${equities === 1 ? "is an equity" : "are equities"}. ` +
+        // Only when there is actually a mix. Told "0 are equities" and then
+        // that they hold coins "alongside shares", the model has been handed a
+        // contradiction inside a block the prompt labels as fact — and the
+        // reading it invents to resolve one is worse than the sentence is
+        // worth.
+        (equities > 0
+          ? "Choosing to hold coins alongside shares is itself part of the taste you are reading. "
+          : "This book is entirely crypto. That is itself the strongest thing the mix tells you. ") +
         "These are counts of holdings, not shares of the money — you have not been told what any of it is worth.",
     );
   }

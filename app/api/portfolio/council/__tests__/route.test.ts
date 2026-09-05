@@ -62,6 +62,8 @@ function buildMock(
     currencies?: string[];
     /** Positions at these indices are coins, priced through CoinGecko. */
     coinAt?: number[];
+    /** Force a mismatched row shape, to prove routing does not rely on 0031. */
+    mismatch?: "crypto-without-id" | "equity-with-id";
     /** `null` stands for "not this trader's book", which must 404. */
     portfolio?: Record<string, unknown> | null;
   } = {},
@@ -104,6 +106,7 @@ function buildMock(
             in: async () => ({
               data: positions.map((p, i) => {
                 const isCoin = (opts.coinAt ?? []).includes(i);
+                const mismatched = opts.mismatch != null && i === 1;
                 return {
                   id: p.stock_id,
                   ticker: p.ticker,
@@ -112,8 +115,20 @@ function buildMock(
                     : `${p.ticker}.NS`,
                   currency: opts.currencies?.[i] ?? (i === 0 ? "INR" : "USD"),
                   last_price: 1000,
-                  coingecko_id: isCoin ? p.ticker.toLowerCase() : null,
-                  asset_class: isCoin ? "crypto" : "equity",
+                  coingecko_id: mismatched
+                    ? opts.mismatch === "equity-with-id"
+                      ? p.ticker.toLowerCase()
+                      : null
+                    : isCoin
+                      ? p.ticker.toLowerCase()
+                      : null,
+                  asset_class: mismatched
+                    ? opts.mismatch === "crypto-without-id"
+                      ? "crypto"
+                      : "equity"
+                    : isCoin
+                      ? "crypto"
+                      : "equity",
                 };
               }),
               error: null,
@@ -539,6 +554,7 @@ describe("POST /api/portfolio/council — crypto", () => {
     expect(getCryptoPrices).toHaveBeenCalledWith(["t1"], "INR");
     // The equity leg still goes to Yahoo; the coin never does.
     expect(vi.mocked(getQuote).mock.calls.flat()).not.toContain("coingecko:t1:inr");
+    expect(getQuote).toHaveBeenCalledTimes(1);
   });
 
   it("asks Yahoo for no fundamentals on a coin", async () => {
@@ -568,5 +584,47 @@ describe("POST /api/portfolio/council — crypto", () => {
     );
     await POST(post());
     expect(getCryptoPrices).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/portfolio/council — price routing", () => {
+  // 0031 makes both shapes below unrepresentable in the database. These tests
+  // exist anyway: the branch should ask the question it means, so that the
+  // constraint is defence in depth rather than the only thing holding the
+  // behaviour up.
+  const setup = (mismatch: "crypto-without-id" | "equity-with-id") => {
+    vi.clearAllMocks();
+    saved = null;
+    ledger.length = 0;
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+    vi.mocked(checkBudget).mockResolvedValue({ ok: true } as never);
+    vi.mocked(getQuote).mockResolvedValue({
+      price: 1200, asOf: new Date(), name: "A Company", currency: "INR",
+    } as never);
+    vi.mocked(getFundamentals).mockResolvedValue({ trailingPE: 20 } as never);
+    vi.mocked(getCryptoPrices).mockResolvedValue(new Map() as never);
+    vi.mocked(generateText).mockImplementation(async (args) =>
+      ((args.system as string).includes("summarising") ? fenced(SYNTHESIS) : fenced(OPINION)) as never,
+    );
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({ positions: 2, currencies: ["INR", "INR"], mismatch }) as never,
+    );
+  };
+
+  it("never sends a synthetic symbol to Yahoo, even with no CoinGecko id", async () => {
+    // Routing on Boolean(coingecko_id) would call it an equity and hand Yahoo
+    // `coingecko:t1:inr`.
+    setup("crypto-without-id");
+    await POST(post());
+    expect(vi.mocked(getQuote).mock.calls.flat()).not.toContain("coingecko:t1:inr");
+  });
+
+  it("does not ask CoinGecko about an equity that carries an id", async () => {
+    // The mirror image: routing on the id alone would skip Yahoo entirely and
+    // leave a real share unpriced.
+    setup("equity-with-id");
+    await POST(post());
+    expect(getCryptoPrices).not.toHaveBeenCalled();
+    expect(vi.mocked(getQuote).mock.calls.flat()).toContain("T1.NS");
   });
 });

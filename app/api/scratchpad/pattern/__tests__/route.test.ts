@@ -75,6 +75,8 @@ function buildMock(
     thesisText?: Record<string, string | null>;
     /** `null` stands for "not this trader's book", which must 404. */
     portfolio?: Record<string, unknown> | null;
+    /** Tickers to treat as coins rather than equities. */
+    coinTickers?: string[];
   } = {},
 ) {
   const positions = opts.positions ?? HOLDINGS;
@@ -104,11 +106,16 @@ function buildMock(
         return {
           select: () => ({
             in: async () => ({
-              data: positions.map((p) => ({
-                id: p.stock_id,
-                ticker: p.ticker,
-                yahoo_symbol: `${p.ticker}.NS`,
-              })),
+              data: positions.map((p) => {
+                const isCoin = (opts.coinTickers ?? []).includes(p.ticker);
+                return {
+                  id: p.stock_id,
+                  ticker: p.ticker,
+                  yahoo_symbol: isCoin ? `coingecko:${p.ticker.toLowerCase()}:inr` : `${p.ticker}.NS`,
+                  coingecko_id: isCoin ? p.ticker.toLowerCase() : null,
+                  asset_class: isCoin ? "crypto" : "equity",
+                };
+              }),
               error: null,
             }),
           }),
@@ -372,5 +379,66 @@ describe("POST /api/scratchpad/pattern", () => {
     await POST(post());
     const prompt = vi.mocked(generateText).mock.calls[0][0].prompt as string;
     expect(prompt).toContain("The order book is the whole thesis.");
+  });
+});
+
+describe("POST /api/scratchpad/pattern — crypto", () => {
+  const COINS = [
+    { id: "pos-1", ticker: "BTC", thesis_id: "th-1", stock_id: "st-1" },
+    { id: "pos-2", ticker: "ETH", thesis_id: "th-2", stock_id: "st-2" },
+    { id: "pos-3", ticker: "HAL", thesis_id: "th-3", stock_id: "st-3" },
+  ];
+  const COIN_READ = {
+    ...READ,
+    signals: [{ theme: "Crypto sleeve", tickers: ["BTC", "ETH"], note: "Two coins.", also_look_at: "Size?" }],
+    grounded_in: ["BTC is a cryptocurrency"],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saved = null;
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+    vi.mocked(checkBudget).mockResolvedValue({ ok: true } as never);
+    vi.mocked(createClient).mockResolvedValue(
+      buildMock({ positions: COINS, coinTickers: ["BTC", "ETH"] }) as never,
+    );
+    vi.mocked(getSectorProfile).mockResolvedValue({
+      sector: "Industrials", industry: "Aerospace & Defense",
+    } as never);
+    vi.mocked(generateText).mockResolvedValue(fenced(COIN_READ) as never);
+  });
+
+  it("lets a coin be named in a signal", async () => {
+    // A coin's sector is null because it HAS none, not because anyone failed
+    // to look one up. Filtering on a null sector alone stripped every coin
+    // from every signal -- turning a two-coin cluster into nothing -- while
+    // the prompt told the model coin tickers were valid.
+    await POST(post());
+    const signals = (saved?.document as { signals: { tickers: string[] }[] }).signals;
+    expect(signals).toHaveLength(1);
+    expect(signals[0].tickers).toEqual(["BTC", "ETH"]);
+  });
+
+  it("never asks Yahoo to classify a coin", async () => {
+    // Yahoo has no profile for a synthetic symbol: one request per coin, every
+    // read, to be told nothing.
+    await POST(post());
+    expect(getSectorProfile).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getSectorProfile).mock.calls.flat()).toEqual(["HAL.NS"]);
+  });
+
+  it("still strips an UNCLASSIFIED equity from a signal", async () => {
+    // The original rule is intact: a holding nobody could classify may not be
+    // counted as explained just because the model named it.
+    vi.mocked(getSectorProfile).mockResolvedValue({ sector: null, industry: null } as never);
+    vi.mocked(generateText).mockResolvedValue(
+      fenced({
+        ...READ,
+        signals: [{ theme: "Mixed", tickers: ["BTC", "HAL"], note: "n", also_look_at: "a" }],
+      }) as never,
+    );
+    await POST(post());
+    const signals = (saved?.document as { signals: { tickers: string[] }[] }).signals;
+    expect(signals.flatMap((s) => s.tickers)).not.toContain("HAL");
   });
 });
