@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 
 import { computeDistanceToStop, computePositionPnl } from "@/lib/position-metrics";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatExchangeTime } from "@/lib/format";
 import { currencyForExchange } from "@/lib/markets";
 import { ConvictionBadge } from "@/components/thesis/conviction-badge";
 import { CoinGeckoAttribution } from "@/components/shared/coingecko-attribution";
@@ -13,8 +13,8 @@ import type { AssetClass, ConvictionTier, ExchangeCode, ThesisSource } from "@/l
 export type PositionRow = {
   position: { id: string; ticker: string; status: string; portfolio_id: string };
   // `last_price_at` is what the Cockpit's <LastUpdated/> stamps (spec Section
-  // 5: every screen showing a price says when it was taken); it's optional
-  // here because this table itself never reads it.
+  // 5: every screen showing a price says when it was taken). This table reads
+  // it for CRYPTO rows only — see the price cell.
   stock:
     | {
         last_price: number | null;
@@ -145,7 +145,19 @@ export function PositionsTable({
                   )}
                 </td>
                 <td className="p-3 font-mono tabular-nums">{formatCurrency(row.weightedAverage.averagePrice, currency)}</td>
-                <td className="p-3 font-mono tabular-nums">{price !== null ? formatCurrency(price, currency) : "Price unavailable"}</td>
+                <td className="p-3 font-mono tabular-nums">
+                  {price !== null ? formatCurrency(price, currency) : "Price unavailable"}
+                  {/* Per-row, and only for a coin. A coin's price is polled
+                      hourly every day; the equity rows beside it are not polled
+                      outside a session, so neither one's freshness describes
+                      the other. The screen-level stamp cannot say this without
+                      claiming a single age for prices that do not share one. */}
+                  {row.stock?.asset_class === "crypto" && row.stock?.last_price_at && (
+                    <span className="block font-sans text-[10px] text-on-surface/35">
+                      as of {formatExchangeTime(new Date(row.stock.last_price_at), "CRYPTO")}
+                    </span>
+                  )}
+                </td>
                 <td className={`p-3 font-mono tabular-nums ${pnl && pnl.percent >= 0 ? "text-status-green" : "text-status-red"}`}>
                   {pnl ? `${pnl.percent >= 0 ? "+" : ""}${pnl.percent.toFixed(2)}%` : "—"}
                 </td>

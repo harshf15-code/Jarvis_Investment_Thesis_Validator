@@ -20,6 +20,7 @@ import {
   type PortfolioOpinion,
   type PortfolioSynthesis,
 } from "@/lib/jarvis-portfolio-council";
+import { getCryptoPrices } from "@/lib/crypto-data";
 import { checkBudget } from "@/lib/llm/budget";
 import { meteredGenerateText } from "@/lib/llm/meter";
 import { getFundamentals, getQuote } from "@/lib/market-data";
@@ -119,7 +120,10 @@ export async function POST(request: Request) {
 
   const positionIds = positions.map((p) => p.id);
   const [stocksRes, thesesRes, plansRes, entriesRes, exitsRes, profileRes] = await Promise.all([
-    supabase.from("stocks").select("id, ticker, yahoo_symbol, currency, last_price").in("id", positions.map((p) => p.stock_id)),
+    supabase
+      .from("stocks")
+      .select("id, ticker, yahoo_symbol, currency, last_price, coingecko_id, asset_class")
+      .in("id", positions.map((p) => p.stock_id)),
     supabase.from("theses").select("id, input_text, source").in("id", positions.map((p) => p.thesis_id)),
     // Every field that can establish a plan, not just two of them. A position
     // with only a second target or a time exit is still planned, and telling
@@ -172,6 +176,32 @@ export async function POST(request: Request) {
   }
 
   // --- 2. refresh every holding ------------------------------------------
+  // Coins are priced FIRST and in a batch, because /simple/price takes every
+  // id in one request. Doing it inside the fan-out below would make one call
+  // per coin, and — worse — that fan-out asks Yahoo, which cannot answer for a
+  // synthetic `coingecko:<id>:<currency>` symbol at all. Before this, every
+  // coin in a book reached the panel as "price UNAVAILABLE" with a null
+  // weight, which is precisely the holding an exposure read is about.
+  const coinStocks = [...stockById.values()].filter((s) => s.coingecko_id);
+  const coinPrices = new Map<string, number>();
+  await Promise.all(
+    [...new Set(coinStocks.map((s) => s.currency))].map(async (currency) => {
+      const ids = [
+        ...new Set(
+          coinStocks.filter((s) => s.currency === currency).map((s) => s.coingecko_id!),
+        ),
+      ];
+      try {
+        const quotes = await getCryptoPrices(ids, currency);
+        for (const [id, quote] of quotes) coinPrices.set(`${id}|${currency}`, quote.price);
+      } catch {
+        // Same rule as a failed Yahoo quote below: the holding is still shown,
+        // with its number marked unavailable. Dropping it would flatter the
+        // weights of everything else.
+      }
+    }),
+  );
+
   // The expensive half of this consult, and the half the PRD is explicit
   // about: not whatever was last cached. Bounded at MAX_CONCURRENT_QUOTES so a
   // forty-name book does not open forty sockets at Yahoo.
@@ -188,14 +218,23 @@ export async function POST(request: Request) {
       const remaining = weightedAverage.totalQuantity - (exitedByPosition.get(position.id) ?? 0);
       if (remaining <= 0) return null;
 
-      const [quote, fundamentals] = await Promise.all([
-        // A holding that will not price is INCLUDED with its number marked
-        // unavailable rather than dropped. A position nobody can value is a
-        // fact about the book, and hiding it would flatter the weights of
-        // everything else.
-        getQuote(stock.yahoo_symbol).catch(() => null),
-        getFundamentals(stock.yahoo_symbol).catch(() => ({})),
-      ]);
+      const isCoin = Boolean(stock.coingecko_id);
+      // Neither call is made for a coin. Yahoo cannot answer a synthetic
+      // symbol, and a coin has no fundamentals to fetch — asking anyway would
+      // spend two requests per coin to receive nothing, every consult.
+      const [quote, fundamentals] = isCoin
+        ? [null, {} as Record<string, string | number>]
+        : await Promise.all([
+            // A holding that will not price is INCLUDED with its number marked
+            // unavailable rather than dropped. A position nobody can value is a
+            // fact about the book, and hiding it would flatter the weights of
+            // everything else.
+            getQuote(stock.yahoo_symbol).catch(() => null),
+            getFundamentals(stock.yahoo_symbol).catch(() => ({})),
+          ]);
+      const coinPrice = isCoin
+        ? (coinPrices.get(`${stock.coingecko_id}|${stock.currency}`) ?? null)
+        : null;
       const thesis = thesisById.get(position.thesis_id);
       const plan = planById.get(position.trade_plan_id);
 
@@ -203,6 +242,7 @@ export async function POST(request: Request) {
         ticker: position.ticker,
         companyName: quote?.name ?? null,
         currency: stock.currency,
+        assetClass: stock.asset_class ?? "equity",
         quantity: remaining,
         averagePrice: weightedAverage.averagePrice,
         // NULL when the live fetch failed, deliberately — not the cached
@@ -210,7 +250,7 @@ export async function POST(request: Request) {
         // re-priced just now, and quietly substituting a stored number would
         // stamp a stale quote with a fresh `as_of` and let it carry a weight
         // as though it were live. Unavailable is the honest answer.
-        currentPrice: quote?.price ?? null,
+        currentPrice: isCoin ? coinPrice : (quote?.price ?? null),
         fundamentals,
         rationale: rationaleFor(thesis, position.ticker),
         hasTradePlan:

@@ -33,7 +33,7 @@ Four gaps, shipped together because three of them touch the same screen and the 
 - **No per-portfolio tax, fee or realised-gain reporting.** Managing someone's money properly implies statements and capital-gains reporting; none of that is here.
 - **No crypto memorandum, shortlist or stress test.** Crypto is a holdings-and-oversight asset class in v1 (see Decisions). There is no `thesis_only` run "across the top 10 coins."
 - **No DeFi, staking, LP positions, NFTs, or wallet-address sync.** Spot holdings of listed top-10 coins, entered manually or by CSV, and nothing else.
-- **No 24/7 crypto polling.** Deliberately deferred — see Decisions and Open Questions; this is the one decision in this PRD with a known, accepted cost.
+- ~~**No 24/7 crypto polling.** Deliberately deferred — see Decisions and Open Questions; this is the one decision in this PRD with a known, accepted cost.~~ **SUPERSEDED in build (Phase 3).** Crypto is polled hourly, all seven days, on its own `poll-prices-crypto` cron entry. Writing the acceptance down is what made it obvious it should not be accepted: the cost was a weekend stop breach going unseen, and the fix was one cron entry.
 - **No renaming of the *stress test* as a separate object.** A thesis and its memorandum are one thing to the trader; naming the thesis names the stress test. There is no second title field on `thesis_memorandums`.
 - **No portfolio archiving or deletion flows beyond a plain delete.** Five is a small enough number that lifecycle management can wait.
 
@@ -48,7 +48,7 @@ From two rounds of clarifying questions before drafting. These shape everything 
 | What does owned-vs-managed actually do? | **Three things:** a badge and beneficiary name; a different framing and disclaimer in every Jarvis call that reads the book; and **exclusion from the aggregate P&L** so the trader's own net-worth number stays clean. |
 | How deep does crypto go? | **Holdings plus Council.** Held, imported, priced, totalled, given an exit plan, watched on price, and visible to the portfolio Council and pattern read as an asset class. **No memorandum, no shortlist, no fundamentals-based holding review.** |
 | Crypto data source? | **CoinGecko for both ranking and pricing.** A second price path alongside Yahoo, branched on asset class. |
-| Crypto polling cadence? | **Poll inside the existing `poll-prices` windows only.** No new cron entry in v1. Accepted cost: a weekend move is not seen until the next session. Flagged as the top Open Question. |
+| Crypto polling cadence? | ~~Poll inside the existing `poll-prices` windows only.~~ **Changed in build: hourly, all seven days, on its own cron entry.** `isMarketOpen` is BYPASSED for crypto rather than consulted — "is the market open" is not a check that passes for a coin, it is the wrong question. ~730 invocations a month, roughly 7-15% of CoinGecko's Demo tier. |
 | How does a thesis get a name? | **Auto-titled at creation, renameable forever.** The title comes out of the *existing* thesis parse — a new field on the Zod schema, zero additional model calls — and inline rename overrides it permanently. |
 | Which book does an action land in? | **Always an explicit picker.** Logging an entry or converting a recommendation requires choosing the portfolio every time. No silent default, even when only one book exists. |
 
@@ -135,7 +135,7 @@ Populated from CoinGecko's `/coins/markets?vs_currency=usd&order=market_cap_desc
 
 Both are plain `alter column type` widenings — no data loss, no rewrite risk at this table size, and both are strictly safer for equities too.
 
-**Market hours.** `isMarketOpen` gains no crypto session in v1 — by decision, crypto prices refresh only when `poll-prices` is already awake for NSE or US hours. In `supabase/functions/poll-prices/index.ts` this means: when the function runs for any reason, it prices crypto holdings too. The consequence is honest and must be stated in the UI, not buried: **a crypto stop or target that breaches over a weekend is not detected until Monday.** The cockpit's `LastUpdated` stamp already exists to carry exactly this kind of truth, and crypto rows should show their own staleness rather than inheriting the equity one.
+**Market hours.** ~~`isMarketOpen` gains no crypto session in v1.~~ **As built:** crypto bypasses `isMarketOpen` entirely and runs on `poll-prices-crypto`, hourly, seven days a week. A weekend stop breach IS detected. The staleness half of this paragraph was built as written: the cockpit stamp is split by asset class and coins carry a per-row "as of", because coins are polled hourly and equities are not polled at all outside a session — so one combined stamp would present a Friday-evening equity price as minutes old right through the weekend.
 
 **What crypto is excluded from, and why:** the recurring `holding_reviews` watch (0022) is scoped by `asset_class = 'equity'` — its two triggers are `earnings_calendar` and `fundamentals_delta`, neither of which exists for a coin, and running it anyway would spend a model call to report "no earnings date found" forever. Crypto is likewise absent from the thesis market picker and from Discovery's shortlist.
 
@@ -240,7 +240,7 @@ alter table theses add column title_edited boolean not null default false;
 
 ## Open Questions
 
-1. **The weekend crypto gap is the one accepted defect in this PRD.** Polling only during NSE/US hours means a Saturday 20% drawdown is not seen until Monday, on the one asset class that moves hardest when equity markets are shut. The decision was made to avoid a new cron entry in v1 and it is the right *scoping* call, but it should be revisited the first time it actually costs something — and it should be stated plainly in the UI in the meantime, not discovered.
+1. ~~**The weekend crypto gap is the one accepted defect in this PRD.**~~ **CLOSED in Phase 3.** It was revisited before it cost anything rather than after: hourly polling, seven days, on its own cron entry. The question was worth writing down precisely because stating the cost plainly — "a Saturday 20% drawdown is not seen until Monday, on the one asset class that moves hardest when equity markets are shut" — made accepting it indefensible for the sake of one cron entry.
 2. **Does the "All portfolios" Council make sense at all?** This PRD says the Council runs per book. A trader with five books may reasonably want one panel that sees everything. Deferred, but not obviously wrong.
 3. **CoinGecko free-tier rate limits under `poll-prices`.** Batched pricing makes one call per run, which is comfortable — but the universe refresh, on-demand refreshes and the import resolver all share the same budget. Worth measuring before assuming.
 4. **Does the ownership flag need to reach the disclaimer copy that already exists on the thesis Council?** This PRD changes the *portfolio* Council's framing. The per-thesis Council has no portfolio context at all, and arguably shouldn't gain one.

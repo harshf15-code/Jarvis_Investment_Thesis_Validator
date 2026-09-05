@@ -99,7 +99,7 @@ export async function POST(request: Request) {
   const [stocksRes, thesesRes, notesRes, profileRes] = await Promise.all([
     supabase
       .from("stocks")
-      .select("id, ticker, yahoo_symbol")
+      .select("id, ticker, yahoo_symbol, coingecko_id, asset_class")
       .in("id", all.map((p) => p.stock_id)),
     supabase
       .from("theses")
@@ -151,9 +151,14 @@ export async function POST(request: Request) {
   // cost the trader the whole read. An unclassified holding is already a case
   // this feature handles honestly.
   const profiles = await mapWithConcurrency(distinct, MAX_CONCURRENT_QUOTES, async (p) => {
-    const symbol = stockById.get(p.stock_id)?.yahoo_symbol;
-    if (!symbol) return { sector: null, industry: null };
-    return getSectorProfile(symbol).catch(() => ({ sector: null, industry: null }));
+    const stock = stockById.get(p.stock_id);
+    if (!stock?.yahoo_symbol) return { sector: null, industry: null };
+    // Not asked for a coin. Yahoo has no profile for a synthetic
+    // `coingecko:<id>:<currency>` symbol, so this would be one request per
+    // coin, every read, to be told nothing — and "unclassified" would then be
+    // indistinguishable from "we failed to classify an equity".
+    if (stock.coingecko_id) return { sector: null, industry: null };
+    return getSectorProfile(stock.yahoo_symbol).catch(() => ({ sector: null, industry: null }));
   });
 
   const holdings: PatternHolding[] = distinct.map((p, i) => {
@@ -162,6 +167,7 @@ export async function POST(request: Request) {
       ticker: p.ticker,
       companyName: null,
       source: thesis?.source ?? "imported",
+      assetClass: stockById.get(p.stock_id)?.asset_class ?? "equity",
       sector: profiles[i].sector,
       industry: profiles[i].industry,
       rationale: statedRationale(thesis?.input_text ?? null, p.ticker),

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { ownershipFraming, type BookOwnership } from "@/lib/jarvis-portfolio-council";
 import { extractTrailingJsonBlock } from "@/lib/jarvis-thesis-parser";
-import type { ThesisSource } from "@/lib/types";
+import type { AssetClass, ThesisSource } from "@/lib/types";
 
 /**
  * Jarvis's read on what a whole book says about the trader's own taste.
@@ -65,6 +65,8 @@ export type PatternHolding = {
   ticker: string;
   companyName: string | null;
   source: ThesisSource;
+  /** Equity or coin. A coin has no sector, and saying so beats an empty one. */
+  assetClass: AssetClass;
   /** As Yahoo classifies it, or null where Yahoo has no profile at all. */
   sector: string | null;
   industry: string | null;
@@ -258,13 +260,28 @@ export function buildPatternReadUserContext(input: {
     `THE BOOK — ${input.holdings.length} holding${input.holdings.length === 1 ? "" : "s"}. All of this is fact.`,
   );
 
+  // A COUNT, never a percentage. This read has no prices and no quantities —
+  // it is about what they own, not how much. A weight here would have to be
+  // invented, and an invented number in a prompt is indistinguishable from a
+  // measured one by the time it reaches the output.
+  const coins = input.holdings.filter((h) => h.assetClass === "crypto").length;
+  if (coins > 0) {
+    lines.push(
+      `${coins} of these ${coins === 1 ? "is a cryptocurrency" : "are cryptocurrencies"}, and ${input.holdings.length - coins} ${input.holdings.length - coins === 1 ? "is an equity" : "are equities"}. ` +
+        "Choosing to hold coins alongside shares is itself part of the taste you are reading. " +
+        "These are counts of holdings, not shares of the money — you have not been told what any of it is worth.",
+    );
+  }
+
   for (const h of input.holdings) {
     lines.push("");
     lines.push(`- ${h.ticker}${h.companyName ? ` (${h.companyName})` : ""}`);
     lines.push(
-      h.sector
-        ? `  Sector: ${h.sector}${h.industry ? ` — ${h.industry}` : ""}`
-        : "  Sector: not classified by the data source. Do not supply one.",
+      h.assetClass === "crypto"
+        ? "  Asset class: cryptocurrency. It has no sector, and none is missing — do not supply one, and do not read its absence as a gap in the data."
+        : h.sector
+          ? `  Sector: ${h.sector}${h.industry ? ` — ${h.industry}` : ""}`
+          : "  Sector: not classified by the data source. Do not supply one.",
     );
     lines.push(
       h.source === "imported"
