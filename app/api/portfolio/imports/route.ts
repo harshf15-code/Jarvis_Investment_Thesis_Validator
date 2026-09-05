@@ -185,8 +185,22 @@ export async function POST(request: Request) {
           yahoo_symbol: row.yahooSymbol!,
           exchange: row.exchange!,
           currency: row.currency!,
-          last_price: row.lastPrice,
-          last_price_at: new Date().toISOString(),
+          // A coin must persist WHAT it is, not just what it is called. The
+          // hourly poll selects crypto rows by `coingecko_id`, so a coin
+          // written without one is priced exactly once -- here -- and then
+          // skipped by every poll thereafter, silently, forever.
+          ...(row.coingeckoId
+            ? { coingecko_id: row.coingeckoId, asset_class: "crypto" as const }
+            : {}),
+          // Omitted rather than nulled when the batch could not price the row.
+          // `stocks` is shared across every book holding the same (coin,
+          // currency), so writing null here during a CoinGecko outage would
+          // blank a good cached price for positions this import never touched
+          // -- and stamping `last_price_at` alongside it would make the blank
+          // look FRESH to the staleness check. Only a real quote writes either.
+          ...(row.lastPrice !== null
+            ? { last_price: row.lastPrice, last_price_at: new Date().toISOString() }
+            : {}),
         },
       ]),
     ).values(),

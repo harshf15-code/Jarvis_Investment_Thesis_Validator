@@ -69,6 +69,7 @@ export async function resolveImportRows(
     exchange: null,
     yahooSymbol: null,
     lastPrice: null,
+    coingeckoId: null,
     currency: null,
   }));
 
@@ -188,7 +189,17 @@ async function priceCryptoRows(
 
   // One call prices every coin in the batch: `/simple/price` is batched.
   const ids = [...new Set([...coinBySymbol.values()].map((c) => c.coingecko_id))];
-  const prices = await getCryptoPrices(ids, currency);
+  // A CoinGecko outage, a rate limit, or a currency they do not quote must not
+  // fail the import: a recognised coin is a real holding whether or not anyone
+  // can price it this second, and the loop below already treats an unpriced row
+  // as resolved. Letting this throw would have contradicted that three lines
+  // later and 500ed the whole preview over a third party being down.
+  let prices = new Map<string, { price: number; asOf: Date }>();
+  try {
+    prices = await getCryptoPrices(ids, currency);
+  } catch {
+    // Deliberately swallowed -- see above.
+  }
 
   for (const row of rows) {
     const coin = coinBySymbol.get(row.ticker.trim().toUpperCase());
@@ -198,6 +209,7 @@ async function priceCryptoRows(
     row.ticker = coin.symbol;
     row.exchange = "CRYPTO";
     row.yahooSymbol = cryptoStockKey(coin.coingecko_id, currency);
+    row.coingeckoId = coin.coingecko_id;
     row.companyName = coin.name;
     row.currency = currency;
     // A coin the batch could not price still RESOLVES — the holding is real and

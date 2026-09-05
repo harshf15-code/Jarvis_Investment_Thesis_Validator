@@ -139,12 +139,37 @@ describe("POST /api/holdings", () => {
   });
 
   it("records the holding even when CoinGecko is down", async () => {
-    // A null last_price renders as "Price unavailable" and the next poll fills
-    // it in. Losing the holding because a third party is down would be worse.
+    // A missing last_price renders as "Price unavailable" and the next poll
+    // fills it in. Losing the holding because a third party is down would be
+    // worse.
     vi.mocked(getCryptoPrices).mockRejectedValue(new Error("429"));
     const res = await POST(post());
     expect(res.status).toBe(201);
-    expect(stockUpsert).toMatchObject({ last_price: null, last_price_at: null });
+    expect(inserted.positions).toHaveLength(1);
+  });
+
+  it("leaves a shared cached price alone when CoinGecko is down", async () => {
+    // This row is shared by every book holding the same (coin, currency).
+    // Writing null over it would blank a good price for positions this add
+    // never touched -- so the fields are OMITTED, not nulled, and the upsert
+    // leaves whatever the last successful poll stored.
+    vi.mocked(getCryptoPrices).mockRejectedValue(new Error("429"));
+    await POST(post());
+    expect(stockUpsert).not.toHaveProperty("last_price");
+    expect(stockUpsert).not.toHaveProperty("last_price_at");
+  });
+
+  it("writes the price when there IS one", async () => {
+    await POST(post());
+    expect(stockUpsert).toMatchObject({ last_price: 7515223 });
+  });
+
+  it("refuses a cost basis dated in the future", async () => {
+    // A holding bought tomorrow is not a holding, and a future cost-basis date
+    // corrupts every return this app computes from it.
+    const res = await POST(post({ date: "2099-01-01" }));
+    expect(res.status).toBe(400);
+    expect(inserted.positions).toBeUndefined();
   });
 
   it("refuses a book this trader cannot see", async () => {

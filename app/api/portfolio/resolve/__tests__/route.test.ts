@@ -303,6 +303,33 @@ describe("POST /api/portfolio/resolve — crypto", () => {
     expect(getCryptoPrices).toHaveBeenCalledWith(["bitcoin"], "INR");
   });
 
+  it("carries the CoinGecko id, which is what the hourly poll selects on", async () => {
+    // Without this the import writes a stocks row with a null coingecko_id and
+    // the default asset_class 'equity'. The poll skips exactly those rows, so
+    // the coin is priced once -- at import -- and then never again, silently,
+    // forever. The synthetic yahoo_symbol is not enough: nothing parses it back.
+    const body = await (await POST(cryptoPost({ rows: [row({ ticker: "BTC" })] }))).json();
+    expect(body.rows[0].coingeckoId).toBe("bitcoin");
+  });
+
+  it("leaves an equity's CoinGecko id null", async () => {
+    const body = await (await POST(post({ rows: [row({ ticker: "INFY" })] }))).json();
+    expect(body.rows[0].coingeckoId).toBeNull();
+  });
+
+  it("still resolves a coin when CoinGecko cannot price it", async () => {
+    // A recognised coin is a real holding whether or not anyone can price it
+    // this second. Letting the outage throw would 500 the whole preview and
+    // contradict the unpriced-but-resolved rule the loop already follows.
+    vi.mocked(getCryptoPrices).mockRejectedValue(new Error("429 Too Many Requests"));
+    const res = await POST(cryptoPost({ rows: [row({ ticker: "BTC" })] }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rows[0].status).toBe("resolved");
+    expect(body.rows[0].lastPrice).toBeNull();
+    expect(body.rows[0].coingeckoId).toBe("bitcoin");
+  });
+
   it("accepts a lowercase ticker, since a CSV is typed by a human", async () => {
     const body = await (await POST(cryptoPost({ rows: [row({ ticker: "btc" })] }))).json();
     expect(body.rows[0].status).toBe("resolved");

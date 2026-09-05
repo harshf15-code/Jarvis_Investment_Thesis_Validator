@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { currentUser } from "@/lib/auth/user";
 import { cryptoStockKey, getCryptoPrices } from "@/lib/crypto-data";
+import { localToday } from "@/lib/portfolio-import";
 import { buildHoldingRows } from "@/lib/portfolio/create-holding";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -26,7 +27,10 @@ const BodySchema = z.object({
   coingecko_id: z.string().min(1),
   quantity: z.coerce.number().positive("Quantity must be more than zero."),
   price: z.coerce.number().positive("Price must be more than zero."),
-  date: z.string().date(),
+  date: z
+    .string()
+    .date()
+    .refine((d) => d <= localToday(), "A holding cannot have been bought in the future."),
 });
 
 export async function POST(request: Request) {
@@ -107,8 +111,12 @@ export async function POST(request: Request) {
         asset_class: "crypto",
         exchange: "CRYPTO",
         currency,
-        last_price: lastPrice,
-        last_price_at: lastPriceAt,
+        // Omitted rather than nulled when CoinGecko could not be reached. This
+        // row is shared by every book holding the same (coin, currency), so
+        // writing null would blank a good cached price for positions this add
+        // never touched -- every one of them showing "Price unavailable"
+        // because someone added the same coin during an outage.
+        ...(lastPrice !== null ? { last_price: lastPrice, last_price_at: lastPriceAt } : {}),
       },
       { onConflict: "yahoo_symbol" },
     )
@@ -139,10 +147,19 @@ export async function POST(request: Request) {
   // Same order and same rollback as the import: everything cascades from
   // `theses`, so deleting them unwinds a half-written holding completely.
   const undo = async (message: string) => {
-    await supabase
+    const { error } = await supabase
       .from("theses")
       .delete()
       .in("id", rows.theses.map((t) => t.id!));
+    // A compensating delete can fail too, and a caller told only "could not
+    // save" would retry and add the coin twice. Saying so is the difference
+    // between a failed write and a silently half-written one.
+    if (error) {
+      return NextResponse.json(
+        { error: `${message} Some rows could not be cleaned up: ${error.message}` },
+        { status: 500 },
+      );
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   };
 
