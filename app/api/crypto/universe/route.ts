@@ -56,12 +56,38 @@ export async function POST(request: Request) {
 
   const refreshed_at = new Date().toISOString();
   // Shared reference data: service-role writes, `authenticated` only reads.
-  const { error } = await createAdminClient()
+  const admin = createAdminClient();
+  const { error } = await admin
     .from("crypto_universe")
     .upsert(coins.map((c) => ({ ...c, refreshed_at })));
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Coins that fell out of the ranking leave the table. Without this the
+  // upsert only ever ADDS, so the "top ten" would grow every time the ranking
+  // churned and this route would go on offering a coin it no longer tracks --
+  // the opposite of what the rule above says it does.
+  //
+  // Only positions may be held; nothing references this table by key, so a
+  // delete cannot orphan a holding. A coin that leaves keeps its stock row,
+  // its positions, its prices and its alerts. It just stops being addable.
+  //
+  // Ordered upsert-then-delete on purpose. PostgREST has no transaction across
+  // two statements, so the failure to design against is a crash between them:
+  // this order leaves a stale row that the next refresh removes, where the
+  // reverse could leave the table EMPTY and block every add until then.
+  // Guarded because the filter below inverts the fetched set: an empty list
+  // would not prune nothing, it would delete EVERYTHING. `fetchTopCoins`
+  // returning nothing on a 200 is not a state this trusts itself to survive.
+  const keep = coins.map((c) => `"${c.coingecko_id}"`).join(",");
+  const { error: pruneError } = keep
+    ? await admin.from("crypto_universe").delete().not("coingecko_id", "in", `(${keep})`)
+    : { error: null };
+
+  if (pruneError) {
+    return NextResponse.json({ error: pruneError.message }, { status: 500 });
   }
   return NextResponse.json({ refreshed: coins.length });
 }

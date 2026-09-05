@@ -8,8 +8,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { POST } from "../route";
 
 let upserted: Record<string, unknown>[] | null = null;
+/** The `not(... in ...)` filter the prune deletes by, or null if it never ran. */
+let pruneFilter: string | null = null;
 
-function mockAdmin(error: { message: string } | null = null) {
+function mockAdmin(
+  error: { message: string } | null = null,
+  pruneError: { message: string } | null = null,
+) {
   return {
     from: vi.fn().mockImplementation((table: string) => {
       if (table !== "crypto_universe") throw new Error(`unexpected table ${table}`);
@@ -18,6 +23,12 @@ function mockAdmin(error: { message: string } | null = null) {
           upserted = rows;
           return { error };
         },
+        delete: () => ({
+          not: async (_col: string, _op: string, value: string) => {
+            pruneFilter = value;
+            return { error: pruneError };
+          },
+        }),
       };
     }),
   };
@@ -32,6 +43,7 @@ const post = (secret = "s3cret") =>
 beforeEach(() => {
   vi.clearAllMocks();
   upserted = null;
+  pruneFilter = null;
   vi.stubEnv("HOLDING_WATCH_SECRET", "s3cret");
   vi.mocked(createAdminClient).mockReturnValue(mockAdmin() as never);
   vi.mocked(fetchTopCoins).mockResolvedValue([
@@ -53,6 +65,29 @@ describe("POST /api/crypto/universe", () => {
   it("stamps refreshed_at so staleness is visible", async () => {
     await POST(post());
     expect(upserted![0].refreshed_at).toEqual(expect.any(String));
+  });
+
+  it("removes coins that have fallen out of the ranking", async () => {
+    // The upsert only ever ADDS. Without this the tracked "top ten" grows
+    // every time the ranking churns, and this route goes on offering a coin it
+    // no longer tracks -- the opposite of the rule it states.
+    await POST(post());
+    expect(pruneFilter).toBe('("bitcoin")');
+  });
+
+  it("does not prune when the ranking came back empty", async () => {
+    // The filter inverts the fetched set, so an empty list would not prune
+    // nothing -- it would delete every coin and block every add until the next
+    // refresh a week later.
+    vi.mocked(fetchTopCoins).mockResolvedValue([] as never);
+    const res = await POST(post());
+    expect(res.status).toBe(200);
+    expect(pruneFilter).toBeNull();
+  });
+
+  it("reports a failed prune rather than claiming a clean refresh", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(mockAdmin(null, { message: "nope" }) as never);
+    expect((await POST(post())).status).toBe(500);
   });
 
   it("refuses a request with the wrong secret", async () => {

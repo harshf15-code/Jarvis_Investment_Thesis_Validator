@@ -178,7 +178,7 @@ select cron.schedule(
   select net.http_post(
     url := 'https://<PROJECT_REF>.supabase.co/functions/v1/poll-prices?market=CRYPTO',
     headers := jsonb_build_object(
-      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'),
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'poll_prices_service_role_key'),
       'Content-Type', 'application/json'
     ),
     body := '{}'::jsonb,
