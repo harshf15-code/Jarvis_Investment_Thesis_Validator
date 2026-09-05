@@ -2,22 +2,14 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { currentUser } from "@/lib/auth/user";
-import { importRationalePlaceholder } from "@/lib/holding-watch";
 import { isLiveMarket } from "@/lib/markets";
 import { MAX_IMPORT_ROWS } from "@/lib/portfolio-import";
+import { buildHoldingRows } from "@/lib/portfolio/create-holding";
 import { resolveImportRows } from "@/lib/portfolio/resolve";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireScopedRead } from "@/lib/portfolio/active";
 import { createClient } from "@/lib/supabase/server";
-import type {
-  EntryInsert,
-  HoldingWatchStateInsert,
-  MarketCode,
-  PortfolioImportError,
-  PositionInsert,
-  ThesisInsert,
-  TradePlanInsert,
-} from "@/lib/types";
+import type { MarketCode, PortfolioImportError } from "@/lib/types";
 
 /**
  * Commits a reviewed CSV batch into the ordinary theses -> trade_plans ->
@@ -193,8 +185,22 @@ export async function POST(request: Request) {
           yahoo_symbol: row.yahooSymbol!,
           exchange: row.exchange!,
           currency: row.currency!,
-          last_price: row.lastPrice,
-          last_price_at: new Date().toISOString(),
+          // A coin must persist WHAT it is, not just what it is called. The
+          // hourly poll selects crypto rows by `coingecko_id`, so a coin
+          // written without one is priced exactly once -- here -- and then
+          // skipped by every poll thereafter, silently, forever.
+          ...(row.coingeckoId
+            ? { coingecko_id: row.coingeckoId, asset_class: "crypto" as const }
+            : {}),
+          // Omitted rather than nulled when the batch could not price the row.
+          // `stocks` is shared across every book holding the same (coin,
+          // currency), so writing null here during a CoinGecko outage would
+          // blank a good cached price for positions this import never touched
+          // -- and stamping `last_price_at` alongside it would make the blank
+          // look FRESH to the staleness check. Only a real quote writes either.
+          ...(row.lastPrice !== null
+            ? { last_price: row.lastPrice, last_price_at: new Date().toISOString() }
+            : {}),
         },
       ]),
     ).values(),
@@ -235,71 +241,23 @@ export async function POST(request: Request) {
   }
 
   // --- the four inserts ---------------------------------------------------
-  // Ids are generated up front so nothing depends on PostgREST returning
-  // inserted rows in the order they were sent. Four round trips for the whole
-  // batch, not four per row.
-  const theses: ThesisInsert[] = [];
-  const tradePlans: TradePlanInsert[] = [];
-  const positions: PositionInsert[] = [];
-  const entries: EntryInsert[] = [];
-  const watchState: HoldingWatchStateInsert[] = [];
-
-  for (const row of accepted) {
-    const note = input.rows[row.index]?.note?.trim();
-    const thesisId = crypto.randomUUID();
-    const tradePlanId = crypto.randomUUID();
-    const positionId = crypto.randomUUID();
-    const stockId = stockIdBySymbol.get(row.yahooSymbol!)!;
-
-    theses.push({
-      id: thesisId,
-      // NOT NULL, so it always says something. The trader's own words when
-      // they gave them: a later per-holding review is only as grounded as this.
-      input_text:
-        note && note.length > 0 ? note : importRationalePlaceholder(row.ticker),
-      mode: "stock_only",
-      status: "active",
-      markets: [market],
-      // Setting `ticker` is exactly what this field is for: it may only ever be
-      // set when the TRADER named the stock, and owning it is the strongest
-      // form of naming it.
+  // Row-building is shared with the manual-add route (`buildHoldingRows`), so a
+  // holding is assembled identically however it arrived. What stays HERE is
+  // what is genuinely the import's: the batch audit row above and the rollback
+  // below. Four round trips for the whole batch, not four per row.
+  const { theses, tradePlans, positions, entries, watchState } = buildHoldingRows(
+    accepted.map((row) => ({
       ticker: row.ticker,
-      stock_id: stockId,
-      source: "imported",
-      import_batch_id: batch.id,
-    });
-    // Every level null: no analysis produced a trade plan, and inventing an
-    // entry zone or a stop for a position this app never sized would be worse
-    // than admitting there isn't one. The row exists because
-    // `positions.trade_plan_id` is NOT NULL and the position detail page reads
-    // it with `.single()`.
-    tradePlans.push({ id: tradePlanId, thesis_id: thesisId });
-    positions.push({
-      id: positionId,
-      portfolio_id: input.portfolio_id,
-      thesis_id: thesisId,
-      trade_plan_id: tradePlanId,
-      stock_id: stockId,
-      ticker: row.ticker,
-      status: "active",
-    });
-    entries.push({
-      id: crypto.randomUUID(),
-      position_id: positionId,
-      date: row.date ?? input.as_of_date,
+      stockId: stockIdBySymbol.get(row.yahooSymbol!)!,
       quantity: row.quantity!,
       price: row.averagePrice!,
-      tranche: "T1",
-      notes: `Imported from ${input.source_filename}. Cost basis is a broker average; the date is approximate.`,
-    });
-    // Queues the initial read rather than running it here (0022). A null
-    // `last_checked_at` is what the watch route drains first. Doing it inline
-    // would be one model call per holding inside a route with a 120s budget
-    // and a 200-row cap — a large import would blow the timeout, the spend cap
-    // and the trader's patience in one action, and would fail the import for a
-    // reason that has nothing to do with importing.
-    watchState.push({ position_id: positionId });
-  }
+      date: row.date ?? input.as_of_date,
+      note: input.rows[row.index]?.note,
+      entryNote: `Imported from ${input.source_filename}. Cost basis is a broker average; the date is approximate.`,
+      assetClass: market === "CRYPTO" ? "crypto" : "equity",
+    })),
+    { portfolioId: input.portfolio_id, market, importBatchId: batch.id },
+  );
 
   const thesisIds = theses.map((t) => t.id!);
 

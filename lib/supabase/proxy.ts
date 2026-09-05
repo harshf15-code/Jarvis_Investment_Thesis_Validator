@@ -15,13 +15,17 @@ const AUTH_PATHS = ["/login", "/signup"];
  * Routes that carry their OWN authentication and must not be gated on a
  * session cookie.
  *
- * `/api/portfolio/holding-watch` is called by `pg_cron`, which has no browser
- * and no session. Without this the proxy answers it with a 307 to /login and
- * the route never runs — the scheduled watch would appear healthy in cron's
- * log and do nothing forever. It is not "public": it checks a bearer secret
- * itself, and refuses outright when that secret is not configured.
+ * `/api/portfolio/holding-watch` and `/api/crypto/universe` are both called by
+ * `pg_cron`, which has no browser and no session. Without this the proxy
+ * answers them with a 307 to /login and the route never runs — the scheduled
+ * job would appear healthy in cron's log and do nothing forever. Neither is
+ * "public": each checks the same bearer secret itself, and refuses outright
+ * when that secret is not configured.
  */
-const SELF_AUTHENTICATED_PATHS = ["/api/portfolio/holding-watch"];
+const SELF_AUTHENTICATED_PATHS = [
+  "/api/portfolio/holding-watch",
+  "/api/crypto/universe",
+];
 
 const PUBLIC_PATHS = ["/", ...AUTH_PATHS, ...SELF_AUTHENTICATED_PATHS];
 

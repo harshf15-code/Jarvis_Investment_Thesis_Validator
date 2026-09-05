@@ -206,6 +206,13 @@ export type ResolvedImportRow = DraftImportRow & {
   yahooSymbol: string | null;
   lastPrice: number | null;
   /**
+   * The coin this row resolved to, and null for every equity. It is carried
+   * here rather than re-derived at commit time because `stocks.coingecko_id`
+   * is what the hourly poll selects on: a coin persisted without it is priced
+   * once, at import, and then never again.
+   */
+  coingeckoId: string | null;
+  /**
    * What the listing is quoted in. Non-null exactly when `yahooSymbol` is:
    * a row that never priced has no currency to report, and a row that priced
    * in a currency the chosen market does not use never gets this far — see

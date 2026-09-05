@@ -156,8 +156,79 @@ select cron.schedule(
   $$
 );
 
+-- poll-prices-crypto: HOURLY, ALL SEVEN DAYS (0030).
+--
+-- Crypto has no session, so unlike the two equity jobs above this one has no
+-- window to widen and no `isMarketOpen` behind it -- the function BYPASSES that
+-- check for CRYPTO rather than consulting it. Asking whether the market is open
+-- is not a check that passes for a coin; it is the wrong question.
+--
+-- That is the whole point of this job. The PRD originally proposed pricing
+-- crypto only when poll-prices was already awake for NSE or US hours, and said
+-- plainly what it would cost: "a crypto stop or target that breaches over a
+-- weekend is not detected until Monday." Hourly, seven days, means it is
+-- detected.
+--
+-- ~730 invocations a month at one CoinGecko call per distinct currency is
+-- roughly 7-15% of the Demo tier's 10,000 monthly credits.
+select cron.schedule(
+  'poll-prices-crypto',
+  '0 * * * *',
+  $$
+  select net.http_post(
+    url := 'https://<PROJECT_REF>.supabase.co/functions/v1/poll-prices?market=CRYPTO',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'poll_prices_service_role_key'),
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb,
+    -- Bounded by the number of distinct currencies held, not by the number of
+    -- coins: /simple/price is batched. Two books in two currencies is two
+    -- requests, so the 5s default would be tight but the equity jobs' own
+    -- widening is the precedent here.
+    timeout_milliseconds := 60000
+  );
+  $$
+);
+
+
+-- crypto-universe: the top ten by market cap, WEEKLY (0030).
+--
+-- Weekly is ample and a stale table is harmless, because this list governs what
+-- can be ADDED, never what can be held: a coin that falls out of the top ten
+-- keeps its positions, its history and its alerts. Market-cap rank does not
+-- churn on any shorter timescale than this either.
+--
+-- Reuses `holding_watch_secret` rather than minting a second secret. Both
+-- endpoints are "a scheduled job may call this and nobody else may", and a
+-- second secret is a second thing to rotate for no extra isolation. Like that
+-- route, this one refuses outright while the secret is unset.
+--
+-- Sunday 02:00 UTC: well clear of both equity sessions and of the hourly
+-- crypto poll's :00 slot in any hour anyone is watching.
+select cron.schedule(
+  'crypto-universe',
+  '0 2 * * 0',
+  $$
+  select net.http_post(
+    url := 'https://<APP_HOST>/api/crypto/universe',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'holding_watch_secret'),
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb
+    -- No timeout override: this is one CoinGecko call and one upsert of ten
+    -- rows, which finishes inside pg_net's 5s default. Contrast the holding
+    -- watch above, which runs for minutes and must raise it.
+  );
+  $$
+);
+
+
 -- To remove a schedule later:
 --   select cron.unschedule('poll-prices-nse');
 --   select cron.unschedule('poll-prices-us');
 --   select cron.unschedule('holding-watch');
 --   select cron.unschedule('daily-digest');
+--   select cron.unschedule('crypto-universe');
+--   select cron.unschedule('poll-prices-crypto');

@@ -7,7 +7,8 @@ import { computeDistanceToStop, computePositionPnl } from "@/lib/position-metric
 import { formatCurrency } from "@/lib/format";
 import { currencyForExchange } from "@/lib/markets";
 import { ConvictionBadge } from "@/components/thesis/conviction-badge";
-import type { ConvictionTier, ExchangeCode, ThesisSource } from "@/lib/types";
+import { CoinGeckoAttribution } from "@/components/shared/coingecko-attribution";
+import type { AssetClass, ConvictionTier, ExchangeCode, ThesisSource } from "@/lib/types";
 
 export type PositionRow = {
   position: { id: string; ticker: string; status: string; portfolio_id: string };
@@ -15,7 +16,16 @@ export type PositionRow = {
   // 5: every screen showing a price says when it was taken); it's optional
   // here because this table itself never reads it.
   stock:
-    | { last_price: number | null; last_price_at?: string | null; exchange: ExchangeCode; currency: string }
+    | {
+        last_price: number | null;
+        last_price_at?: string | null;
+        exchange: ExchangeCode;
+        currency: string;
+        /** Optional because the recommendation rail's lighter `stocks` select
+         *  does not ask for it. Absent means equity, which is what it was
+         *  before 0030. */
+        asset_class?: AssetClass;
+      }
     | undefined;
   tradePlan: {
     stop_loss: number | null;
@@ -151,6 +161,12 @@ export function PositionsTable({
           })}
         </tbody>
       </table>
+      {/* Directly under the data set, per CoinGecko's attribution guide, and
+          only when a coin is actually in it. */}
+      <CoinGeckoAttribution
+        show={rows.some((r) => r.stock?.asset_class === "crypto")}
+        className="px-3 pb-3"
+      />
     </div>
   );
 }

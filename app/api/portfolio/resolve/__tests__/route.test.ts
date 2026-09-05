@@ -2,6 +2,10 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/auth/user", () => ({ currentUser: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/crypto-data", () => ({
+  getCryptoPrices: vi.fn(),
+  cryptoStockKey: (id: string, cur: string) => `coingecko:${id}:${cur.toLowerCase()}`,
+}));
 vi.mock("@/lib/market-data", () => ({
   getQuote: vi.fn(),
   resolveYahooSymbol: (ticker: string, exchange: string) =>
@@ -9,6 +13,7 @@ vi.mock("@/lib/market-data", () => ({
 }));
 
 import { currentUser } from "@/lib/auth/user";
+import { getCryptoPrices } from "@/lib/crypto-data";
 import { getQuote } from "@/lib/market-data";
 import { createClient } from "@/lib/supabase/server";
 import { POST } from "../route";
@@ -239,5 +244,124 @@ describe("POST /api/portfolio/resolve", () => {
     const res = await POST(post({ rows: [row()] }));
     expect(res.status).toBe(404);
     expect(vi.mocked(getQuote)).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/portfolio/resolve — crypto", () => {
+  /** A book in rupees, whose universe knows BTC and nothing else. */
+  function buildCryptoMock(held: string[] = []) {
+    return {
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === "portfolios") {
+          return { select: () => ({ eq: () => ({ maybeSingle: async () => ({
+            data: { id: PF1, base_currency: "INR" }, error: null }) }) }) };
+        }
+        if (table === "crypto_universe") {
+          return { select: () => ({ in: async () => ({
+            data: [{ coingecko_id: "bitcoin", symbol: "BTC", name: "Bitcoin" }], error: null }) }) };
+        }
+        if (table === "positions") {
+          const chain: Record<string, unknown> = {
+            eq: () => chain,
+            in: async () => ({ data: held.map((ticker) => ({ ticker })), error: null }),
+          };
+          return { select: () => chain };
+        }
+        throw new Error(`unexpected table ${table}`);
+      }),
+    };
+  }
+
+  const cryptoPost = (body: Record<string, unknown>) =>
+    new Request("http://test/api/portfolio/resolve", {
+      method: "POST",
+      body: JSON.stringify({ portfolio_id: PF1, market: "CRYPTO", ...body }),
+    }) as never;
+
+  beforeEach(() => {
+    vi.mocked(createClient).mockResolvedValue(buildCryptoMock() as never);
+    vi.mocked(getCryptoPrices).mockResolvedValue(
+      new Map([["bitcoin", { price: 7515223, asOf: new Date("2026-09-04T00:00:00Z") }]]) as never,
+    );
+  });
+
+  it("resolves a ticker against the universe, not against Yahoo", async () => {
+    // The defect this replaces: resolveYahooSymbol("BTC","US") returns a real
+    // quote for a US-listed Bitcoin trust. Wrong asset, no error.
+    const body = await (await POST(cryptoPost({ rows: [row({ ticker: "BTC" })] }))).json();
+
+    expect(body.rows[0].status).toBe("resolved");
+    expect(body.rows[0].exchange).toBe("CRYPTO");
+    expect(body.rows[0].yahooSymbol).toBe("coingecko:bitcoin:inr");
+    expect(getQuote).not.toHaveBeenCalled();
+  });
+
+  it("prices it in the book's currency", async () => {
+    const body = await (await POST(cryptoPost({ rows: [row({ ticker: "BTC" })] }))).json();
+    expect(body.rows[0].currency).toBe("INR");
+    expect(body.rows[0].lastPrice).toBe(7515223);
+    expect(getCryptoPrices).toHaveBeenCalledWith(["bitcoin"], "INR");
+  });
+
+  it("carries the CoinGecko id, which is what the hourly poll selects on", async () => {
+    // Without this the import writes a stocks row with a null coingecko_id and
+    // the default asset_class 'equity'. The poll skips exactly those rows, so
+    // the coin is priced once -- at import -- and then never again, silently,
+    // forever. The synthetic yahoo_symbol is not enough: nothing parses it back.
+    const body = await (await POST(cryptoPost({ rows: [row({ ticker: "BTC" })] }))).json();
+    expect(body.rows[0].coingeckoId).toBe("bitcoin");
+  });
+
+  it("leaves an equity's CoinGecko id null", async () => {
+    const body = await (await POST(post({ rows: [row({ ticker: "INFY" })] }))).json();
+    expect(body.rows[0].coingeckoId).toBeNull();
+  });
+
+  it("still resolves a coin when CoinGecko cannot price it", async () => {
+    // A recognised coin is a real holding whether or not anyone can price it
+    // this second. Letting the outage throw would 500 the whole preview and
+    // contradict the unpriced-but-resolved rule the loop already follows.
+    vi.mocked(getCryptoPrices).mockRejectedValue(new Error("429 Too Many Requests"));
+    const res = await POST(cryptoPost({ rows: [row({ ticker: "BTC" })] }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rows[0].status).toBe("resolved");
+    expect(body.rows[0].lastPrice).toBeNull();
+    expect(body.rows[0].coingeckoId).toBe("bitcoin");
+  });
+
+  it("accepts a lowercase ticker, since a CSV is typed by a human", async () => {
+    const body = await (await POST(cryptoPost({ rows: [row({ ticker: "btc" })] }))).json();
+    expect(body.rows[0].status).toBe("resolved");
+  });
+
+  it("does not resolve a ticker that is not a tracked coin", async () => {
+    const body = await (await POST(cryptoPost({ rows: [row({ ticker: "NOTACOIN" })] }))).json();
+    expect(body.rows[0].status).toBe("unresolved");
+    expect(body.rows[0].reason).toMatch(/top ten/i);
+  });
+
+  it("still flags a coin already held in this book", async () => {
+    // Duplicate detection is the shared tail, not a crypto reimplementation of
+    // it — a coin re-uploaded flags exactly like a share re-uploaded.
+    vi.mocked(createClient).mockResolvedValue(buildCryptoMock(["BTC"]) as never);
+    const body = await (await POST(cryptoPost({ rows: [row({ ticker: "BTC" })] }))).json();
+    expect(body.rows[0].status).toBe("duplicate");
+    expect(body.rows[0].reason).toMatch(/already hold/i);
+  });
+
+  it("still flags a coin repeated inside one file", async () => {
+    const body = await (
+      await POST(cryptoPost({ rows: [row({ ticker: "BTC" }), row({ index: 1, ticker: "BTC" })] }))
+    ).json();
+    expect(body.rows[1].status).toBe("duplicate");
+    expect(body.rows[1].reason).toMatch(/more than once/i);
+  });
+
+  it("still rejects a structurally invalid row before pricing it", async () => {
+    const body = await (
+      await POST(cryptoPost({ rows: [row({ ticker: "BTC", quantity: 0 })] }))
+    ).json();
+    expect(body.rows[0].status).toBe("invalid");
   });
 });

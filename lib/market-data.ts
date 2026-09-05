@@ -39,6 +39,21 @@ export function resolveYahooSymbol(
       return `${upperTicker}.BO`;
     case "US":
       return upperTicker;
+    case "CRYPTO":
+      // Reaching here is a BUG, not a missing feature. A crypto row is priced
+      // by `lib/crypto-data.ts` and has no Yahoo symbol to build.
+      //
+      // Throwing loudly is the whole point. Before 0030 this function had no
+      // crypto arm and no default, so `resolveYahooSymbol("BTC-USD", "US")`
+      // returned "BTC-USD" unchanged — and Yahoo ANSWERS that with a real
+      // quote, whose USD currency then passed the import's currency gate. A
+      // coin persisted as `exchange: 'US'` and was polled on US market hours.
+      // The failure was never an error; it was a plausible wrong answer, which
+      // is worse. If a caller reaches this line it has lost track of asset
+      // class, and it should find out immediately.
+      throw new MarketDataError(
+        `resolveYahooSymbol called for a crypto row (${upperTicker}) — crypto prices come from CoinGecko`,
+      );
   }
 }
 

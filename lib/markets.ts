@@ -23,6 +23,19 @@ export type MarketMeta = {
   label: string;
   /** Selectable today. `false` renders as "coming soon". */
   live: boolean;
+  /**
+   * Can this market ever be the SUBJECT of a thesis?
+   *
+   * True for every equity market, including the ones that are not live yet —
+   * CN/EU/EM are "coming soon" on the thesis picker, not excluded from it.
+   * False only for crypto, which is holdings-only by design: there is no
+   * shortlist to build and no memorandum to write, so it is not coming soon
+   * either, and showing it greyed out would promise something untrue.
+   *
+   * Orthogonal to `live`, which governs whether holdings can be priced and
+   * imported. Crypto is live and not tradable; CN is tradable and not live.
+   */
+  tradable: boolean;
   /** Exchanges whose listings belong to this market. Empty when not live. */
   exchanges: readonly ExchangeCode[];
   currency: string;
@@ -36,6 +49,7 @@ export const MARKETS: Record<MarketCode, MarketMeta> = {
   US: {
     label: "United States",
     live: true,
+    tradable: true,
     exchanges: ["US"],
     currency: "USD",
     symbol: "$",
@@ -44,17 +58,36 @@ export const MARKETS: Record<MarketCode, MarketMeta> = {
   IN: {
     label: "India",
     live: true,
+    tradable: true,
     exchanges: ["NSE", "BSE"],
     currency: "INR",
     symbol: "₹",
     locale: "en-IN",
   },
-  CN: { label: "China", live: false, exchanges: [], currency: "CNY", symbol: "¥", locale: "zh-CN" },
-  EU: { label: "Europe", live: false, exchanges: [], currency: "EUR", symbol: "€", locale: "en-GB" },
+  CN: { label: "China", live: false, tradable: true, exchanges: [], currency: "CNY", symbol: "¥", locale: "zh-CN" },
+  EU: { label: "Europe", live: false, tradable: true, exchanges: [], currency: "EUR", symbol: "€", locale: "en-GB" },
   EM: {
     label: "Emerging Markets",
     live: false,
+    tradable: true,
     exchanges: [],
+    currency: "USD",
+    symbol: "$",
+    locale: "en-US",
+  },
+  CRYPTO: {
+    label: "Crypto",
+    live: true,
+    tradable: false,
+    // A coin is not listed on an exchange. `stocks.exchange` gets the sentinel
+    // 'CRYPTO' so the NOT NULL column has an honest value, but nothing resolves
+    // an exchange for a coin the way `exchangesFor` does for an equity.
+    exchanges: [],
+    // INERT, AND MUST NOT BE READ FOR A CRYPTO ROW. Every other market has one
+    // fixed currency; crypto's comes from the portfolio's `base_currency`, and
+    // the currency of record is `stocks.currency`, which is what the positions
+    // table already prefers. These three exist because `MarketMeta` requires
+    // them, not because they mean anything here.
     currency: "USD",
     symbol: "$",
     locale: "en-US",
@@ -62,9 +95,30 @@ export const MARKETS: Record<MarketCode, MarketMeta> = {
 };
 
 /** Display order for the selector — live markets first, then the rest. */
-export const MARKET_ORDER: MarketCode[] = ["US", "IN", "CN", "EU", "EM"];
+export const MARKET_ORDER: MarketCode[] = ["US", "IN", "CRYPTO", "CN", "EU", "EM"];
 
 export const LIVE_MARKETS: MarketCode[] = MARKET_ORDER.filter((m) => MARKETS[m].live);
+
+/**
+ * The markets a THESIS may be about — every live market except crypto.
+ *
+ * Separate from `LIVE_MARKETS` because "can I hold this" and "can Jarvis write
+ * a memorandum about this" stopped being the same question when crypto
+ * arrived. Holdings-only is what crypto is in v1.
+ */
+export const THESIS_MARKETS: MarketCode[] = MARKET_ORDER.filter(
+  (m) => MARKETS[m].live && MARKETS[m].tradable,
+);
+
+/**
+ * What the thesis market picker RENDERS — every thesis-capable market, live or
+ * not, so CN/EU/EM keep their honest "coming soon" state. Crypto is absent
+ * rather than disabled: it is not coming soon, and greying it out would
+ * promise a feature that is not planned.
+ */
+export const THESIS_MARKET_CHOICES: MarketCode[] = MARKET_ORDER.filter(
+  (m) => MARKETS[m].tradable,
+);
 
 export function isMarketCode(value: unknown): value is MarketCode {
   return typeof value === "string" && value in MARKETS;

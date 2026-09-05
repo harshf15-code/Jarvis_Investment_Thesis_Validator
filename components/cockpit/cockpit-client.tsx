@@ -6,6 +6,7 @@ import { Plus } from "lucide-react";
 
 import { PortfolioSummary, type CurrencyTotal } from "@/components/cockpit/portfolio-summary";
 import { AlertRail } from "@/components/cockpit/alert-rail";
+import { CoinGeckoAttribution } from "@/components/shared/coingecko-attribution";
 import { PositionsTable, type PositionRow } from "@/components/positions/positions-table";
 import {
   RecommendationStats,
@@ -149,6 +150,12 @@ export function CockpitClient({ scopeParam }: { scopeParam: string }) {
         totalsByCurrency={data.totalsByCurrency}
         positionCount={data.positions.length}
         pendingRecCount={pendingRecCount}
+      />
+      {/* These totals are partly CoinGecko-derived whenever a coin is held, so
+          the credit belongs beside them and not only beside the table below. */}
+      <CoinGeckoAttribution
+        show={data.positions.some((p) => p.stock?.asset_class === "crypto")}
+        className="mt-1.5"
       />
 
       {rollUp && (

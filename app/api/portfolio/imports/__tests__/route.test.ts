@@ -3,6 +3,10 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("@/lib/auth/user", () => ({ currentUser: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/crypto-data", () => ({
+  getCryptoPrices: vi.fn(),
+  cryptoStockKey: (id: string, cur: string) => `coingecko:${id}:${cur.toLowerCase()}`,
+}));
 vi.mock("@/lib/market-data", () => ({
   getQuote: vi.fn(),
   resolveYahooSymbol: (ticker: string, exchange: string) =>
@@ -10,6 +14,7 @@ vi.mock("@/lib/market-data", () => ({
 }));
 
 import { currentUser } from "@/lib/auth/user";
+import { getCryptoPrices } from "@/lib/crypto-data";
 import { getQuote } from "@/lib/market-data";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -101,6 +106,16 @@ function buildSupabaseMock(opts: { held?: string[]; failOn?: string; bookExists?
           }),
         };
       }
+      if (table === "crypto_universe") {
+        return {
+          select: vi.fn().mockReturnValue({
+            in: vi.fn().mockResolvedValue({
+              data: [{ coingecko_id: "bitcoin", symbol: "BTC", name: "Bitcoin" }],
+              error: null,
+            }),
+          }),
+        };
+      }
       if (table === "trade_plans") return { insert: insertFor("trade_plans") };
       if (table === "entries") return { insert: insertFor("entries") };
       if (table === "holding_watch_state") return { insert: insertFor("holding_watch_state") };
@@ -128,10 +143,10 @@ function buildAdminMock() {
         upserted.push(rows);
         return {
           select: vi.fn().mockImplementation(async () => ({
-            data: [
-              { id: "stock-infy", yahoo_symbol: "INFY.NS" },
-              { id: "stock-tcs", yahoo_symbol: "TCS.NS" },
-            ],
+            // Echoed from the payload rather than hardcoded: the route looks
+            // the stock id up BY yahoo_symbol, so a fixed equity list would
+            // silently fail to match any other kind of row.
+            data: rows.map((r) => ({ id: `stock-${r.yahoo_symbol}`, yahoo_symbol: r.yahoo_symbol })),
             error: null,
           })),
         };
@@ -400,5 +415,83 @@ describe("POST /api/portfolio/imports", () => {
     vi.mocked(createClient).mockResolvedValue(supabase as never);
     await POST(post({ objective: "Compound for ten years." }));
     expect(supabase._calls.profileUpserts[0]).toMatchObject({ objective: "Compound for ten years." });
+  });
+});
+
+describe("POST /api/portfolio/imports — crypto", () => {
+  let supabase: ReturnType<typeof buildSupabaseMock>;
+  let admin: ReturnType<typeof buildAdminMock>;
+
+  const cryptoPost = (body: Record<string, unknown> = {}) =>
+    new Request("http://test/api/portfolio/imports", {
+      method: "POST",
+      body: JSON.stringify({
+        portfolio_id: PF1,
+        source_filename: "coins.csv",
+        market: "CRYPTO",
+        as_of_date: "2026-08-01",
+        rows: [{ ticker: "BTC", quantity: 0.0043, averagePrice: 7515223 }],
+        ...body,
+      }),
+    }) as never;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(currentUser).mockResolvedValue({ id: "user-1" } as never);
+    supabase = buildSupabaseMock();
+    admin = buildAdminMock();
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    vi.mocked(createAdminClient).mockReturnValue(admin as never);
+    vi.mocked(getCryptoPrices).mockResolvedValue(
+      new Map([["bitcoin", { price: 7515223, asOf: new Date("2026-09-04T00:00:00Z") }]]) as never,
+    );
+  });
+
+  it("persists what the coin IS, not only what it is called", async () => {
+    // The hourly poll selects crypto rows by `coingecko_id` and skips every
+    // row without one. A coin imported without it is priced once -- here -- and
+    // then never again, silently, for as long as it is held. The synthetic
+    // yahoo_symbol does not substitute: nothing parses it back.
+    const res = await POST(cryptoPost());
+    expect(res.status).toBe(201);
+    expect(admin._upserted[0][0]).toMatchObject({
+      coingecko_id: "bitcoin",
+      asset_class: "crypto",
+      exchange: "CRYPTO",
+    });
+  });
+
+  it("leaves an equity's asset class and CoinGecko id unset", async () => {
+    // `stocks.asset_class` defaults to 'equity', so the equity path says
+    // nothing rather than restating the default.
+    await POST(post({}));
+    expect(admin._upserted[0][0]).not.toHaveProperty("coingecko_id");
+    expect(admin._upserted[0][0]).not.toHaveProperty("asset_class");
+  });
+
+  it("does not blank a shared cached price when CoinGecko is down", async () => {
+    // One `stocks` row serves every book holding the same (coin, currency).
+    // Writing null over it during an outage would show "Price unavailable" on
+    // positions this import never touched -- and stamping last_price_at
+    // alongside would make that blank look FRESH to the staleness check.
+    vi.mocked(getCryptoPrices).mockRejectedValue(new Error("429"));
+    const res = await POST(cryptoPost());
+    expect(res.status).toBe(201);
+    expect(admin._upserted[0][0]).not.toHaveProperty("last_price");
+    expect(admin._upserted[0][0]).not.toHaveProperty("last_price_at");
+  });
+
+  it("still imports the holding when the coin could not be priced", async () => {
+    vi.mocked(getCryptoPrices).mockRejectedValue(new Error("429"));
+    await POST(cryptoPost());
+    expect(supabase._calls.positions[0]).toHaveLength(1);
+  });
+
+  it("never queues a coin for the weekly holding watch", async () => {
+    await POST(cryptoPost());
+    // The watch triggers on earnings and fundamentals deltas; a coin has
+    // neither, so queueing one spends a model call weekly to report "no
+    // earnings date found" forever.
+    expect(supabase._calls.holding_watch_state.flat()).toEqual([]);
   });
 });

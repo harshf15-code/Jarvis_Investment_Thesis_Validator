@@ -10,7 +10,7 @@ vi.mock("yahoo-finance2", () => ({
   },
 }));
 
-import { getSectorProfile, resolveYahooSymbol, withRetry } from "@/lib/market-data";
+import { MarketDataError, getSectorProfile, resolveYahooSymbol, withRetry } from "@/lib/market-data";
 
 describe("resolveYahooSymbol", () => {
   it("appends .NS and uppercases for NSE", () => {
@@ -174,5 +174,18 @@ describe("getSectorProfile", () => {
       sector: null,
       industry: "Utilities",
     });
+  });
+});
+
+describe("resolveYahooSymbol on a crypto row", () => {
+  it("throws rather than returning a symbol Yahoo will happily answer", () => {
+    // This is the defect the whole feature replaces, asserted directly.
+    // resolveYahooSymbol("BTC-USD","US") returns "BTC-USD" unchanged today, and
+    // Yahoo answers it with a real quote whose currency passes the import's
+    // gate — so a coin persists as exchange 'US' and is then polled on US
+    // market hours. Reaching this function with a coin now means a caller lost
+    // track of asset class, and that must be loud, not silently plausible.
+    expect(() => resolveYahooSymbol("BTC", "CRYPTO")).toThrow(MarketDataError);
+    expect(() => resolveYahooSymbol("BTC", "CRYPTO")).toThrow(/CoinGecko/);
   });
 });

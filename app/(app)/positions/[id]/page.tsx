@@ -18,6 +18,7 @@ import { statedRationale } from "@/lib/holding-watch";
 import { HoldingReviewsPanel } from "@/components/positions/reviews/holding-reviews-panel";
 import { PriceBadge } from "@/components/shared/price-badge";
 import { SkeletonLoader } from "@/components/shared/skeleton-loader";
+import { CoinGeckoAttribution } from "@/components/shared/coingecko-attribution";
 import { LastUpdated } from "@/components/shared/last-updated";
 import type { Entry, Exit, HoldingReview, Position, Thesis, TradePlan, Stock } from "@/lib/types";
 
@@ -169,9 +170,13 @@ export default function PositionDetailPage({ params }: { params: Promise<{ id: s
             {remaining} of {weightedAverage.totalQuantity} shares held · {position.status.replace("_", " ")}
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <PriceBadge price={cmp} currency={currency} />
-          <LastUpdated at={priceAsOf} exchange={exchange} />
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-3">
+            <PriceBadge price={cmp} currency={currency} />
+            <LastUpdated at={priceAsOf} exchange={exchange} />
+          </div>
+          {/* Beside the price it credits, per CoinGecko's attribution guide. */}
+          <CoinGeckoAttribution show={stock?.asset_class === "crypto"} />
         </div>
       </div>
 

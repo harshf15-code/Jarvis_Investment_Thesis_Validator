@@ -10,7 +10,7 @@ import {
   initialSteps,
   type StepState,
 } from "@/components/thesis/thesis-progress-panel";
-import { MARKETS, MARKET_ORDER } from "@/lib/markets";
+import { MARKETS, THESIS_MARKET_CHOICES } from "@/lib/markets";
 import { readProgress, type ThesisStep } from "@/lib/thesis-progress";
 import { cn } from "@/lib/utils";
 import type { MarketCode } from "@/lib/types";
@@ -131,7 +131,7 @@ export function ThesisInputForm({
           Markets
         </p>
         <div className="mt-2 flex flex-wrap gap-2">
-          {MARKET_ORDER.map((code) => {
+          {THESIS_MARKET_CHOICES.map((code) => {
             const meta = MARKETS[code];
             const selected = markets.includes(code);
             return (
