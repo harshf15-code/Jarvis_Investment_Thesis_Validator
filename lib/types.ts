@@ -710,7 +710,28 @@ export type HoldingWatchStateInsert = Pick<HoldingWatchState, "position_id"> &
 export type HoldingWatchStateUpdate = Partial<HoldingWatchStateInsert>;
 
 export type StockInsert = Pick<Stock, "ticker" | "yahoo_symbol" | "exchange" | "currency"> &
-  Partial<Pick<Stock, "id" | "last_price" | "last_price_at" | "created_at">>;
+  Partial<
+    Pick<
+      Stock,
+      | "id"
+      | "last_price"
+      | "last_price_at"
+      | "created_at"
+      // Both optional on purpose: `asset_class` defaults to 'equity' in 0030,
+      // and an equity has no `coingecko_id`. Every existing insert site is
+      // writing an equity and should not have to say so.
+      | "asset_class"
+      | "coingecko_id"
+    >
+  >;
+
+export type CryptoUniverseInsert = Pick<
+  CryptoUniverseRow,
+  "coingecko_id" | "symbol" | "name" | "market_cap_rank"
+> &
+  Partial<Pick<CryptoUniverseRow, "refreshed_at">>;
+
+export type CryptoUniverseUpdate = Partial<CryptoUniverseRow>;
 
 export type ThesisInsert = Pick<Thesis, "input_text" | "mode" | "markets"> &
   Partial<
@@ -1052,6 +1073,12 @@ export interface Database {
   public: {
     Tables: {
       stocks: { Row: Stock; Insert: StockInsert; Update: StockUpdate; Relationships: [] };
+      crypto_universe: {
+        Row: CryptoUniverseRow;
+        Insert: CryptoUniverseInsert;
+        Update: CryptoUniverseUpdate;
+        Relationships: [];
+      };
       theses: { Row: Thesis; Insert: ThesisInsert; Update: ThesisUpdate; Relationships: [] };
       thesis_candidates: {
         Row: ThesisCandidate;
@@ -1196,6 +1223,7 @@ export interface Database {
     };
     Enums: {
       exchange_code: ExchangeCode;
+      asset_class: AssetClass;
       conviction_tier: ConvictionTier;
       thesis_mode: ThesisMode;
       candidate_verdict: CandidateVerdict;

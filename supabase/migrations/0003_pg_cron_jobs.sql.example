@@ -156,8 +156,42 @@ select cron.schedule(
   $$
 );
 
+-- crypto-universe: the top ten by market cap, WEEKLY (0030).
+--
+-- Weekly is ample and a stale table is harmless, because this list governs what
+-- can be ADDED, never what can be held: a coin that falls out of the top ten
+-- keeps its positions, its history and its alerts. Market-cap rank does not
+-- churn on any shorter timescale than this either.
+--
+-- Reuses `holding_watch_secret` rather than minting a second secret. Both
+-- endpoints are "a scheduled job may call this and nobody else may", and a
+-- second secret is a second thing to rotate for no extra isolation. Like that
+-- route, this one refuses outright while the secret is unset.
+--
+-- Sunday 02:00 UTC: well clear of both equity sessions and of the hourly
+-- crypto poll's :00 slot in any hour anyone is watching.
+select cron.schedule(
+  'crypto-universe',
+  '0 2 * * 0',
+  $$
+  select net.http_post(
+    url := 'https://<APP_HOST>/api/crypto/universe',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'holding_watch_secret'),
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb
+    -- No timeout override: this is one CoinGecko call and one upsert of ten
+    -- rows, which finishes inside pg_net's 5s default. Contrast the holding
+    -- watch above, which runs for minutes and must raise it.
+  );
+  $$
+);
+
+
 -- To remove a schedule later:
 --   select cron.unschedule('poll-prices-nse');
 --   select cron.unschedule('poll-prices-us');
 --   select cron.unschedule('holding-watch');
 --   select cron.unschedule('daily-digest');
+--   select cron.unschedule('crypto-universe');
