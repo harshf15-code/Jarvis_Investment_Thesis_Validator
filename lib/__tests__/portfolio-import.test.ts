@@ -3,13 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   assignColumn,
   buildDraftRows,
+  buildTypedRows,
   detectColumns,
+  latestAllowedDate,
   localToday,
   normalizeTicker,
   parseImportDate,
   repeatedTickerIndices,
   rowValidationError,
   type DraftImportRow,
+  type TypedHoldingEntry,
 } from "@/lib/portfolio-import";
 
 const draft = (over: Partial<DraftImportRow> = {}): DraftImportRow => ({
@@ -180,6 +183,25 @@ describe("rowValidationError", () => {
     expect(rowValidationError(draft({ quantity: null }))).toMatch(/not a number/);
     expect(rowValidationError(draft({ averagePrice: null }))).toMatch(/not a number/);
   });
+
+  it("rejects a purchase date past the allowed bound", () => {
+    // A cost basis dated in the future makes every return on the Cockpit
+    // nonsense, and the typed form puts next year one click away.
+    const past = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    expect(rowValidationError(draft({ date: past }))).toMatch(/future/);
+  });
+
+  it("accepts today, and the one day of slack the bound allows", () => {
+    // The browser sends the trader's LOCAL calendar date and this runs in UTC.
+    // In Auckland those are routinely different days, and that gap is not the
+    // mistake the check is for.
+    expect(rowValidationError(draft({ date: localToday() }))).toBe(null);
+    expect(rowValidationError(draft({ date: latestAllowedDate() }))).toBe(null);
+  });
+
+  it("accepts a row with no date at all", () => {
+    expect(rowValidationError(draft({ date: null }))).toBe(null);
+  });
 });
 
 describe("repeatedTickerIndices", () => {
@@ -223,5 +245,67 @@ describe("buildDraftRows", () => {
   it("indexes rows by their position in the CSV body", () => {
     const rows = buildDraftRows([["A", "1", "1"], ["B", "1", "1"]], mapping);
     expect(rows.map((r) => r.index)).toEqual([0, 1]);
+  });
+});
+
+
+describe("buildTypedRows", () => {
+  const typed = (over: Partial<TypedHoldingEntry> = {}): TypedHoldingEntry => ({
+    ticker: "",
+    quantity: "",
+    averagePrice: "",
+    date: "",
+    ...over,
+  });
+
+  it("drops a row only when every field is blank", () => {
+    const rows = buildTypedRows([
+      typed({ ticker: "INFY", quantity: "10", averagePrice: "1500" }),
+      typed(),
+      typed({ ticker: "TCS", quantity: "5", averagePrice: "3800" }),
+    ]);
+    expect(rows.map((r) => r.ticker)).toEqual(["INFY", "TCS"]);
+  });
+
+  it("keeps a row that has numbers but no ticker, so it can be told what is missing", () => {
+    // The CSV builder drops these — in a broker file they are a total line. A
+    // typed one is a person who tabbed past a field, and silently discarding
+    // their row is the one outcome they cannot debug.
+    const rows = buildTypedRows([typed({ quantity: "10", averagePrice: "1500" })]);
+    expect(rows).toHaveLength(1);
+    expect(rowValidationError(rows[0])).toMatch(/No ticker/);
+  });
+
+  it("keeps the index of the row the trader is looking at, gaps and all", () => {
+    const rows = buildTypedRows([
+      typed(),
+      typed({ ticker: "INFY", quantity: "10", averagePrice: "1500" }),
+    ]);
+    expect(rows[0].index).toBe(1);
+  });
+
+  it("normalises a pasted ticker exactly as the CSV path does", () => {
+    const rows = buildTypedRows([
+      typed({ ticker: " nse:infy ", quantity: "1", averagePrice: "1" }),
+      typed({ ticker: "INFY.NS", quantity: "1", averagePrice: "1" }),
+    ]);
+    expect(rows.map((r) => r.ticker)).toEqual(["INFY", "INFY"]);
+  });
+
+  it("reads an unambiguous date and refuses an ambiguous one", () => {
+    const [iso, named, slashed] = buildTypedRows([
+      typed({ ticker: "A", date: "2026-03-04" }),
+      typed({ ticker: "B", date: "4 March 2026" }),
+      // March 4th to an American export, April 3rd to an Indian one.
+      typed({ ticker: "C", date: "03/04/2026" }),
+    ]);
+    expect(iso.date).toBe("2026-03-04");
+    expect(named.date).toBe("2026-03-04");
+    expect(slashed.date).toBe(null);
+  });
+
+  it("reports an unparseable quantity rather than dropping the row", () => {
+    const [row] = buildTypedRows([typed({ ticker: "INFY", quantity: "ten", averagePrice: "1500" })]);
+    expect(rowValidationError(row)).toMatch(/not a number/);
   });
 });

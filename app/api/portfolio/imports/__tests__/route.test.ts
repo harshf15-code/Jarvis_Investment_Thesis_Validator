@@ -37,6 +37,7 @@ function buildSupabaseMock(opts: { held?: string[]; failOn?: string; bookExists?
     entries: [] as unknown[][],
     holding_watch_state: [] as unknown[][],
     deletedThesisIds: null as string[] | null,
+    batchInserts: [] as Table[],
     batchUpdates: [] as Table[],
     profileUpserts: [] as Table[],
   };
@@ -78,10 +79,13 @@ function buildSupabaseMock(opts: { held?: string[]; failOn?: string; bookExists?
       }
       if (table === "portfolio_imports") {
         return {
-          insert: vi.fn().mockReturnValue({
-            select: vi.fn().mockReturnValue({
-              single: vi.fn().mockResolvedValue({ data: { id: "batch-1" }, error: null }),
-            }),
+          insert: vi.fn().mockImplementation((row: Table) => {
+            calls.batchInserts.push(row);
+            return {
+              select: vi.fn().mockReturnValue({
+                single: vi.fn().mockResolvedValue({ data: { id: "batch-1" }, error: null }),
+              }),
+            };
           }),
           update: vi.fn().mockImplementation((patch: Table) => {
             calls.batchUpdates.push(patch);
@@ -415,6 +419,90 @@ describe("POST /api/portfolio/imports", () => {
     vi.mocked(createClient).mockResolvedValue(supabase as never);
     await POST(post({ objective: "Compound for ten years." }));
     expect(supabase._calls.profileUpserts[0]).toMatchObject({ objective: "Compound for ten years." });
+  });
+
+  // --- typed batches -------------------------------------------------------
+  // Same route, same rows, no file. `source_filename` is absent, and the route
+  // reads that absence as the question "was this a file?" — three answers hang
+  // off it, and each is asserted here so the branch cannot collapse to one arm.
+
+  it("imports a batch that arrived with no file at all", async () => {
+    const res = await POST(post({ source_filename: undefined }));
+    expect(res.status).toBe(201);
+    expect(supabase._calls.theses[0]).toHaveLength(1);
+  });
+
+  it("records where a typed batch came from, since the column is NOT NULL", async () => {
+    await POST(post({ source_filename: undefined }));
+    expect(supabase._calls.batchInserts[0]).toMatchObject({ source_filename: "Typed in" });
+  });
+
+  it("does not tell a typed holding it was imported from a file", async () => {
+    // "Cost basis is a broker average; the date is approximate" is true of an
+    // export and of nothing else. A typed row gets the manual-add route's own
+    // words instead.
+    await POST(post({ source_filename: undefined }));
+    const [entry] = supabase._calls.entries[0] as Record<string, unknown>[];
+    expect(entry.notes).toBe("Added by hand.");
+  });
+
+  it("still writes the imported-from note when there WAS a file", async () => {
+    // The other arm, asserted beside its twin: a branch with only one tested
+    // side is a branch waiting to be simplified away.
+    await POST(post({}));
+    const [entry] = supabase._calls.entries[0] as Record<string, unknown>[];
+    expect(entry.notes).toMatch(/Imported from holdings\.csv/);
+  });
+
+  it("numbers a skipped typed row from 1 and a skipped CSV row from 2", async () => {
+    // A CSV has a header on line 1. A typed table does not, and pointing
+    // someone at "line 2" for the row they can see on line 1 helps nobody.
+    supabase = buildSupabaseMock({ held: ["INFY"] });
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    const typed = await POST(
+      post({
+        source_filename: undefined,
+        rows: [
+          { ticker: "INFY", quantity: 10, averagePrice: 1500 },
+          { ticker: "TCS", quantity: 5, averagePrice: 3200 },
+        ],
+      }),
+    );
+    expect((await typed.json()).skipped[0]).toMatchObject({ ticker: "INFY", row: 1 });
+
+    supabase = buildSupabaseMock({ held: ["INFY"] });
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    const csv = await POST(
+      post({
+        rows: [
+          { ticker: "INFY", quantity: 10, averagePrice: 1500 },
+          { ticker: "TCS", quantity: 5, averagePrice: 3200 },
+        ],
+      }),
+    );
+    expect((await csv.json()).skipped[0]).toMatchObject({ ticker: "INFY", row: 2 });
+  });
+
+  it("refuses a ROW dated in the future, naming the ticker", async () => {
+    // The batch-level `as_of_date` was already guarded; a row's own date was
+    // not, and the typed form puts a date input in front of it.
+    const wellPastAnyTimezone = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    const res = await POST(
+      post({
+        rows: [{ ticker: "INFY", quantity: 10, averagePrice: 1500, date: wellPastAnyTimezone }],
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/INFY.*future/);
+    expect(supabase._calls.theses).toHaveLength(0);
+  });
+
+  it("accepts a row date one day ahead of the server's UTC date", async () => {
+    const utcTomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const res = await POST(
+      post({ rows: [{ ticker: "INFY", quantity: 10, averagePrice: 1500, date: utcTomorrow }] }),
+    );
+    expect(res.status).toBe(201);
   });
 });
 

@@ -49,7 +49,14 @@ const CommitInputSchema = z.object({
    * wizard asks before the file is even mapped.
    */
   portfolio_id: z.uuid("Choose which portfolio these holdings belong to."),
-  source_filename: z.string().trim().min(1).max(255),
+  /**
+   * The file these rows came out of, and ABSENT when the trader typed them.
+   *
+   * Optional rather than a sentinel the client invents, because the server
+   * reads it as a question -- "was this a file?" -- and decides the audit row,
+   * the entry note and the line numbering from the answer.
+   */
+  source_filename: z.string().trim().min(1).max(255).optional(),
   market: z.string(),
   as_of_date: z.iso.date("as_of_date must be a real YYYY-MM-DD date"),
   objective: z.string().trim().max(2000).optional(),
@@ -93,6 +100,23 @@ export async function POST(request: Request) {
   if (input.as_of_date > tomorrowUtc) {
     return NextResponse.json({ error: "The 'as of' date cannot be in the future." }, { status: 400 });
   }
+
+  // And the same bound on a row's OWN date. The preview flags this too
+  // (`rowValidationError`), but the preview is a courtesy: nothing else in this
+  // route trusts a value because the client already checked it, and a cost
+  // basis dated next year is not the place to start.
+  const futureRow = input.rows.find((row) => row.date != null && row.date > tomorrowUtc);
+  if (futureRow) {
+    return NextResponse.json(
+      { error: `${futureRow.ticker} is dated in the future. A holding cannot have been bought after today.` },
+      { status: 400 },
+    );
+  }
+
+  // A CSV has a header on line 1, so its first holding is line 2. A typed table
+  // has no header, and telling someone to look at "line 2" for the row they can
+  // see on line 1 is a small lie with no upside.
+  const lineOffset = input.source_filename ? 2 : 1;
 
   const supabase = await createClient();
 
@@ -149,8 +173,7 @@ export async function POST(request: Request) {
       (row.status === "duplicate" && submitted.confirmedDuplicate === true);
     if (!importable) {
       errors.push({
-        // +2: the trader's file has a header on line 1.
-        row: index + 2,
+        row: index + lineOffset,
         ticker: row.ticker,
         reason: row.reason ?? "Could not be imported",
       });
@@ -225,7 +248,9 @@ export async function POST(request: Request) {
     .from("portfolio_imports")
     .insert({
       portfolio_id: input.portfolio_id,
-      source_filename: input.source_filename,
+      // NOT NULL since 0020, and the column's job is to record where a batch
+      // came from -- which, for a typed batch, is exactly this.
+      source_filename: input.source_filename ?? "Typed in",
       market,
       as_of_date: input.as_of_date,
       total_rows: input.rows.length + (input.skipped?.length ?? 0),
@@ -253,7 +278,13 @@ export async function POST(request: Request) {
       price: row.averagePrice!,
       date: row.date ?? input.as_of_date,
       note: input.rows[row.index]?.note,
-      entryNote: `Imported from ${input.source_filename}. Cost basis is a broker average; the date is approximate.`,
+      // The provenance sentence a trader reads on the holding's own page. A
+      // broker average and an approximate date are true of a file and of
+      // nothing else, so a typed row gets the words the manual-add route
+      // (`/api/holdings`) already uses for the same situation.
+      entryNote: input.source_filename
+        ? `Imported from ${input.source_filename}. Cost basis is a broker average; the date is approximate.`
+        : "Added by hand.",
       assetClass: market === "CRYPTO" ? "crypto" : "equity",
     })),
     { portfolioId: input.portfolio_id, market, importBatchId: batch.id },

@@ -6,12 +6,15 @@ import { ArrowLeft, Upload } from "lucide-react";
 
 import { ColumnMapper } from "@/components/positions/import/column-mapper";
 import { PreviewTable } from "@/components/positions/import/preview-table";
+import { TypedRowsEditor } from "@/components/positions/import/typed-rows";
 import { PortfolioPicker } from "@/components/portfolio/portfolio-picker";
 import { parseCsv } from "@/lib/csv";
 import { MARKETS, MARKET_ORDER } from "@/lib/markets";
 import {
   buildDraftRows,
+  buildTypedRows,
   detectColumns,
+  EMPTY_TYPED_ROW,
   localToday,
   MAX_IMPORT_ROWS,
   repeatedTickerIndices,
@@ -19,28 +22,40 @@ import {
   type ColumnMapping,
   type DraftImportRow,
   type ResolvedImportRow,
+  type TypedHoldingEntry,
 } from "@/lib/portfolio-import";
 import { cn } from "@/lib/utils";
 import type { MarketCode } from "@/lib/types";
 
 type Step = "upload" | "preview";
 
+/** Where the rows come from. Nothing downstream of `resolveRows` knows which. */
+type Source = "csv" | "typed";
+
 /**
- * The CSV import, in three steps: map the columns, review what resolved,
- * commit.
+ * Adding holdings you already own: choose a book, name the market, give it the
+ * rows, review what resolved, commit.
  *
- * The file is read and parsed HERE, in the browser, and never uploaded. A
- * broker export carries account numbers, ISINs and P&L the app has no business
- * seeing; only the three mapped columns are ever sent to the server. It also
- * means the mapping UI is instant, with no round trip between choosing a file
- * and seeing whether the columns were understood.
+ * The rows arrive one of two ways and the difference ends immediately. A CSV is
+ * read and parsed HERE, in the browser, and never uploaded — a broker export
+ * carries account numbers, ISINs and P&L the app has no business seeing, so
+ * only the three mapped columns are ever sent. Typed rows are the same three
+ * fields without the file. Both become `DraftImportRow[]`, and from there one
+ * path prices them, flags a name already held, and writes them.
+ *
+ * A second source, not a second importer: the resolution step is the whole
+ * value of this screen, and a typed ticker needs it more than a broker's does.
  */
 export function ImportWizard({
   /** The books that have already said what they are for. Every book, not just
-   *  the one in the URL — step 1 below can send this file somewhere else. */
+   *  the one in the URL — step 1 below can send these rows somewhere else. */
   booksWithObjective,
+  /** Which source the screen opens on. `/positions` links here with `typed`
+   *  for the "a few stocks, no spreadsheet" case. */
+  defaultSource = "csv",
 }: {
   booksWithObjective: string[];
+  defaultSource?: Source;
 }) {
   const router = useRouter();
   // Which book the file lands in. Asked as its own step rather than inherited
@@ -48,6 +63,15 @@ export function ImportWizard({
   // makes this the largest single thing in the app to get wrong.
   const [portfolioId, setPortfolioId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>("upload");
+
+  const [source, setSource] = useState<Source>(defaultSource);
+  const [typedRows, setTypedRows] = useState<TypedHoldingEntry[]>([
+    // Three, because one looks like a form for a single holding and this exists
+    // for the trader who has a handful.
+    { ...EMPTY_TYPED_ROW },
+    { ...EMPTY_TYPED_ROW },
+    { ...EMPTY_TYPED_ROW },
+  ]);
 
   const [fileName, setFileName] = useState("");
   const [headers, setHeaders] = useState<string[]>([]);
@@ -89,6 +113,11 @@ export function ImportWizard({
 
   const mappingReady =
     mapping.ticker !== null && mapping.quantity !== null && mapping.averagePrice !== null;
+  // A typed batch has no mapping to get right, so what stands in for it is
+  // simply having written something. Everything else about the row is judged in
+  // the preview, where it can be shown beside what the ticker resolved to.
+  const typedReady = typedRows.some((row) => row.ticker.trim() !== "");
+  const rowsReady = source === "csv" ? mappingReady && headers.length > 0 : typedReady;
 
   /**
    * Everything derived from the previous file, mapping or market.
@@ -129,13 +158,21 @@ export function ImportWizard({
     // The button is disabled without a market or a book; this is the guard that
     // makes both non-null for the request body rather than a `!` assertion.
     if (market === null || portfolioId === null) return;
-    const drafts = buildDraftRows(rawRows, mapping);
+    // The one line that knows where the rows came from. Everything below —
+    // chunking, the repeat scan, the stale-book guard — is written against
+    // `DraftImportRow[]` and cannot tell.
+    const drafts =
+      source === "csv" ? buildDraftRows(rawRows, mapping) : buildTypedRows(typedRows);
     if (drafts.length === 0) {
-      setError("No rows in that file have a ticker in the column you mapped.");
+      setError(
+        source === "csv"
+          ? "No rows in that file have a ticker in the column you mapped."
+          : "Nothing to price yet — fill in at least one row.",
+      );
       return;
     }
     if (drafts.length > MAX_IMPORT_ROWS) {
-      setError(`That file has ${drafts.length} holdings; ${MAX_IMPORT_ROWS} is the most one import can take.`);
+      setError(`That is ${drafts.length} holdings; ${MAX_IMPORT_ROWS} is the most one import can take.`);
       return;
     }
 
@@ -189,6 +226,11 @@ export function ImportWizard({
     }
   }
 
+  // A CSV has a header on line 1, so its first holding is line 2; a typed table
+  // has no header. The server derives the same offset from whether a filename
+  // was sent, so the two agree without either being told by the other.
+  const lineOffset = source === "csv" ? 2 : 1;
+
   const importable = resolved.filter(
     (r) => r.status === "resolved" || (r.status === "duplicate" && confirmed.has(r.index)),
   );
@@ -204,7 +246,11 @@ export function ImportWizard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           portfolio_id: portfolioId,
-          source_filename: fileName,
+          // Omitted entirely for a typed batch. The server reads its absence as
+          // "nobody uploaded anything" and stamps the entry note accordingly —
+          // "Imported from holdings.csv" would be a claim about a file that
+          // does not exist.
+          ...(source === "csv" ? { source_filename: fileName } : {}),
           market,
           as_of_date: asOfDate,
           objective: objective.trim() || undefined,
@@ -217,7 +263,7 @@ export function ImportWizard({
             confirmedDuplicate: confirmed.has(r.index),
           })),
           skipped: skipped.map((r) => ({
-            row: r.index + 2,
+            row: r.index + lineOffset,
             ticker: r.ticker,
             reason: r.reason ?? "Skipped",
           })),
@@ -225,9 +271,9 @@ export function ImportWizard({
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Couldn't save these holdings.");
-      // Into the book the file went into, not the default. Landing on your own
-      // holdings after importing into someone else's book reads as a failed
-      // import — the rows are there, just not on the screen you were sent to.
+      // Into the book these rows went into, not the default. Landing on your own
+      // holdings after adding to someone else's book reads as a failed import —
+      // the rows are there, just not on the screen you were sent to.
       router.push(`/positions?portfolio=${portfolioId}`);
       router.refresh();
     } catch (err) {
@@ -250,7 +296,7 @@ export function ImportWizard({
                 1 · Which portfolio is this?
               </h2>
               <p className="mt-1 text-xs text-on-surface-variant">
-                A file commits up to {MAX_IMPORT_ROWS} positions at once, so this is asked here
+                One batch commits up to {MAX_IMPORT_ROWS} positions at once, so this is asked here
                 rather than taken from whichever book you were last looking at.
               </p>
             </div>
@@ -279,10 +325,10 @@ export function ImportWizard({
           <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">
             <div>
               <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                2 · What is in this file?
+                2 · Which market are these in?
               </h2>
               <p className="mt-1 text-xs text-on-surface-variant">
-                One market per file. The same symbol is listed in two of them at very different
+                One market per batch. The same symbol is listed in two of them at very different
                 prices in different currencies, so this is asked, never guessed. Crypto prices in
                 whatever currency the portfolio you picked is kept in.
               </p>
@@ -327,49 +373,93 @@ export function ImportWizard({
           >
             <div>
               <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
-                3 · The file
+                3 · The holdings
               </h2>
               <p className="mt-1 text-xs text-on-surface-variant">
-                Any broker&apos;s holdings export, as long as it has a ticker, a quantity and an
-                average cost. It is read in your browser — only the three columns you map are ever
-                sent anywhere.
+                A broker&apos;s export, or type them in. A file is read in your browser — only the
+                three columns you map are ever sent anywhere.
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <label
-                className={cn(
-                  "flex items-center gap-3 self-start rounded-full border border-white/10 px-4 py-2 text-xs transition-colors",
-                  market === null
-                    ? "cursor-not-allowed text-on-surface-variant/40"
-                    : "cursor-pointer text-on-surface-variant hover:border-white/25 hover:text-on-surface",
-                )}
-              >
-                <Upload className="size-3.5" />
-                {fileName || "Choose a CSV"}
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  disabled={busy || market === null || portfolioId === null}
-                  onChange={(e) => void handleFile(e.target.files?.[0])}
-                />
-              </label>
-              {portfolioId === null ? (
-                <span className="text-[11px] text-on-surface-variant/70">
-                  Pick a portfolio first — it decides whose holdings these become.
-                </span>
-              ) : (
-                market === null && (
-                  <span className="text-[11px] text-on-surface-variant/70">
-                    Pick a market first — it decides which exchanges each ticker is looked up on.
-                  </span>
-                )
-              )}
+            {/* Both sources produce the same rows, so switching is free — but
+                the preview was resolved against the OTHER set and would be
+                answering about holdings that are no longer on screen. Cleared
+                for the same reason changing the book or the market clears it. */}
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  ["csv", "Upload a CSV"],
+                  ["typed", "Type them in"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={source === value}
+                  onClick={() => {
+                    setSource(value);
+                    clearPreview();
+                  }}
+                  className={cn(
+                    "rounded-full border px-3 py-1.5 text-xs transition-colors disabled:opacity-40",
+                    source === value
+                      ? "border-primary/60 bg-primary/10 text-primary"
+                      : "border-white/10 text-on-surface-variant hover:border-white/25 hover:text-on-surface",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
+
+            {source === "csv" ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <label
+                  className={cn(
+                    "flex items-center gap-3 self-start rounded-full border border-white/10 px-4 py-2 text-xs transition-colors",
+                    market === null
+                      ? "cursor-not-allowed text-on-surface-variant/40"
+                      : "cursor-pointer text-on-surface-variant hover:border-white/25 hover:text-on-surface",
+                  )}
+                >
+                  <Upload className="size-3.5" />
+                  {fileName || "Choose a CSV"}
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    disabled={busy || market === null || portfolioId === null}
+                    onChange={(e) => void handleFile(e.target.files?.[0])}
+                  />
+                </label>
+                {portfolioId === null ? (
+                  <span className="text-[11px] text-on-surface-variant/70">
+                    Pick a portfolio first — it decides whose holdings these become.
+                  </span>
+                ) : (
+                  market === null && (
+                    <span className="text-[11px] text-on-surface-variant/70">
+                      Pick a market first — it decides which exchanges each ticker is looked up on.
+                    </span>
+                  )
+                )}
+              </div>
+            ) : (
+              <TypedRowsEditor
+                rows={typedRows}
+                onChange={(rows) => {
+                  setTypedRows(rows);
+                  // Same reason as everything else here: the preview describes
+                  // the rows it was resolved from, not whatever replaced them.
+                  clearPreview();
+                }}
+                disabled={busy || market === null || portfolioId === null}
+              />
+            )}
           </section>
 
-          {market !== null && headers.length > 0 && (
+          {source === "csv" && market !== null && headers.length > 0 && (
             <section className="glass-panel flex flex-col gap-4 rounded-xl p-5">
               <div>
                 <h2 className="font-display text-sm font-extrabold tracking-tight text-primary">
@@ -414,29 +504,46 @@ export function ImportWizard({
                   </tbody>
                 </table>
               </div>
-
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={resolveRows}
-                  disabled={!mappingReady || busy}
-                  className="rounded-full bg-primary px-4 py-2 text-xs font-medium text-on-primary transition-colors hover:bg-primary-dim disabled:opacity-40"
-                >
-                  {busy ? "Pricing…" : "Price these holdings"}
-                </button>
-                {progress && (
-                  <span className="text-xs text-on-surface-variant">
-                    {progress.done} of {progress.total}
-                  </span>
-                )}
-                {!mappingReady && (
-                  <span className="text-xs text-on-surface-variant/70">
-                    Ticker, quantity and average cost are all needed.
-                  </span>
-                )}
-              </div>
             </section>
           )}
+
+          {/* Outside both sections rather than inside the CSV one, where it
+              used to live: a typed batch never renders a column mapper, and a
+              button that only exists once a file has been read is no button at
+              all for the trader who did not bring one. */}
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={resolveRows}
+              disabled={!rowsReady || market === null || portfolioId === null || busy}
+              className="rounded-full bg-primary px-4 py-2 text-xs font-medium text-on-primary transition-colors hover:bg-primary-dim disabled:opacity-40"
+            >
+              {busy ? "Pricing…" : "Price these holdings"}
+            </button>
+            {progress && (
+              <span className="text-xs text-on-surface-variant">
+                {progress.done} of {progress.total}
+              </span>
+            )}
+            {!busy && (portfolioId === null || market === null) ? (
+              <span className="text-xs text-on-surface-variant/70">
+                {portfolioId === null
+                  ? "Pick a portfolio first — it decides whose holdings these become."
+                  : "Pick a market first — it decides which exchanges each ticker is looked up on."}
+              </span>
+            ) : (
+              !rowsReady &&
+              !busy && (
+                <span className="text-xs text-on-surface-variant/70">
+                  {source === "csv"
+                    ? headers.length === 0
+                      ? "Choose a CSV to map its columns."
+                      : "Ticker, quantity and average cost are all needed."
+                    : "Give at least one row a ticker."}
+                </span>
+              )
+            )}
+          </div>
         </>
       ) : (
         <>
@@ -450,7 +557,7 @@ export function ImportWizard({
                   Nothing has been written yet. {importable.length} to import
                   {skipped.length > 0 ? `, ${skipped.length} skipped` : ""}.
                 </p>
-                {/* The one field worth slowing down for. A CSV carries the
+                {/* The one field worth slowing down for. The rows carry the
                     ticker, the quantity and the cost; the reason is the only
                     thing Jarvis cannot recover later, and every future read is
                     measured against it. You can still add it afterwards on the
@@ -468,7 +575,7 @@ export function ImportWizard({
                 className="flex items-center gap-1.5 text-xs text-on-surface-variant hover:text-on-surface"
               >
                 <ArrowLeft className="size-3.5" />
-                Back to the columns
+                {source === "csv" ? "Back to the columns" : "Back to the rows"}
               </button>
             </div>
 
@@ -485,8 +592,8 @@ export function ImportWizard({
                   className="sunken rounded-lg px-3 py-2 text-sm text-on-surface focus:ring-1 focus:ring-primary/40 focus:outline-none"
                 />
                 <span className="max-w-64 text-[11px] leading-snug text-on-surface-variant/70">
-                  A holdings export carries an average cost, not purchase dates. This one date is
-                  stamped on every row, and it is an approximation.
+                  Stamped on every row that did not bring its own date — a holdings export carries
+                  an average cost, not purchase dates — so it is an approximation.
                 </span>
               </label>
 
@@ -512,6 +619,7 @@ export function ImportWizard({
 
           <PreviewTable
             rows={resolved}
+            lineOffset={lineOffset}
             notes={notes}
             confirmed={confirmed}
             onNote={(index, note) => setNotes((prev) => ({ ...prev, [index]: note }))}
@@ -538,8 +646,8 @@ export function ImportWizard({
             </button>
             {importable.length === 0 && (
               <span className="text-xs text-on-surface-variant/70">
-                Nothing here can be imported yet — fix a row in your file, or tick a duplicate to
-                import it anyway.
+                Nothing here can be imported yet — fix a row, or tick a duplicate to import it
+                anyway.
               </span>
             )}
           </div>

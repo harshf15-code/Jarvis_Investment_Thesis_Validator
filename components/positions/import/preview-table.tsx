@@ -32,12 +32,22 @@ export function PreviewTable({
   confirmed,
   onNote,
   onConfirm,
+  lineOffset = 2,
 }: {
   rows: ResolvedImportRow[];
   notes: Record<number, string>;
   confirmed: Set<number>;
   onNote: (index: number, note: string) => void;
   onConfirm: (index: number, value: boolean) => void;
+  /**
+   * What to add to a row's index to get the line the trader is looking at.
+   *
+   * 2 for a CSV, whose header occupies line 1 — the point of this column is
+   * that a flagged row is findable in their spreadsheet. 1 for typed rows,
+   * where there is no header and sending someone to "line 2" for the row they
+   * can see on line 1 is a small lie with no upside.
+   */
+  lineOffset?: number;
 }) {
   return (
     <div className="overflow-x-auto rounded-xl bg-surface-container-low">
@@ -61,9 +71,9 @@ export function PreviewTable({
                 key={row.index}
                 className={`align-top even:bg-surface-container-lowest ${failed ? "opacity-60" : ""}`}
               >
-                {/* +2: their file has a header on line 1, so this is the line
-                    number they will actually find in their spreadsheet. */}
-                <td className="p-3 font-mono text-xs text-on-surface/40">{row.index + 2}</td>
+                <td className="p-3 font-mono text-xs text-on-surface/40">
+                  {row.index + lineOffset}
+                </td>
                 <td className={`p-3 font-medium ${failed ? "line-through" : "text-on-surface"}`}>
                   {row.ticker}
                   {row.exchange && (
