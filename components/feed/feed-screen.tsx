@@ -35,10 +35,26 @@ export function FeedScreen({
   const [tab, setTab] = useState<"active" | "reviewed">("active");
   const [addOpen, setAddOpen] = useState(false);
   const [previewSignal, setPreviewSignal] = useState<IntelligenceSignal | null>(null);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
 
+  /**
+   * Archiving is the only write on this screen with nothing to show for it: the
+   * card simply moves to the Reviewed tab. So a refused PATCH used to be
+   * invisible — `router.refresh()` re-read the unchanged signal and the card
+   * came back to Active, which looks identical to a click that did not land.
+   */
   async function handleArchive(id: string) {
-    await fetch(`/api/signals/${id}`, { method: "PATCH" });
-    router.refresh();
+    try {
+      const res = await fetch(`/api/signals/${id}`, { method: "PATCH" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? "Could not archive that signal.");
+      }
+      setArchiveError(null);
+      router.refresh();
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : "Could not archive that signal.");
+    }
   }
 
   const visible = signals.filter((s) => (tab === "active" ? !s.archived_at : !!s.archived_at));
@@ -57,6 +73,12 @@ export function FeedScreen({
           <button type="button" onClick={() => setTab("active")} className={tab === "active" ? "text-primary" : "text-on-surface/50"}>Active</button>
           <button type="button" onClick={() => setTab("reviewed")} className={tab === "reviewed" ? "text-primary" : "text-on-surface/50"}>Reviewed</button>
         </div>
+
+        {archiveError && (
+          <div className="mb-4 rounded-xl bg-status-red-container px-4 py-3 text-sm text-status-red">
+            {archiveError}
+          </div>
+        )}
 
         {visible.length === 0 ? (
           <EmptyState title="No signals yet." description="Add a signal to start tracking thesis-relevant news →" />

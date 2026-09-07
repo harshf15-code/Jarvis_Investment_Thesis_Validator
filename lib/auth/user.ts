@@ -48,6 +48,9 @@ export type SessionUser = { id: string; email: string | null };
  * made. The security property holds either way; only the speed depends on the
  * key type. If this ever feels slow again, check the project's JWT signing keys
  * before rewriting anything here.
+ *
+ * Redirects only when the person is genuinely signed out. `currentUser` throws
+ * when it could not find out, which reaches `error.tsx` — see there for why.
  */
 export async function requireUser(): Promise<SessionUser> {
   const user = await currentUser();
@@ -69,7 +72,26 @@ export async function requireUser(): Promise<SessionUser> {
  */
 export async function currentUser(): Promise<SessionUser | null> {
   const supabase = await createClient();
-  const { data } = await supabase.auth.getClaims();
+  const { data, error } = await supabase.auth.getClaims();
+
+  if (error) {
+    // `getClaims` reports two different things down one channel, and only one
+    // of them is "signed out". A 4xx is the auth server REJECTING the token —
+    // expired, revoked, tampered with — which is a real sign-out. A failed JWKS
+    // fetch, a 5xx or a gateway timeout arrives as `AuthRetryableFetchError`
+    // with `status` 0 or 5xx, and means we never got an answer at all.
+    //
+    // Returning null for the second kind bounces a signed-in trader to /login
+    // and asks for a password they did not need to type, which reads as "your
+    // session expired" when the truth is "the network blinked". Throwing sends
+    // it to the nearest error.tsx, which says something went wrong — because
+    // something did. (A no-session read is `{ data: null, error: null }` and
+    // never lands here.)
+    const rejected = typeof error.status === "number" && error.status >= 400 && error.status < 500;
+    if (!rejected) throw error;
+    return null;
+  }
+
   const claims = data?.claims;
 
   // `sub` is the user id and is required in every Supabase access token, but

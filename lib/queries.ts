@@ -36,6 +36,15 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
+/**
+ * PostgREST's code for `.single()` matching no row. It is the one database
+ * "error" in this file that is really an ANSWER — "there is no such row" — and
+ * the only one a read is allowed to swallow. Every other code means the read
+ * itself failed, and degrading that to an empty list would render a screenful
+ * of confident zeroes.
+ */
+const NO_ROWS = "PGRST116";
+
 export async function listJournalEntries() {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -226,11 +235,15 @@ export async function readSignalFeed(supabase: Client) {
   // Independent reads, so they go together. The agenda's positions have
   // nothing to do with the signals list, and running them in series put a
   // round trip on the screen for no reason.
-  const [{ data: signals, error }, { data: positions }] = await Promise.all([
+  const [{ data: signals, error }, { data: positions, error: positionsError }] = await Promise.all([
     supabase.from("intelligence_signals").select("*").order("created_at", { ascending: false }),
     supabase.from("positions").select("id, ticker, trade_plan_id").in("status", ["active", "partial_exit"]),
   ]);
   if (error) fail(error.message);
+  // Not `?? []`: an agenda that failed to read looks exactly like an agenda
+  // with nothing due in the next 14 days, and the whole point of the sidebar is
+  // that an empty one means "nothing to do today".
+  if (positionsError) fail(positionsError.message);
 
   const active = (signals ?? []).filter((s) => !s.archived_at);
   const archived = (signals ?? []).filter((s) => s.archived_at);
@@ -245,9 +258,10 @@ export async function readSignalFeed(supabase: Client) {
   const in14Days = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const tradePlanIds = [...new Set((positions ?? []).map((p) => p.trade_plan_id))];
-  const { data: tradePlans } = tradePlanIds.length
+  const { data: tradePlans, error: tradePlansError } = tradePlanIds.length
     ? await supabase.from("trade_plans").select("id, time_exit_date").in("id", tradePlanIds)
-    : { data: [] };
+    : { data: [], error: null };
+  if (tradePlansError) fail(tradePlansError.message);
   const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
 
   const agenda = (positions ?? [])
@@ -280,7 +294,11 @@ export async function readOpportunities(supabase: Client) {
   if (rows.length === 0) return [];
 
   const tickers = [...new Set(rows.map((o) => o.ticker))];
-  const [{ data: stocks }, { data: positions }, { data: theses }] = await Promise.all([
+  const [
+    { data: stocks, error: stocksError },
+    { data: positions, error: positionsError },
+    { data: theses, error: thesesError },
+  ] = await Promise.all([
     supabase
       .from("stocks")
       .select("ticker, exchange, currency, last_price, last_price_at")
@@ -288,6 +306,12 @@ export async function readOpportunities(supabase: Client) {
     supabase.from("positions").select("ticker").in("status", ["active", "partial_exit"]).in("ticker", tickers),
     supabase.from("theses").select("ticker, status").eq("status", "draft").in("ticker", tickers),
   ]);
+  // Each of these three degrades into a plausible lie if it is allowed to fail
+  // quietly: no price, not HELD, not a DRAFT. "Not held" in particular is the
+  // badge that stops the trader buying a second lot of something they own.
+  const enrichmentError = stocksError ?? positionsError ?? thesesError;
+  if (enrichmentError) fail(enrichmentError.message);
+
   const stockByTicker = new Map((stocks ?? []).map((s) => [s.ticker, s]));
   const heldTickers = new Set((positions ?? []).map((p) => p.ticker));
   const draftTickers = new Set((theses ?? []).map((t) => t.ticker));
@@ -329,16 +353,20 @@ export async function readPositionDetail(supabase: Client, id: string) {
     .select("*")
     .eq("id", id)
     .single();
-  if (error || !position) return null;
+  // "No such position" and "the read failed" arrive on the same channel here,
+  // and the callers turn `null` into a 404. Only NO_ROWS is genuinely a 404 —
+  // reporting a transport failure as one tells the trader their holding is gone.
+  if (error && error.code !== NO_ROWS) fail(error.message);
+  if (!position) return null;
 
   const [
-    { data: entries },
-    { data: exits },
-    { data: tradePlan },
-    { data: thesis },
-    { data: stock },
-    { data: reviews },
-    { data: watch },
+    entriesResult,
+    exitsResult,
+    tradePlanResult,
+    thesisResult,
+    stockResult,
+    reviewsResult,
+    watchResult,
   ] = await Promise.all([
     supabase.from("entries").select("*").eq("position_id", id).order("date", { ascending: true }),
     supabase.from("exits").select("*").eq("position_id", id).order("date", { ascending: true }),
@@ -357,18 +385,33 @@ export async function readPositionDetail(supabase: Client, id: string) {
     supabase.from("holding_watch_state").select("last_checked_at").eq("position_id", id).maybeSingle(),
   ]);
 
+  // A failed read here must not become `[]` or `null`. This screen exists to
+  // enforce exit discipline, and every one of these degradations is a specific
+  // false statement: an empty `exits` reads as "no rung taken yet", an empty
+  // `entries` zeroes the weighted-average entry, and a null `tradePlan`
+  // renders "This position has no trade plan" over a position that has one.
+  for (const r of [entriesResult, exitsResult, reviewsResult, watchResult]) {
+    if (r.error) fail(r.error.message);
+  }
+  // The three `.single()` reads are the exception, and only for NO_ROWS: the
+  // screen has a real branch for each of them being absent, so a missing row is
+  // a state it renders rather than a failure.
+  for (const r of [tradePlanResult, thesisResult, stockResult]) {
+    if (r.error && r.error.code !== NO_ROWS) fail(r.error.message);
+  }
+
   return {
     position,
-    entries: entries ?? [],
-    exits: exits ?? [],
-    tradePlan: tradePlan ?? null,
-    thesis: thesis ?? null,
-    stock: stock ?? null,
-    reviews: reviews ?? [],
+    entries: entriesResult.data ?? [],
+    exits: exitsResult.data ?? [],
+    tradePlan: tradePlanResult.data ?? null,
+    thesis: thesisResult.data ?? null,
+    stock: stockResult.data ?? null,
+    reviews: reviewsResult.data ?? [],
     // Null `last_checked_at` on an existing row means the initial read is
     // queued but has not run yet — which the page says out loud, because
     // silence would read as "Jarvis has nothing to say about this holding".
-    watch: watch ?? null,
+    watch: watchResult.data ?? null,
   };
 }
 

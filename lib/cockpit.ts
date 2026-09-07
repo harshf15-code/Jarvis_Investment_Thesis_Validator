@@ -109,27 +109,37 @@ export async function readCockpit(supabase: Client, scope: PortfolioScope) {
   const tradePlanIds = [...new Set(positionRows.map((p) => p.trade_plan_id))];
   const thesisIds = [...new Set(positionRows.map((p) => p.thesis_id))];
 
-  const empty = { data: [] as never[] };
+  const empty = { data: [] as never[], error: null };
+  const batch = await Promise.all([
+    positionIds.length ? supabase.from("entries").select("*").in("position_id", positionIds) : empty,
+    positionIds.length ? supabase.from("exits").select("*").in("position_id", positionIds) : empty,
+    stockIds.length ? supabase.from("stocks").select("*").in("id", stockIds) : empty,
+    tradePlanIds.length ? supabase.from("trade_plans").select("*").in("id", tradePlanIds) : empty,
+    thesisIds.length ? supabase.from("theses").select("id, conviction_tier, title, ticker").in("id", thesisIds) : empty,
+    // Account-wide on purpose. A recommendation is pre-position — nothing has
+    // been bought yet, so there is no book it belongs to. It acquires one at
+    // the moment it is converted, which is where the picker is.
+    //
+    // Its stock is EMBEDDED rather than fetched afterwards. As a second read
+    // it was the one query in this whole function that could not start until
+    // the batch above had landed, which made it a sequential leg of its own
+    // for a join PostgREST will do in the first request.
+    supabase
+      .from("jarvis_recommendations")
+      .select("*, stocks(id, last_price, exchange)")
+      .order("recommended_at", { ascending: false }),
+  ]);
+
+  // Every one of these degrades into a confident wrong number if it is allowed
+  // to fail quietly. Lose `entries` and the weighted-average entry is zero, so
+  // the whole book reads as 100% profit; lose `stocks` and there is no current
+  // price, so P&L is omitted and the Cockpit shows a flat account. This screen
+  // is the app's front door and its docblock promises that genuine read
+  // failures throw — so they do, and `error.tsx` says so out loud.
+  for (const r of batch) if (r.error) fail(r.error.message);
+
   const [{ data: entries }, { data: exits }, { data: stocks }, { data: tradePlans }, { data: theses }, { data: recs }] =
-    await Promise.all([
-      positionIds.length ? supabase.from("entries").select("*").in("position_id", positionIds) : empty,
-      positionIds.length ? supabase.from("exits").select("*").in("position_id", positionIds) : empty,
-      stockIds.length ? supabase.from("stocks").select("*").in("id", stockIds) : empty,
-      tradePlanIds.length ? supabase.from("trade_plans").select("*").in("id", tradePlanIds) : empty,
-      thesisIds.length ? supabase.from("theses").select("id, conviction_tier, title, ticker").in("id", thesisIds) : empty,
-      // Account-wide on purpose. A recommendation is pre-position — nothing has
-      // been bought yet, so there is no book it belongs to. It acquires one at
-      // the moment it is converted, which is where the picker is.
-      //
-      // Its stock is EMBEDDED rather than fetched afterwards. As a second read
-      // it was the one query in this whole function that could not start until
-      // the batch above had landed, which made it a sequential leg of its own
-      // for a join PostgREST will do in the first request.
-      supabase
-        .from("jarvis_recommendations")
-        .select("*, stocks(id, last_price, exchange)")
-        .order("recommended_at", { ascending: false }),
-    ]);
+    batch;
 
   const entriesByPosition = new Map<string, { quantity: number; price: number }[]>();
   for (const e of entries ?? []) {
