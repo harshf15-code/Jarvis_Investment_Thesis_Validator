@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 
 import { OwnershipBadge } from "@/components/portfolio/ownership-badge";
@@ -30,6 +30,7 @@ function OwnershipFields({
   ownership,
   beneficiary,
   onOwnership,
+  onOwnershipPress,
   onBeneficiary,
   onBeneficiaryCommit,
   disabled,
@@ -38,6 +39,8 @@ function OwnershipFields({
   ownership: PortfolioOwnership;
   beneficiary: string;
   onOwnership: (value: PortfolioOwnership) => void;
+  /** Fires on pointer-down, before the beneficiary input's blur. See the ref. */
+  onOwnershipPress?: (value: PortfolioOwnership) => void;
   onBeneficiary: (value: string) => void;
   /** Called when the name should be saved. Omitted where a Create button saves. */
   onBeneficiaryCommit?: (value: string) => void;
@@ -51,6 +54,7 @@ function OwnershipFields({
           <button
             key={value}
             type="button"
+            onPointerDown={() => onOwnershipPress?.(value)}
             onClick={() => onOwnership(value)}
             aria-pressed={ownership === value}
             disabled={disabled}
@@ -94,6 +98,30 @@ export function ManagePortfoliosDialog({ onClose }: { onClose: () => void }) {
   const [editing, setEditing] = useState<string | null>(null);
   /** The beneficiary being typed, keyed by portfolio. Uncommitted until blur. */
   const [draftBeneficiary, setDraftBeneficiary] = useState<Record<string, string>>({});
+  /**
+   * The book whose next beneficiary blur must be ignored.
+   *
+   * Clicking "My money" while the beneficiary box has focus fires blur BEFORE
+   * click. Left alone that saves a beneficiary and then changes ownership --
+   * two writes racing over one answer, and if the beneficiary lands second the
+   * book ends up owned WITH a beneficiary the server had just cleared. Worse,
+   * the blur's save disables the button mid-gesture, so the browser can drop
+   * the click entirely and the ownership change never happens at all.
+   *
+   * Pointer-down runs before blur, so the press claims the gesture first and
+   * the blur stands down. Set only for a real managed-to-owned change: pressing
+   * the button a book is already on must not silently discard a typed name.
+   */
+  const suppressBlurFor = useRef<string | null>(null);
+
+  /** Stop shadowing the server's answer for this book. */
+  function forgetDraft(id: string) {
+    setDraftBeneficiary((drafts) => {
+      const next = { ...drafts };
+      delete next[id];
+      return next;
+    });
+  }
 
   const atCap = portfolios.length >= MAX_PORTFOLIOS;
 
@@ -163,13 +191,22 @@ export function ManagePortfoliosDialog({ onClose }: { onClose: () => void }) {
    */
   async function setOwnershipFor(portfolio: Portfolio, value: PortfolioOwnership) {
     if (value === portfolio.ownership) return;
+    // Dropped before the request, not after: the server clears the beneficiary
+    // on the way to 'owned', and a draft left behind would outrank the cleared
+    // server value and show a name that no longer exists anywhere -- convincing
+    // enough to be believed, on the screen where whose-money is decided.
+    forgetDraft(portfolio.id);
     await patch(portfolio, { ownership: value }, "Could not change whose money that is.");
   }
 
   async function setBeneficiaryFor(portfolio: Portfolio, value: string) {
+    // An owned book has no beneficiary, and a late blur must not give it one.
+    if (portfolio.ownership !== "managed") return;
     const trimmed = value.trim();
     if (trimmed === (portfolio.beneficiary_name ?? "")) return;
-    await patch(portfolio, { beneficiary_name: trimmed }, "Could not save that name.");
+    const ok = await patch(portfolio, { beneficiary_name: trimmed }, "Could not save that name.");
+    // Saved: the server is the answer again.
+    if (ok) forgetDraft(portfolio.id);
   }
 
   async function remove(portfolio: Portfolio) {
@@ -261,11 +298,22 @@ export function ManagePortfoliosDialog({ onClose }: { onClose: () => void }) {
                     idPrefix={p.id}
                     ownership={p.ownership}
                     beneficiary={draftBeneficiary[p.id] ?? p.beneficiary_name ?? ""}
+                    onOwnershipPress={(value) => {
+                      if (value === "owned" && p.ownership === "managed") {
+                        suppressBlurFor.current = p.id;
+                      }
+                    }}
                     onOwnership={(value) => void setOwnershipFor(p, value)}
                     onBeneficiary={(value) =>
                       setDraftBeneficiary((d) => ({ ...d, [p.id]: value }))
                     }
-                    onBeneficiaryCommit={(value) => void setBeneficiaryFor(p, value)}
+                    onBeneficiaryCommit={(value) => {
+                      if (suppressBlurFor.current === p.id) {
+                        suppressBlurFor.current = null;
+                        return;
+                      }
+                      void setBeneficiaryFor(p, value);
+                    }}
                     disabled={busy}
                   />
                   <p className="text-[11px] text-on-surface-variant">
