@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Upload, Users } from "lucide-react";
+import { PencilLine, Upload, Users } from "lucide-react";
 
 import { AddCoinButton } from "@/components/positions/add-coin-button";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -56,8 +56,19 @@ export default async function PositionsPage({ searchParams }: PageProps) {
             </Link>
           )}
           {/* The single-coin path. It asks which book it is going into, so
-              unlike the two links beside it there is no scope to carry. */}
+              unlike the links beside it there is no scope to carry. */}
           <AddCoinButton />
+          {/* Deep-links into the import screen's typed table. A stock added by
+              hand still has to be resolved against an exchange and shown back
+              before it is saved, and that is the import screen's whole job —
+              so this is a shortcut into it, not a second way of doing it. */}
+          <Link
+            href={`/positions/import?portfolio=${scopeParam(scope)}&mode=manual`}
+            className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-1.5 text-xs text-on-surface-variant transition-colors hover:border-white/25 hover:text-on-surface"
+          >
+            <PencilLine className="size-3.5" />
+            Add Stocks
+          </Link>
           <Link
             href={`/positions/import?portfolio=${scopeParam(scope)}`}
             className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-1.5 text-xs text-on-surface-variant transition-colors hover:border-white/25 hover:text-on-surface"
@@ -70,14 +81,22 @@ export default async function PositionsPage({ searchParams }: PageProps) {
       {rows.length === 0 ? (
         <EmptyState
           title="No active positions."
-          description="Start with a thesis, or import the holdings you already own from a broker CSV."
+          description="Start with a thesis, or add the holdings you already own — a broker CSV, or just type them."
           action={
-            <Link
-              href={`/positions/import?portfolio=${scopeParam(scope)}`}
-              className="rounded-full bg-primary px-4 py-2 text-xs font-medium text-on-primary transition-colors hover:bg-primary-dim"
-            >
-              Import Holdings
-            </Link>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Link
+                href={`/positions/import?portfolio=${scopeParam(scope)}&mode=manual`}
+                className="rounded-full bg-primary px-4 py-2 text-xs font-medium text-on-primary transition-colors hover:bg-primary-dim"
+              >
+                Type in Holdings
+              </Link>
+              <Link
+                href={`/positions/import?portfolio=${scopeParam(scope)}`}
+                className="rounded-full border border-white/10 px-4 py-2 text-xs text-on-surface-variant transition-colors hover:border-white/25 hover:text-on-surface"
+              >
+                Import a CSV
+              </Link>
+            </div>
           }
         />
       ) : (

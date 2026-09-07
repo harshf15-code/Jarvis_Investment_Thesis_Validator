@@ -183,6 +183,18 @@ export function localToday(now: Date = new Date()): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
+/**
+ * The latest purchase date a row may carry: today in UTC, plus one day.
+ *
+ * The same bound, computed the same way, as the batch-level `as_of_date` guard
+ * in `/api/portfolio/imports` -- and for the same reason. The browser sends the
+ * trader's LOCAL calendar date and the server answers in UTC; in Auckland those
+ * are routinely different days, and that gap is not the mistake this is for.
+ */
+export function latestAllowedDate(now: Date = new Date()): string {
+  return new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10);
+}
+
 /** One CSV row reduced to the four fields this feature cares about. */
 export type DraftImportRow = {
   /** Position in the CSV body, 0-based. Shown to the trader as `index + 2`
@@ -237,6 +249,14 @@ export function rowValidationError(row: DraftImportRow): string | null {
   if (row.averagePrice <= 0) {
     return "Average cost must be greater than zero — enter a real cost basis for gifted or bonus shares";
   }
+  // A cost basis dated in the future makes every return on the Cockpit
+  // nonsense. It was reachable only by hand-crafting a CSV until the typed
+  // form put a date input in front of it, where next year is one click away.
+  // Caught HERE so the preview flags it, rather than only at commit where the
+  // trader has already confirmed a row that looked fine.
+  if (row.date !== null && row.date > latestAllowedDate()) {
+    return "Bought date is in the future";
+  }
   return null;
 }
 
@@ -271,4 +291,49 @@ export function buildDraftRows(rows: string[][], mapping: ColumnMapping): DraftI
       date: parseImportDate(at(row, mapping.date)),
     }))
     .filter((row) => row.ticker !== "");
+}
+
+/** One row of the typed holdings table, exactly as the inputs hold it. */
+export type TypedHoldingEntry = {
+  ticker: string;
+  quantity: string;
+  averagePrice: string;
+  date: string;
+};
+
+export const EMPTY_TYPED_ROW: TypedHoldingEntry = {
+  ticker: "",
+  quantity: "",
+  averagePrice: "",
+  date: "",
+};
+
+/**
+ * Turns typed rows into the same draft rows a CSV produces, so everything
+ * downstream -- pricing, the currency gate, duplicate detection, the preview,
+ * the commit -- cannot tell the two sources apart.
+ *
+ * Reuses `normalizeTicker`, `parseNumber` and `parseImportDate` rather than
+ * trusting a typed field to be cleaner than a broker's: `NSE:INFY` gets pasted
+ * into a text box just as often as it appears in an export.
+ *
+ * ONE deliberate difference from `buildDraftRows`. That one drops every row
+ * with no ticker, because in a broker file those are almost always a total or
+ * footer line. A typed row carrying a quantity and no ticker is not a footer --
+ * it is someone who tabbed past a field -- so a row is dropped here only when
+ * EVERY field is blank, and anything else survives to be told what is missing.
+ */
+export function buildTypedRows(entries: TypedHoldingEntry[]): DraftImportRow[] {
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) =>
+      Object.values(entry).some((value) => value.trim() !== ""),
+    )
+    .map(({ entry, index }) => ({
+      index,
+      ticker: normalizeTicker(entry.ticker),
+      quantity: parseNumber(entry.quantity),
+      averagePrice: parseNumber(entry.averagePrice),
+      date: parseImportDate(entry.date),
+    }));
 }

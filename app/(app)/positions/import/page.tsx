@@ -13,6 +13,13 @@ type PageProps = { searchParams: Promise<Record<string, string | string[] | unde
 export default async function ImportHoldingsPage({ searchParams }: PageProps) {
   const { scope, active } = await pageScope("/positions/import", searchParams);
 
+  // `?mode=manual` opens straight on the typed table. /positions links here
+  // that way for the trader with three stocks and no wish to build a file;
+  // arriving any other way still opens on the CSV, which is what this screen
+  // has always been for.
+  const params = await searchParams;
+  const typed = params.mode === "manual";
+
   // The objective is asked once PER BOOK, and only if that book has never
   // answered. A trader importing their second CSV into the same portfolio
   // should not be asked what it is for again — but a second portfolio is a
@@ -51,14 +58,17 @@ export default async function ImportHoldingsPage({ searchParams }: PageProps) {
         Active Positions
       </Link>
       <h1 className="font-display text-2xl text-on-surface">
-        Import Holdings{active ? ` into ${active.name}` : ""}
+        Add Holdings{active ? ` to ${active.name}` : ""}
       </h1>
       <p className="mt-1 mb-6 max-w-2xl text-sm text-on-surface-variant">
-        Bring in stocks you already own. They land beside your Jarvis positions everywhere — the
-        Cockpit, this table, the Journal — but they arrive without a trade plan, because no analysis
-        produced one.
+        Bring in stocks and coins you already own, from a broker export or by typing them. They land
+        beside your Jarvis positions everywhere — the Cockpit, this table, the Journal — but they
+        arrive without a trade plan, because no analysis produced one.
       </p>
-      <ImportWizard booksWithObjective={booksWithObjective} />
+      <ImportWizard
+        booksWithObjective={booksWithObjective}
+        defaultSource={typed ? "typed" : "csv"}
+      />
     </div>
   );
 }
