@@ -30,13 +30,10 @@ export function PortfolioPicker({
    *  commit into another. */
   disabled?: boolean;
 }) {
-  const { portfolios, loading, error } = usePortfolios();
+  const { portfolios, error } = usePortfolios();
 
   if (error) {
     return <p className="text-xs text-status-red">Could not load your portfolios: {error}</p>;
-  }
-  if (loading && portfolios.length === 0) {
-    return <p className="text-xs text-on-surface-variant">Loading your portfolios…</p>;
   }
 
   return (

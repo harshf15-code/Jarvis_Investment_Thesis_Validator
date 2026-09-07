@@ -3,6 +3,17 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
 /**
+ * What this app actually needs to know about the signed-in person.
+ *
+ * Narrower than Supabase's `User` on purpose. Ten call sites read `id` and one
+ * reads `email`; nothing reads anything else. Returning the full object would
+ * imply the rest of it is available and current, and after the change below it
+ * is neither — these two fields come out of the verified token, and a token is
+ * a snapshot of the moment it was issued, not a live row.
+ */
+export type SessionUser = { id: string; email: string | null };
+
+/**
  * The signed-in user, or a redirect to /login.
  *
  * `proxy.ts` already gates these routes, so this is defence in depth rather
@@ -12,14 +23,24 @@ import { createClient } from "@/lib/supabase/server";
  * means a missed check leaks nothing; this exists so the failure mode is a
  * clean redirect rather than a screen of empty tables.
  *
- * Uses `getUser()`, which revalidates the token with the auth server, rather
- * than `getSession()`, which trusts the cookie as-is.
+ * Uses `getClaims()`, which VERIFIES the token's signature against the
+ * project's published keys, rather than `getSession()`, which trusts the
+ * cookie as-is. A cookie is attacker-controlled; the distinction is the whole
+ * point, and it is the same rule `lib/supabase/proxy.ts` states.
+ *
+ * It used to use `getUser()`, which proves the same thing by ASKING the auth
+ * server — an HTTPS round trip on every render of every page, measured at
+ * 539ms average against this project (Supabase `edge_logs`, `/auth/v1/user`).
+ * This project signs with ES256, so `getClaims()` verifies locally against a
+ * cached key set and costs nothing. Note the one case where that stops being
+ * true: a project signing with a SYMMETRIC secret has no public key to verify
+ * against, and `getClaims()` quietly falls back to the same server round trip.
+ * The security property holds either way; only the speed depends on the key
+ * type. If this ever feels slow again, check the project's JWT signing keys
+ * before rewriting anything here.
  */
-export async function requireUser() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export async function requireUser(): Promise<SessionUser> {
+  const user = await currentUser();
 
   if (!user) {
     redirect("/login");
@@ -36,10 +57,19 @@ export async function requireUser() {
  * parse as JSON. Route handlers that need the user's id (spend accounting) use
  * this instead.
  */
-export async function currentUser() {
+export async function currentUser(): Promise<SessionUser | null> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user;
+  const { data } = await supabase.auth.getClaims();
+  const claims = data?.claims;
+
+  // `sub` is the user id and is required in every Supabase access token, but
+  // the type permits any payload shape (a Custom Access Token Hook can rewrite
+  // it), so this refuses a token it cannot identify rather than handing back a
+  // user whose id is `undefined` — which would read as signed-in everywhere.
+  if (typeof claims?.sub !== "string" || claims.sub === "") return null;
+
+  return {
+    id: claims.sub,
+    email: typeof claims.email === "string" ? claims.email : null,
+  };
 }
