@@ -508,6 +508,39 @@ to `main` is enough.
 
 The Edge Functions and their cron schedules live on Supabase and deploy separately.
 
+### Where it runs, and why that is pinned
+
+`vercel.json` pins the app's functions to **`sin1`** (Singapore). That is not a preference — it
+is the same AWS region (`ap-southeast-1`) the Supabase project lives in, and this app is bound by
+the number of database round trips it makes, not by how much work any of them does.
+
+Without the pin, Vercel defaults to `iad1` (Washington DC) and every query crosses the Pacific.
+Measured from Supabase's own `edge_logs`, with the largest table in the database holding 60 rows:
+
+| Caller | Region | Avg per Supabase call |
+|---|---|---|
+| The app, unpinned | `iad1` — Washington DC | **577 ms** |
+| Supabase Edge Functions | `ap-southeast-1` — Singapore | 129 ms |
+
+Roughly 550 ms of that 577 ms was flight time. A screen making ten calls paid it ten times.
+
+**If you fork this and point it at your own Supabase project, change `sin1` to the Vercel region
+matching your project's** — `iad1` for `us-east-1`, `fra1` for `eu-central-1`, and so on. Leaving
+it pinned to the wrong continent is worse than not pinning it at all.
+
+To check what is actually happening after a deploy, load a few screens and ask Supabase where its
+callers are:
+
+```sql
+select log_attributes['request.cf.colo'] as colo,
+       count(*) as n,
+       round(avg(toFloat64OrZero(log_attributes['response.origin_time']))) as avg_ms
+from logs
+where source = 'edge_logs'
+  and log_attributes['request.headers.x_client_info'] like 'supabase-ssr%'
+group by colo
+```
+
 ### Accounts
 
 Anyone who can reach the deployment can create an account at `/signup`, and each account

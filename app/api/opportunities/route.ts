@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { currencyForExchange } from "@/lib/markets";
+import { readOpportunities } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/server";
 import type { OpportunityInsert } from "@/lib/types";
 
@@ -19,44 +19,23 @@ const CreateOpportunitySchema = z.object({
   watching_only: z.boolean().optional(),
 });
 
-/** Spec US-20/US-21. Resolves each row's CMP + HELD/DRAFT badges by cross-referencing `stocks`/`positions`/`theses` on `ticker` — no FK exists between `opportunities` and those tables (Decision #2's denormalized-ticker pattern). */
+/**
+ * The watchlist, for the BROWSER.
+ *
+ * `/discovery` reads through `readOpportunities` on the server — see
+ * `lib/queries.ts`. This route is what the Add-to-Watchlist modal calls back
+ * through.
+ */
 export async function GET() {
   const supabase = await createClient();
-
-  const { data: opportunities, error } = await supabase
-    .from("opportunities")
-    .select("*")
-    .order("conviction_tier", { ascending: true, nullsFirst: false });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  const rows = opportunities ?? [];
-  if (rows.length === 0) return NextResponse.json({ opportunities: [] });
-
-  const tickers = [...new Set(rows.map((o) => o.ticker))];
-  const [{ data: stocks }, { data: positions }, { data: theses }] = await Promise.all([
-    supabase.from("stocks").select("ticker, exchange, currency, last_price, last_price_at").in("ticker", tickers),
-    supabase.from("positions").select("ticker").in("status", ["active", "partial_exit"]).in("ticker", tickers),
-    supabase.from("theses").select("ticker, status").eq("status", "draft").in("ticker", tickers),
-  ]);
-  const stockByTicker = new Map((stocks ?? []).map((s) => [s.ticker, s]));
-  const heldTickers = new Set((positions ?? []).map((p) => p.ticker));
-  const draftTickers = new Set((theses ?? []).map((t) => t.ticker));
-
-  const result = rows.map((o) => {
-    const stock = stockByTicker.get(o.ticker);
-    return {
-      opportunity: o,
-      currentPrice: stock?.last_price ?? null,
-      lastPriceAt: stock?.last_price_at ?? null,
-      // Falls back to the opportunity's own exchange when this ticker has no
-      // `stocks` row yet — in which case there is no price to label either.
-      currency: stock?.currency ?? currencyForExchange(o.market),
-      held: heldTickers.has(o.ticker),
-      draft: draftTickers.has(o.ticker),
-    };
-  });
-
-  return NextResponse.json({ opportunities: result });
+  try {
+    return NextResponse.json({ opportunities: await readOpportunities(supabase) });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Could not read the watchlist." },
+      { status: 500 },
+    );
+  }
 }
 
 export async function POST(request: Request) {

@@ -16,7 +16,7 @@ import { ALL_PORTFOLIOS } from "@/lib/portfolio/scope";
  * screens belongs to the chrome they share, not to any one of them.
  */
 export function PortfolioSwitcher() {
-  const { portfolios, active, mode, loading, select } = usePortfolios();
+  const { portfolios, active, mode, select } = usePortfolios();
   const [open, setOpen] = useState(false);
   const [managing, setManaging] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -36,11 +36,6 @@ export function PortfolioSwitcher() {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
-
-  // Nothing to switch between, and nothing to say. Rendering a disabled control
-  // that reads "loading" on every page load would be noise on the one piece of
-  // chrome that has to stay readable.
-  if (loading && portfolios.length === 0) return null;
 
   const label = mode === "all" ? "All portfolios" : (active?.name ?? "Portfolio");
 

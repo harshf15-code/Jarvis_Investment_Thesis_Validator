@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 
 import { Logo } from "@/components/layout/logo";
-import { createClient } from "@/lib/supabase/server";
+import { currentUser } from "@/lib/auth/user";
 
 /**
  * Public landing page — the only route outside `(app)` that renders content
@@ -72,11 +72,10 @@ const POINTS = [
 ];
 
 export default async function LandingPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const signedIn = Boolean(user);
+  // `currentUser` reads the verified token rather than asking the auth server,
+  // which matters most here: this is the one page an anonymous visitor loads,
+  // and it used to spend a round trip to Singapore being told "nobody".
+  const signedIn = Boolean(await currentUser());
 
   return (
     <div className="min-h-screen">

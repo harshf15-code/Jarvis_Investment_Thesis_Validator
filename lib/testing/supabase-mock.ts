@@ -32,8 +32,14 @@ export type SupabaseMock = {
 };
 
 type Options = {
-  /** Tables that should resolve with an error instead of rows. */
-  errors?: Record<string, { message: string }>;
+  /**
+   * Tables that should resolve with an error instead of rows.
+   *
+   * `code` matters for the readers that distinguish PostgREST's `PGRST116`
+   * ("`.single()` matched no row", which is an answer) from a read that
+   * actually failed.
+   */
+  errors?: Record<string, { message: string; code?: string }>;
   /**
    * Tables whose reads must fail the test if they happen. A route that reads a
    * table nobody expected is exactly the bug these suites exist to catch.

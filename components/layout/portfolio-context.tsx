@@ -23,8 +23,12 @@ import type { Portfolio } from "@/lib/types";
  * another's, and the address bar naming the book is the cheapest possible
  * defence against that going unnoticed.
  *
- * The list itself is fetched once. It is at most five short rows, and every
- * screen's header needs it.
+ * The list itself is HANDED IN by `app/(app)/layout.tsx`, which is already on
+ * the server with a Supabase client open. It used to be fetched on mount from
+ * `/api/portfolios`, which meant every single page paid a browser round trip
+ * back to the same server plus two serialised Supabase calls, to learn at most
+ * five short rows the render had just walked past. `refresh()` still uses the
+ * route: after a create, rename or delete the client has no other way to know.
  */
 
 type PortfolioContextValue = {
@@ -33,42 +37,54 @@ type PortfolioContextValue = {
    *  Navigation carries this rather than `active.id` so the roll-up survives a
    *  nav click, and so a link built before the list loads is still scoped. */
   param: string | null;
-  /** The book on screen, or null in the roll-up and while the list is loading. */
+  /** The book on screen, or null in the roll-up. */
   active: Portfolio | null;
   mode: "one" | "all";
-  loading: boolean;
+  /** Set only by a failed `refresh()`. The first render cannot fail — the rows
+   *  arrive with the page. */
   error: string | null;
-  /** Re-reads the list after a create, rename or delete. */
-  refresh: () => Promise<void>;
   /**
-   * Bumped by every refresh(). Screens holding their OWN copy of data that a
-   * portfolio edit can invalidate depend on this to know it happened.
+   * Re-reads the list after a create, rename or delete, and re-renders every
+   * server component on the page with it.
    *
-   * The cockpit is the case that forced it: it fetches /api/cockpit itself and
-   * re-fetched only when the chosen book changed, so marking a book as someone
-   * else's money left it inside the personal headline total until the next
-   * navigation -- the total silently disagreeing with the badge beside it.
+   * There used to be a `version` counter beside this, for screens holding their
+   * own copy of data a portfolio edit could invalidate — the Cockpit, which
+   * fetched /api/cockpit itself and would otherwise go on counting a book the
+   * badge beside it now said was not yours. The Cockpit reads on the server
+   * now, so `router.refresh()` below covers that case and the counter had no
+   * subscribers left.
    */
-  version: number;
+  refresh: () => Promise<void>;
   /** Navigates to the same page showing a different book. */
   select: (id: string) => void;
 };
 
 const PortfolioContext = createContext<PortfolioContextValue | null>(null);
 
-export function PortfolioProvider({ children }: { children: ReactNode }) {
+export function PortfolioProvider({
+  children,
+  initialPortfolios,
+}: {
+  children: ReactNode;
+  /** Read on the server by `app/(app)/layout.tsx`. Never empty in practice —
+   *  `listPortfoliosEnsuringDefault` creates the first book if there is none. */
+  initialPortfolios: Portfolio[];
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const param = searchParams.get("portfolio");
 
-  const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [portfolios, setPortfolios] = useState<Portfolio[]>(initialPortfolios);
   const [error, setError] = useState<string | null>(null);
   /** Bumped to re-read the list after a create, rename or delete. */
   const [reloadKey, setReloadKey] = useState(0);
 
+  // Zero on the first render, so the effect below skips the mount fetch: the
+  // rows are already here. Only a `refresh()` — which bumps `reloadKey` — sends
+  // it to the network.
   useEffect(() => {
+    if (reloadKey === 0) return;
     let cancelled = false;
 
     async function load() {
@@ -81,8 +97,6 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
         setError(null);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Something went wrong.");
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     }
 
@@ -121,13 +135,11 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
       param,
       active: mode === "all" ? null : (portfolios.find((p) => p.id === param) ?? null),
       mode,
-      loading,
       error,
       refresh,
-      version: reloadKey,
       select,
     };
-  }, [portfolios, param, loading, error, refresh, reloadKey, select]);
+  }, [portfolios, param, error, refresh, select]);
 
   return <PortfolioContext.Provider value={value}>{children}</PortfolioContext.Provider>;
 }

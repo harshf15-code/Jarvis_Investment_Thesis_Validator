@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 
 import { PortfolioSummary, type CurrencyTotal } from "@/components/cockpit/portfolio-summary";
@@ -12,11 +11,9 @@ import {
   RecommendationStats,
   type RecommendationStatsRow,
 } from "@/components/recommendations/recommendation-stats";
-import { usePortfolios } from "@/components/layout/portfolio-context";
 import { OwnershipBadge } from "@/components/portfolio/ownership-badge";
 import { EmptyState } from "@/components/shared/empty-state";
 import { LastUpdated } from "@/components/shared/last-updated";
-import { SkeletonLoader } from "@/components/shared/skeleton-loader";
 import { useNewThesisDrawer } from "@/components/layout/new-thesis-context";
 import { formatCurrency } from "@/lib/format";
 import type { Portfolio } from "@/lib/types";
@@ -27,7 +24,7 @@ type BookTotals = {
   positionCount: number;
 };
 
-type Cockpit = {
+export type Cockpit = {
   positions: PositionRow[];
   recommendations: RecommendationStatsRow[];
   totalsByCurrency: CurrencyTotal[];
@@ -37,63 +34,29 @@ type Cockpit = {
 };
 
 /**
- * The Cockpit's one aggregated read (`GET /api/cockpit`), assembled into the
- * whole situational picture — P&L, the alert rail, open positions, and the
+ * The whole situational picture — P&L, the alert rail, open positions, and the
  * Jarvis recommendation scoreboard (US-01, US-02).
  *
- * A client screen because the "New Thesis" affordance needs
- * `useNewThesisDrawer` and `<PositionsTable/>` is itself interactive; the fetch
- * runs in the browser, which carries the session cookie natively.
+ * A client component because the "New Thesis" affordance needs
+ * `useNewThesisDrawer` and `<PositionsTable/>` is itself interactive. It holds
+ * no state and fetches nothing: `data` is read on the SERVER by `readCockpit`
+ * and arrives in the HTML.
  *
- * `scopeParam` comes from the server wrapper, which has already resolved a bare
- * URL to a named book — so this never has to guess which portfolio it is
+ * It used to mount, render a skeleton, and only then call `GET /api/cockpit` —
+ * a browser round trip that could not even start until React had hydrated, for
+ * numbers the server render was already positioned to produce. Re-reads come
+ * from `router.refresh()`, which `usePortfolios().refresh()` already calls for
+ * exactly this reason: editing a book changes these totals without changing
+ * which book is on screen, and a server re-render is what tells this screen so.
+ * That path also keeps the old numbers on screen while the new ones load,
+ * rather than blanking to a skeleton.
+ *
+ * `scopeParam` comes from the same server render, which has already resolved a
+ * bare URL to a named book — so this never has to guess which portfolio it is
  * showing, and never renders one book's numbers under another's name.
  */
-export function CockpitClient({ scopeParam }: { scopeParam: string }) {
+export function CockpitClient({ data, scopeParam }: { data: Cockpit; scopeParam: string }) {
   const { open } = useNewThesisDrawer();
-  const { version: portfolioVersion } = usePortfolios();
-  const [data, setData] = useState<Cockpit | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setError(null);
-      try {
-        const res = await fetch(`/api/cockpit?portfolio=${scopeParam}`);
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error ?? "Could not load the cockpit.");
-        if (!cancelled) setData(body);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Something went wrong.");
-      }
-    }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-    // portfolioVersion: editing a book can change this response without
-    // changing WHICH book is on screen. Marking one as someone else's money
-    // removes it from the headline total, and that total is computed on the
-    // server -- so without this the number here goes on counting a book the
-    // badge beside it now says is not yours.
-  }, [reloadKey, scopeParam, portfolioVersion]);
-
-  if (error) {
-    return (
-      <div className="rounded-xl bg-status-red-container px-4 py-3 text-sm text-status-red">
-        {error}{" "}
-        <button type="button" onClick={() => setReloadKey((k) => k + 1)} className="underline">
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  if (!data) return <SkeletonLoader lines={6} />;
 
   const pendingRecCount = data.recommendations.filter(
     (r) => !r.recommendation.converted_to_position,
