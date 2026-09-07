@@ -1,6 +1,10 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import { limitsFor } from "@/lib/llm/budget";
+import { currencyForExchange } from "@/lib/markets";
 import type { PortfolioScope } from "@/lib/portfolio/scope";
 import { createClient } from "@/lib/supabase/server";
+import type { Database } from "@/lib/types";
 import { computeWeightedAverageEntry } from "@/lib/weighted-average";
 
 /**
@@ -25,6 +29,8 @@ import { computeWeightedAverageEntry } from "@/lib/weighted-average";
  * that cannot read its list has nothing to render, so the nearest `error.tsx`
  * is the right place to handle it.
  */
+
+type Client = SupabaseClient<Database>;
 
 function fail(message: string): never {
   throw new Error(message);
@@ -198,3 +204,172 @@ export async function listOpenPositions(scope: PortfolioScope) {
     source: thesisById.get(p.thesis_id)?.source ?? "jarvis",
   }));
 }
+
+/**
+ * Everything `/feed` shows: every signal (the tab filter is the client's job)
+ * plus the 14-day time-exit agenda.
+ *
+ * Takes a client rather than making one, so the page and `GET /api/signals`
+ * share a single Supabase client per request instead of opening two.
+ *
+ * Spec US-08: returns ALL signals, active and archived — the client filters by
+ * tab. Active signals sort RED -> AMBER -> BLUE -> GREY, then recency within
+ * each tier (the query already orders by `created_at` descending, and
+ * `Array.prototype.sort` is stable, so a priority-only sort preserves that
+ * recency ordering within each tier). Archived signals sort by `archived_at`
+ * descending, most recently reviewed first — the tab split already keeps the
+ * two groups visually separate, so this is just about within-tab order.
+ */
+const SIGNAL_PRIORITY_ORDER: Record<string, number> = { red: 0, amber: 1, blue: 2, grey: 3 };
+
+export async function readSignalFeed(supabase: Client) {
+  // Independent reads, so they go together. The agenda's positions have
+  // nothing to do with the signals list, and running them in series put a
+  // round trip on the screen for no reason.
+  const [{ data: signals, error }, { data: positions }] = await Promise.all([
+    supabase.from("intelligence_signals").select("*").order("created_at", { ascending: false }),
+    supabase.from("positions").select("id, ticker, trade_plan_id").in("status", ["active", "partial_exit"]),
+  ]);
+  if (error) fail(error.message);
+
+  const active = (signals ?? []).filter((s) => !s.archived_at);
+  const archived = (signals ?? []).filter((s) => s.archived_at);
+  const sortedActive = [...active].sort(
+    (a, b) => SIGNAL_PRIORITY_ORDER[a.priority] - SIGNAL_PRIORITY_ORDER[b.priority],
+  );
+  const sortedArchived = [...archived].sort((a, b) =>
+    (b.archived_at ?? "").localeCompare(a.archived_at ?? ""),
+  );
+
+  const today = new Date().toISOString().slice(0, 10);
+  const in14Days = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const tradePlanIds = [...new Set((positions ?? []).map((p) => p.trade_plan_id))];
+  const { data: tradePlans } = tradePlanIds.length
+    ? await supabase.from("trade_plans").select("id, time_exit_date").in("id", tradePlanIds)
+    : { data: [] };
+  const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
+
+  const agenda = (positions ?? [])
+    .map((p) => ({
+      ticker: p.ticker,
+      timeExitDate: tradePlanById.get(p.trade_plan_id)?.time_exit_date ?? null,
+    }))
+    .filter((a) => a.timeExitDate !== null && a.timeExitDate >= today && a.timeExitDate <= in14Days)
+    .sort((a, b) => a.timeExitDate!.localeCompare(b.timeExitDate!));
+
+  return { signals: [...sortedActive, ...sortedArchived], agenda };
+}
+
+/**
+ * The watchlist behind `/discovery` (US-20/US-21), each row resolved to a
+ * current price and its HELD / DRAFT badges.
+ *
+ * Cross-referenced on `ticker` rather than a foreign key: no FK exists between
+ * `opportunities` and `stocks`/`positions`/`theses` — that is Decision #2's
+ * denormalized-ticker pattern, not an omission.
+ */
+export async function readOpportunities(supabase: Client) {
+  const { data: opportunities, error } = await supabase
+    .from("opportunities")
+    .select("*")
+    .order("conviction_tier", { ascending: true, nullsFirst: false });
+  if (error) fail(error.message);
+
+  const rows = opportunities ?? [];
+  if (rows.length === 0) return [];
+
+  const tickers = [...new Set(rows.map((o) => o.ticker))];
+  const [{ data: stocks }, { data: positions }, { data: theses }] = await Promise.all([
+    supabase
+      .from("stocks")
+      .select("ticker, exchange, currency, last_price, last_price_at")
+      .in("ticker", tickers),
+    supabase.from("positions").select("ticker").in("status", ["active", "partial_exit"]).in("ticker", tickers),
+    supabase.from("theses").select("ticker, status").eq("status", "draft").in("ticker", tickers),
+  ]);
+  const stockByTicker = new Map((stocks ?? []).map((s) => [s.ticker, s]));
+  const heldTickers = new Set((positions ?? []).map((p) => p.ticker));
+  const draftTickers = new Set((theses ?? []).map((t) => t.ticker));
+
+  return rows.map((o) => {
+    const stock = stockByTicker.get(o.ticker);
+    return {
+      opportunity: o,
+      currentPrice: stock?.last_price ?? null,
+      lastPriceAt: stock?.last_price_at ?? null,
+      // Falls back to the opportunity's own exchange when this ticker has no
+      // `stocks` row yet — in which case there is no price to label either.
+      currency: stock?.currency ?? currencyForExchange(o.market),
+      held: heldTickers.has(o.ticker),
+      draft: draftTickers.has(o.ticker),
+    };
+  });
+}
+
+/**
+ * One position with everything Screens 5-6 need to enforce exit discipline:
+ * its entries (weighted average), its exits (which ladder rungs are already
+ * DONE), its trade plan (stop/targets/thesis conditions), its thesis
+ * (invalidation condition), its stock (price + exchange), the holding reviews
+ * and the watch state.
+ *
+ * `null` when there is no such position — that is a 404, not a failure.
+ *
+ * Deliberately a lead query plus seven parallel ones rather than one PostgREST
+ * embed. The joins hang off `positions`' own FKs in four different directions,
+ * the flat shape below is what the screen actually consumes, and there is no
+ * route test here to catch an embed that resolves to something subtly wrong.
+ * Two round trips instead of one is a few milliseconds now that the app runs
+ * beside its database; getting the join wrong is a blank exit ladder.
+ */
+export async function readPositionDetail(supabase: Client, id: string) {
+  const { data: position, error } = await supabase
+    .from("positions")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error || !position) return null;
+
+  const [
+    { data: entries },
+    { data: exits },
+    { data: tradePlan },
+    { data: thesis },
+    { data: stock },
+    { data: reviews },
+    { data: watch },
+  ] = await Promise.all([
+    supabase.from("entries").select("*").eq("position_id", id).order("date", { ascending: true }),
+    supabase.from("exits").select("*").eq("position_id", id).order("date", { ascending: true }),
+    supabase.from("trade_plans").select("*").eq("id", position.trade_plan_id).single(),
+    supabase.from("theses").select("*").eq("id", position.thesis_id).single(),
+    supabase.from("stocks").select("*").eq("id", position.stock_id).single(),
+    // Newest first, and capped: the page shows the latest read expanded and
+    // the rest collapsed, and a holding watched for a year has no business
+    // shipping fifty documents to render three.
+    supabase
+      .from("holding_reviews")
+      .select("*")
+      .eq("position_id", id)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase.from("holding_watch_state").select("last_checked_at").eq("position_id", id).maybeSingle(),
+  ]);
+
+  return {
+    position,
+    entries: entries ?? [],
+    exits: exits ?? [],
+    tradePlan: tradePlan ?? null,
+    thesis: thesis ?? null,
+    stock: stock ?? null,
+    reviews: reviews ?? [],
+    // Null `last_checked_at` on an existing row means the initial read is
+    // queued but has not run yet — which the page says out loud, because
+    // silence would read as "Jarvis has nothing to say about this holding".
+    watch: watch ?? null,
+  };
+}
+
+export type PositionDetail = NonNullable<Awaited<ReturnType<typeof readPositionDetail>>>;

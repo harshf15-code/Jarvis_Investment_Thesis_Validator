@@ -2,10 +2,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { readSignalFeed } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/server";
 import type { IntelligenceSignalInsert } from "@/lib/types";
-
-const PRIORITY_ORDER: Record<string, number> = { red: 0, amber: 1, blue: 2, grey: 3 };
 
 const CreateSignalSchema = z.object({
   priority: z.enum(["red", "amber", "blue", "grey"]),
@@ -16,50 +15,22 @@ const CreateSignalSchema = z.object({
 });
 
 /**
- * Spec US-08: returns ALL signals (active and archived) — the client (`/feed`)
- * filters by tab (`!s.archived_at` for Active, `!!s.archived_at` for
- * Reviewed). Active signals sort RED -> AMBER -> BLUE -> GREY, then recency
- * within each tier (the query already orders by `created_at` descending, and
- * `Array.prototype.sort` is stable, so a priority-only sort preserves that
- * recency ordering within each tier). Archived signals sort by `archived_at`
- * descending (most recently reviewed first) — the tab split already keeps
- * the two groups visually separate, so this is just about within-tab order.
- * Also returns the "Today's Agenda" 14-day time-exit list.
+ * The feed, for the BROWSER.
+ *
+ * `/feed` itself reads through `readSignalFeed` on the server — see
+ * `lib/queries.ts`. This route is what the client calls back through after it
+ * archives a signal or adds one.
  */
 export async function GET() {
   const supabase = await createClient();
-
-  const { data: signals, error } = await supabase
-    .from("intelligence_signals")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  const active = (signals ?? []).filter((s) => !s.archived_at);
-  const archived = (signals ?? []).filter((s) => s.archived_at);
-  const sortedActive = [...active].sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
-  const sortedArchived = [...archived].sort((a, b) => (b.archived_at ?? "").localeCompare(a.archived_at ?? ""));
-  const sorted = [...sortedActive, ...sortedArchived];
-
-  const today = new Date().toISOString().slice(0, 10);
-  const in14Days = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-
-  const { data: positions } = await supabase
-    .from("positions")
-    .select("id, ticker, trade_plan_id")
-    .in("status", ["active", "partial_exit"]);
-  const tradePlanIds = [...new Set((positions ?? []).map((p) => p.trade_plan_id))];
-  const { data: tradePlans } = tradePlanIds.length
-    ? await supabase.from("trade_plans").select("id, time_exit_date").in("id", tradePlanIds)
-    : { data: [] };
-  const tradePlanById = new Map((tradePlans ?? []).map((t) => [t.id, t]));
-
-  const agenda = (positions ?? [])
-    .map((p) => ({ ticker: p.ticker, timeExitDate: tradePlanById.get(p.trade_plan_id)?.time_exit_date ?? null }))
-    .filter((a) => a.timeExitDate !== null && a.timeExitDate >= today && a.timeExitDate <= in14Days)
-    .sort((a, b) => a.timeExitDate!.localeCompare(b.timeExitDate!));
-
-  return NextResponse.json({ signals: sorted, agenda });
+  try {
+    return NextResponse.json(await readSignalFeed(supabase));
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Could not read the feed." },
+      { status: 500 },
+    );
+  }
 }
 
 export async function POST(request: Request) {
