@@ -32,11 +32,21 @@ export type SessionUser = { id: string; email: string | null };
  * server — an HTTPS round trip on every render of every page, measured at
  * 539ms average against this project (Supabase `edge_logs`, `/auth/v1/user`).
  * This project signs with ES256, so `getClaims()` verifies locally against a
- * cached key set and costs nothing. Note the one case where that stops being
- * true: a project signing with a SYMMETRIC secret has no public key to verify
- * against, and `getClaims()` quietly falls back to the same server round trip.
- * The security property holds either way; only the speed depends on the key
- * type. If this ever feels slow again, check the project's JWT signing keys
+ * cached key set and costs nothing.
+ *
+ * The cache is what makes that true, and it is worth knowing where it lives:
+ * auth-js keeps the key set in a MODULE-scoped `GLOBAL_JWKS` with a ten-minute
+ * TTL, not on the client instance. `lib/supabase/server.ts` builds a new client
+ * per request on purpose — a shared one would leak sessions between concurrent
+ * requests under Fluid Compute — and this is why that costs nothing here: the
+ * per-request clients still share one key set, so the JWKS is fetched once per
+ * process per ten minutes rather than once per page.
+ *
+ * Note the one case where the whole argument stops holding: a project signing
+ * with a SYMMETRIC secret has no public key to verify against, and
+ * `getClaims()` quietly falls back to the same server round trip `getUser()`
+ * made. The security property holds either way; only the speed depends on the
+ * key type. If this ever feels slow again, check the project's JWT signing keys
  * before rewriting anything here.
  */
 export async function requireUser(): Promise<SessionUser> {
