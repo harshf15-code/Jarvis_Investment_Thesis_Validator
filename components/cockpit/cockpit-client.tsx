@@ -12,6 +12,7 @@ import {
   RecommendationStats,
   type RecommendationStatsRow,
 } from "@/components/recommendations/recommendation-stats";
+import { usePortfolios } from "@/components/layout/portfolio-context";
 import { OwnershipBadge } from "@/components/portfolio/ownership-badge";
 import { EmptyState } from "@/components/shared/empty-state";
 import { LastUpdated } from "@/components/shared/last-updated";
@@ -50,6 +51,7 @@ type Cockpit = {
  */
 export function CockpitClient({ scopeParam }: { scopeParam: string }) {
   const { open } = useNewThesisDrawer();
+  const { version: portfolioVersion } = usePortfolios();
   const [data, setData] = useState<Cockpit | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -73,7 +75,12 @@ export function CockpitClient({ scopeParam }: { scopeParam: string }) {
     return () => {
       cancelled = true;
     };
-  }, [reloadKey, scopeParam]);
+    // portfolioVersion: editing a book can change this response without
+    // changing WHICH book is on screen. Marking one as someone else's money
+    // removes it from the headline total, and that total is computed on the
+    // server -- so without this the number here goes on counting a book the
+    // badge beside it now says is not yours.
+  }, [reloadKey, scopeParam, portfolioVersion]);
 
   if (error) {
     return (

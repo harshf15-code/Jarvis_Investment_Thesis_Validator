@@ -40,6 +40,16 @@ type PortfolioContextValue = {
   error: string | null;
   /** Re-reads the list after a create, rename or delete. */
   refresh: () => Promise<void>;
+  /**
+   * Bumped by every refresh(). Screens holding their OWN copy of data that a
+   * portfolio edit can invalidate depend on this to know it happened.
+   *
+   * The cockpit is the case that forced it: it fetches /api/cockpit itself and
+   * re-fetched only when the chosen book changed, so marking a book as someone
+   * else's money left it inside the personal headline total until the next
+   * navigation -- the total silently disagreeing with the badge beside it.
+   */
+  version: number;
   /** Navigates to the same page showing a different book. */
   select: (id: string) => void;
 };
@@ -87,7 +97,10 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
   // needs: the list re-renders on its own when the rows arrive.
   const refresh = useCallback(async () => {
     setReloadKey((k) => k + 1);
-  }, []);
+    // Server components read portfolios directly (/positions, /scratchpad), so
+    // bumping client state alone would leave them rendering the old answer.
+    router.refresh();
+  }, [router]);
 
   const select = useCallback(
     (id: string) => {
@@ -111,9 +124,10 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
       loading,
       error,
       refresh,
+      version: reloadKey,
       select,
     };
-  }, [portfolios, param, loading, error, refresh, select]);
+  }, [portfolios, param, loading, error, refresh, reloadKey, select]);
 
   return <PortfolioContext.Provider value={value}>{children}</PortfolioContext.Provider>;
 }
