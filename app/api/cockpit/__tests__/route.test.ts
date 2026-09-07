@@ -239,11 +239,21 @@ describe("GET /api/cockpit", () => {
   });
 
   it("joins each recommendation to its stock and asks for them newest-first", async () => {
+    // The stock arrives EMBEDDED in the recommendation row, not from a second
+    // read. As a second read it was the one query here that could not start
+    // until the parallel batch had landed — a sequential round trip for a join
+    // PostgREST does in the first request. The route lifts `stocks` off the row
+    // so the client still sees `{ recommendation, stock }`.
     const m = mock({
       positions: [],
-      stocks: [{ id: "s9", last_price: 250, exchange: "NSE", currency: "INR" }],
       jarvis_recommendations: [
-        { id: "r1", stock_id: "s9", ticker: "INFY", converted_to_position: false },
+        {
+          id: "r1",
+          stock_id: "s9",
+          ticker: "INFY",
+          converted_to_position: false,
+          stocks: { id: "s9", last_price: 250, exchange: "NSE" },
+        },
       ],
     });
     vi.mocked(createClient).mockResolvedValue(m as never);
@@ -256,6 +266,8 @@ describe("GET /api/cockpit", () => {
     expect(body.recommendations).toHaveLength(1);
     expect(body.recommendations[0].recommendation.ticker).toBe("INFY");
     expect(body.recommendations[0].stock.last_price).toBe(250);
+    // And `stocks` is not left on the recommendation itself.
+    expect(body.recommendations[0].recommendation.stocks).toBeUndefined();
     expect(
       m.calls.some(
         (c) =>
@@ -264,6 +276,9 @@ describe("GET /api/cockpit", () => {
           c.args[0] === "recommended_at",
       ),
     ).toBe(true);
+    // There are no positions here, so nothing else wanted a stock: the embed
+    // means `stocks` is never read on its own.
+    expect(m.calls.some((c) => c.table === "stocks")).toBe(false);
   });
 
   it("returns 500 when the positions read fails", async () => {

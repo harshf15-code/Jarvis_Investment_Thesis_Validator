@@ -43,18 +43,18 @@ type PortfolioContextValue = {
   /** Set only by a failed `refresh()`. The first render cannot fail — the rows
    *  arrive with the page. */
   error: string | null;
-  /** Re-reads the list after a create, rename or delete. */
-  refresh: () => Promise<void>;
   /**
-   * Bumped by every refresh(). Screens holding their OWN copy of data that a
-   * portfolio edit can invalidate depend on this to know it happened.
+   * Re-reads the list after a create, rename or delete, and re-renders every
+   * server component on the page with it.
    *
-   * The cockpit is the case that forced it: it fetches /api/cockpit itself and
-   * re-fetched only when the chosen book changed, so marking a book as someone
-   * else's money left it inside the personal headline total until the next
-   * navigation -- the total silently disagreeing with the badge beside it.
+   * There used to be a `version` counter beside this, for screens holding their
+   * own copy of data a portfolio edit could invalidate — the Cockpit, which
+   * fetched /api/cockpit itself and would otherwise go on counting a book the
+   * badge beside it now said was not yours. The Cockpit reads on the server
+   * now, so `router.refresh()` below covers that case and the counter had no
+   * subscribers left.
    */
-  version: number;
+  refresh: () => Promise<void>;
   /** Navigates to the same page showing a different book. */
   select: (id: string) => void;
 };
@@ -137,10 +137,9 @@ export function PortfolioProvider({
       mode,
       error,
       refresh,
-      version: reloadKey,
       select,
     };
-  }, [portfolios, param, error, refresh, reloadKey, select]);
+  }, [portfolios, param, error, refresh, select]);
 
   return <PortfolioContext.Provider value={value}>{children}</PortfolioContext.Provider>;
 }
