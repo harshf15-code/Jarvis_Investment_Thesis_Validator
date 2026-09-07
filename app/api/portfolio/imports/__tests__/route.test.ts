@@ -483,6 +483,39 @@ describe("POST /api/portfolio/imports", () => {
     expect((await csv.json()).skipped[0]).toMatchObject({ ticker: "INFY", row: 2 });
   });
 
+  it("audits a refused row under the line the trader was looking at", async () => {
+    // Only rows that survived the PREVIEW are submitted, so a row's position in
+    // the payload is not its position in the trader's file. Without the index
+    // travelling with it, a holding on line 9 of their spreadsheet is recorded
+    // as line 3 — a number that points at a different holding entirely.
+    supabase = buildSupabaseMock({ held: ["TCS"] });
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    const res = await POST(
+      post({
+        rows: [
+          { ticker: "INFY", quantity: 10, averagePrice: 1500, index: 6 },
+          { ticker: "TCS", quantity: 5, averagePrice: 3200, index: 7 },
+        ],
+      }),
+    );
+    // index 7 + 2 for the header line their file carries.
+    expect((await res.json()).skipped[0]).toMatchObject({ ticker: "TCS", row: 9 });
+  });
+
+  it("falls back to the payload position when no index was sent", async () => {
+    supabase = buildSupabaseMock({ held: ["TCS"] });
+    vi.mocked(createClient).mockResolvedValue(supabase as never);
+    const res = await POST(
+      post({
+        rows: [
+          { ticker: "INFY", quantity: 10, averagePrice: 1500 },
+          { ticker: "TCS", quantity: 5, averagePrice: 3200 },
+        ],
+      }),
+    );
+    expect((await res.json()).skipped[0]).toMatchObject({ ticker: "TCS", row: 3 });
+  });
+
   it("refuses a ROW dated in the future, naming the ticker", async () => {
     // The batch-level `as_of_date` was already guarded; a row's own date was
     // not, and the typed form puts a date input in front of it.

@@ -38,6 +38,20 @@ const CommitRowSchema = z.object({
   note: z.string().trim().max(2000).optional(),
   /** Set when the trader saw the duplicate warning and chose to import anyway. */
   confirmedDuplicate: z.boolean().optional(),
+  /**
+   * Where this row sat in what the trader was LOOKING at — their spreadsheet
+   * body, or the typed table — 0-based.
+   *
+   * Only rows that survived the preview are submitted, so a row's position in
+   * this array is not its position in their file: skip the first three lines of
+   * a ten-row CSV and the fourth holding arrives here at position 0. Anything
+   * this route then refuses was being audited under a line number that pointed
+   * at a different holding entirely.
+   *
+   * Advisory, and used for nothing but that line number. Optional so an older
+   * client falls back to the array position rather than failing outright.
+   */
+  index: z.number().int().min(0).optional(),
 });
 
 const CommitInputSchema = z.object({
@@ -118,6 +132,10 @@ export async function POST(request: Request) {
   // see on line 1 is a small lie with no upside.
   const lineOffset = input.source_filename ? 2 : 1;
 
+  /** The line the trader would find this row on, for the audit record. */
+  const lineFor = (position: number) =>
+    (input.rows[position]?.index ?? position) + lineOffset;
+
   const supabase = await createClient();
 
   // Checked before anything is priced. 0027's foreign key would refuse a book
@@ -173,7 +191,7 @@ export async function POST(request: Request) {
       (row.status === "duplicate" && submitted.confirmedDuplicate === true);
     if (!importable) {
       errors.push({
-        row: index + lineOffset,
+        row: lineFor(index),
         ticker: row.ticker,
         reason: row.reason ?? "Could not be imported",
       });

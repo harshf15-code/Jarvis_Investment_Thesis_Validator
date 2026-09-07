@@ -261,6 +261,10 @@ export function ImportWizard({
             date: r.date,
             note: notes[r.index]?.trim() || undefined,
             confirmedDuplicate: confirmed.has(r.index),
+            // Where the trader saw this row. Only survivors of the preview are
+            // sent, so its position in THIS array says nothing about the line
+            // they would look at if the server refuses it after all.
+            index: r.index,
           })),
           skipped: skipped.map((r) => ({
             row: r.index + lineOffset,
