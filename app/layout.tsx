@@ -8,6 +8,21 @@ import "./globals.css";
  * carries headlines and numerics; Inter is the interface workhorse. The app
  * previously set DM Mono as the `sans` face, so every paragraph, label, and
  * button rendered in monospace.
+ *
+ * `next/font` self-hosts EVERY weight declared here, so each one is a woff2 the
+ * browser fetches on first paint. Two of Inter's were fetched and never used:
+ * `font-light` appears nowhere in the codebase, and the single `font-semibold`
+ * sits on a `font-display` element, so it resolves to Jakarta.
+ *
+ * Jakarta keeps all five. Its 500 has no direct `font-display font-medium`
+ * pairing, but a `font-medium` child inside a `font-display` heading would
+ * inherit the family and want the weight, and that is not worth a hunt to save
+ * one file.
+ *
+ * Worth knowing, and NOT changed here: 19 places apply `font-extrabold` to text
+ * that resolves to Inter, which ships nothing above 700 — so those render as
+ * 700 or a synthesized bold today. Adding Inter 800 would change how the app
+ * looks, which is a design decision and does not belong in a performance pass.
  */
 const jakarta = Plus_Jakarta_Sans({
   subsets: ["latin"],
@@ -17,7 +32,7 @@ const jakarta = Plus_Jakarta_Sans({
 
 const inter = Inter({
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
+  weight: ["400", "500", "700"],
   variable: "--font-inter",
 });
 
